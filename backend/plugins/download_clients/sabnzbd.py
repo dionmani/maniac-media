@@ -31,13 +31,13 @@ class SabnzbdClient(DownloadClientPlugin):
         FieldSpec("host", "Host", required=True, default="localhost"),
         FieldSpec("port", "Port", "number", default=8080),
         FieldSpec("use_ssl", "Use SSL", "bool", default=False),
-        FieldSpec("url_base", "URL base", default="sabnzbd"),
+        FieldSpec("url_base", "URL base"),
         FieldSpec("api_key", "API key", "password", required=True, secret=True),
         FieldSpec("category", "Category", default="maniac-media"),
     ]
 
     async def _api(self, mode: str, **params) -> dict:
-        url = base_url({**self.settings, "url_base": self.setting("url_base", "sabnzbd")}, "/api")
+        url = base_url(self.settings, "/api")
         async with http.client(timeout=20) as c:
             resp = await http.request(c, "GET", url, params={"mode": mode, "output": "json", "apikey": self.setting("api_key", ""), **params})
             data = resp.json()
