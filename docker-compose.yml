@@ -1,0 +1,54 @@
+# Maniac Media – Docker Compose (works with Unraid's "Docker Compose Manager" plugin too).
+#
+#   1. Replace <your-github-user> below (or use `build: .` to build locally).
+#   2. Create a .env next to this file with MANIAC_MASTER_KEY (see .env.example).
+#   3. docker compose up -d   →   http://<server-ip>:8000
+#
+# Folder layout (TRaSH-guides style – ONE share for downloads and media so imports can hardlink):
+#   /mnt/user/data/
+#     ├─ downloads/complete/     ← point your download client here (as /data/downloads/...)
+#     └─ media/
+#          ├─ movies/
+#          └─ tv/
+# Give your download client the same /data mapping so paths match without remote path mapping.
+services:
+  maniac-media:
+    image: ghcr.io/<your-github-user>/maniac-media:latest
+    # build: .
+    container_name: maniac-media
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PUID: 99              # Unraid: nobody
+      PGID: 100             # Unraid: users
+      UMASK: "002"
+      TZ: ${TZ:-America/New_York}
+      MANIAC_MASTER_KEY: ${MANIAC_MASTER_KEY:?Set MANIAC_MASTER_KEY in .env}
+      # First-run defaults for Settings → Media management (change later in the UI):
+      MANIAC_MOVIES_DIR: /data/media/movies
+      MANIAC_TV_DIR: /data/media/tv
+      MANIAC_DOWNLOADS_DIR: /data/downloads/complete
+      # MANIAC_LOG_FORMAT: json
+    volumes:
+      - /mnt/user/appdata/maniac-media:/config   # database, encrypted secrets, logs, backups, plugins
+      - /mnt/user/data:/data                     # media + downloads on the same share
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional: PostgreSQL. Start with `docker compose --profile postgres up -d`, then in the UI
+  # Settings → Database → PostgreSQL, host "maniac-postgres", and run the migration wizard.
+  postgres:
+    image: postgres:17-alpine
+    container_name: maniac-postgres
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: maniac_media
+      POSTGRES_USER: maniac
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - /mnt/user/appdata/maniac-media-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maniac"]
+      interval: 10s

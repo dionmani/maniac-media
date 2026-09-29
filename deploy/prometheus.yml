@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 30s
+scrape_configs:
+  - job_name: maniac-media
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["maniac:8000"]
+    # If "Require a bearer token for /metrics" is enabled, add:
+    # authorization:
+    #   credentials: <token>

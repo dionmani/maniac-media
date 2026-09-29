@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings or the container entrypoint fails ("no such file or directory")
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
