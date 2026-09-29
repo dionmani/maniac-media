@@ -35,11 +35,10 @@ series and episode is kept. Metadata enrichment then runs in the background.
 ## Docker / Unraid
 
 Pushing to `main` (or a `v*.*.*` tag) runs `.github/workflows/publish.yml`, which tests the code and
-publishes a multi-arch image to `ghcr.io/<github-user>/maniac-media` (`:latest`, `:<version>`, `:sha-…`).
+publishes a multi-arch image to `ghcr.io/dionmani/maniac-media` (`:latest`, `:<version>`, `:sha-…`).
 
 **Unraid (Docker tab):** copy `unraid/maniac-media.xml` to
-`/boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml`, set your GitHub user in the
-repository field, then *Add Container → maniac-media*. Defaults: `/mnt/user/appdata/maniac-media → /config`,
+`/boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml`, then *Add Container → maniac-media*. Defaults: `/mnt/user/appdata/maniac-media → /config`,
 `/mnt/user/data → /data`, `PUID=99`, `PGID=100`.
 
 **Compose:**

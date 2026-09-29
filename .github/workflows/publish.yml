@@ -6,7 +6,7 @@
 #   pull request          -> build only (nothing pushed)
 #   manual run            -> :manual-<short sha> (plus :latest when run on main)
 #
-# On Unraid use:  ghcr.io/<your-github-user>/maniac-media:latest
+# On Unraid use:  ghcr.io/dionmani/maniac-media:latest
 # (If the package is private, make it public under GitHub → Packages → Package settings,
 #  or add GHCR credentials to Unraid.)
 name: Publish Docker image

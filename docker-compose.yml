@@ -1,8 +1,7 @@
 # Maniac Media – Docker Compose (works with Unraid's "Docker Compose Manager" plugin too).
 #
-#   1. Replace <your-github-user> below (or use `build: .` to build locally).
-#   2. Create a .env next to this file with MANIAC_MASTER_KEY (see .env.example).
-#   3. docker compose up -d   →   http://<server-ip>:8000
+#   1. Create a .env next to this file with MANIAC_MASTER_KEY (see .env.example).
+#   2. docker compose up -d   →   http://<server-ip>:8000   (use `build: .` instead of image to build locally)
 #
 # Folder layout (TRaSH-guides style – ONE share for downloads and media so imports can hardlink):
 #   /mnt/user/data/
@@ -13,7 +12,7 @@
 # Give your download client the same /data mapping so paths match without remote path mapping.
 services:
   maniac-media:
-    image: ghcr.io/<your-github-user>/maniac-media:latest
+    image: ghcr.io/dionmani/maniac-media:latest
     # build: .
     container_name: maniac-media
     restart: unless-stopped

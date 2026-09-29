@@ -3,11 +3,10 @@
   Unraid Docker template for Maniac Media.
   Install: copy this file to /boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml
   on the Unraid flash drive, then Docker tab → Add Container → Template: maniac-media.
-  Replace YOUR_GITHUB_USER in <Repository> first.
 -->
 <Container version="2">
   <Name>maniac-media</Name>
-  <Repository>ghcr.io/YOUR_GITHUB_USER/maniac-media:latest</Repository>
+  <Repository>ghcr.io/dionmani/maniac-media:latest</Repository>
   <Registry>https://ghcr.io</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
