@@ -1,12 +1,33 @@
+# Runs tests, then (on push to main, a v*.*.* tag, or manual dispatch) builds and
+# publishes the Docker image to GitHub Container Registry (ghcr.io).
+#
+# Tags produced (image: ghcr.io/<owner>/<repo>, lower-cased):
+#   push to main          -> :latest, :main, :sha-<short>
+#   git tag v2.1.0        -> :2.1.0, :2.1, :2, :latest
+#   pull request          -> build only (nothing pushed)
+#   manual run            -> :manual-<short sha> (plus :latest when run on main)
+#
+# On Unraid use:  ghcr.io/dionmani/maniac-media:latest
+# (If the package is private, make it public under GitHub -> Packages -> Package settings,
+#  or add GHCR credentials to Unraid.)
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
   backend:
@@ -86,3 +107,82 @@ jobs:
           path: frontend/dist
       - run: pip install -r requirements-dev.txt playwright && python -m playwright install --with-deps chromium
       - run: pytest tests/e2e -m e2e -o addopts=""
+
+  publish:
+    name: Build & push image
+    needs: [backend, postgres-migration, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write       # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=manual-{{sha}},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Smoke test the image
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p /tmp/maniac/config /tmp/maniac/data
+          docker run -d --name maniac -p 8000:8000 \
+            -e MANIAC_MASTER_KEY=ci-smoke-test-key \
+            -v /tmp/maniac/config:/config -v /tmp/maniac/data:/data "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health; then echo; break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/api/v1/auth/status | grep -q setup_required
+          curl -fsS http://127.0.0.1:8000/ | grep -qi "maniac media"
+          docker logs maniac | tail -n 30
+          docker rm -f maniac
