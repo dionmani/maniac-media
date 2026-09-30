@@ -8,6 +8,7 @@ folder and the database are left exactly as they were.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +46,9 @@ class Candidate:
     title: str | None = None
     season: int | None = None
     episodes: list[int] = field(default_factory=list)
+    library_state: str | None = None  # new | upgrade | duplicate (only set once matched)
+    existing_quality: str | None = None
+    existing_size: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -58,7 +62,16 @@ class Candidate:
             "title": self.title,
             "season": self.season,
             "episodes": self.episodes,
+            "library_state": self.library_state,
+            "existing_quality": self.existing_quality,
+            "existing_size": self.existing_size,
         }
+
+
+@dataclass
+class DeleteResult:
+    deleted: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -104,6 +117,7 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
         if series:
             candidate.media_type, candidate.media_id, candidate.title = "tv", series.id, series.title
             candidate.season, candidate.episodes = ep.season, ep.episodes
+        _annotate_library_state(db, candidate)
         return candidate
     pm = parse_movie(hint_name or name)
     if not pm.year:
@@ -116,7 +130,43 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
     if options:
         movie = options[0]
         candidate.media_type, candidate.media_id, candidate.title = "movie", movie.id, f"{movie.title} ({movie.year})"
+    _annotate_library_state(db, candidate)
     return candidate
+
+
+def _annotate_library_state(db: Session, candidate: Candidate) -> None:
+    """Set library_state/existing_quality/existing_size once a media match is known.
+
+    Read-only mirror of the duplicate/upgrade comparison `_check_existing` performs at import
+    time, run eagerly during scan so the UI can show it before the user clicks Import.
+    """
+    if candidate.state != "ok" or not candidate.media_id:
+        return
+    if candidate.media_type == "movie":
+        movie = db.get(models.Movie, candidate.media_id)
+        if movie is None or not movie.has_file:
+            candidate.library_state = "new"
+            return
+        profile = spec_for(db, movie.quality_profile_id)
+        current_q = parse_quality(movie.quality or movie.file_path or "")
+        candidate.library_state = "upgrade" if profile.is_upgrade(current_q, candidate.quality) else "duplicate"
+        candidate.existing_quality = movie.quality
+        candidate.existing_size = movie.file_size_bytes
+        return
+    if candidate.media_type == "tv" and candidate.season is not None and candidate.episodes:
+        episodes = list(db.scalars(select(models.Episode).where(
+            models.Episode.series_id == candidate.media_id, models.Episode.season_number == candidate.season,
+            models.Episode.episode_number.in_(candidate.episodes))))
+        if not episodes or not all(e.has_file for e in episodes):
+            candidate.library_state = "new"
+            return
+        series = db.get(models.Series, candidate.media_id)
+        profile = spec_for(db, series.quality_profile_id if series else None)
+        worst = min(episodes, key=lambda e: parse_quality(e.quality or e.file_path or "").quality.weight)
+        current_q = parse_quality(worst.quality or worst.file_path or "")
+        candidate.library_state = "upgrade" if profile.is_upgrade(current_q, candidate.quality) else "duplicate"
+        candidate.existing_quality = worst.quality
+        candidate.existing_size = worst.file_size_bytes
 
 
 # --------------------------------------------------------------------------- destination
@@ -416,6 +466,36 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
     return result
 
 
+def delete_candidates(paths: list[str], actor: Actor) -> DeleteResult:
+    """Permanently remove stray files from the download folder (corrupt files, rejected
+    duplicates). These never entered the library, so there is nothing to recycle – unlike
+    replacing a library file, which still goes through ``fileops.recycle``.
+    """
+    result = DeleteResult()
+    root = Path(get_settings().download_folder).resolve()
+    for raw in paths:
+        p = Path(raw)
+        try:
+            resolved = p.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            result.failed.append(f"{raw}: outside the download folder")
+            continue
+        if not resolved.exists():
+            result.failed.append(f"{raw}: not found")
+            continue
+        try:
+            os.remove(fileops.long_path(resolved))
+            fileops.remove_empty_dirs(resolved.parent, root)
+            result.deleted.append(str(resolved))
+        except OSError as exc:
+            result.failed.append(f"{raw}: {exc.strerror or exc}")
+    with session_scope() as db:
+        audit(db, "import", "delete_candidate", actor=actor, details={"deleted": result.deleted, "failed": result.failed},
+              success=not result.failed)
+    return result
+
+
 # --------------------------------------------------------------------------- watch folder
 def scan_download_folder() -> dict:
     """Detect completed / partial / corrupt downloads in the watch folder.
@@ -488,4 +568,4 @@ def failed_imports(db: Session) -> int:
     return db.scalar(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed")) or 0
 
 
-__all__ = ["import_queue_item", "manual_scan", "manual_import", "scan_download_folder", "failed_imports", "SYSTEM"]
+__all__ = ["import_queue_item", "manual_scan", "manual_import", "delete_candidates", "scan_download_folder", "failed_imports", "SYSTEM"]

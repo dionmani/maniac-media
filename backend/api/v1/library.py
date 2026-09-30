@@ -69,6 +69,12 @@ async def manual_import(req: schemas.ManualImportRequest, user: Requires(Permiss
     return {"imported": result.imported, "failed": result.failed}
 
 
+@router.post("/library/manual-import/delete")
+async def manual_import_delete(req: schemas.ManualImportDeleteRequest, user: Requires(Permission.IMPORT)):
+    result = await asyncio.to_thread(import_service.delete_candidates, req.paths, user.actor)
+    return {"deleted": result.deleted, "failed": result.failed}
+
+
 @router.get("/library/download-folder")
 async def download_folder_report(_: Requires(Permission.QUEUE_READ)):
     """Current state of the watch folder: completed, partial, corrupt and untracked downloads."""

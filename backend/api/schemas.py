@@ -365,6 +365,10 @@ class ManualImportRequest(BaseModel):
     mode: Literal["move", "copy", "hardlink", "symlink"] | None = None
 
 
+class ManualImportDeleteRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=500)
+
+
 class ScanRequest(BaseModel):
     scope: Literal["movies", "tv", "all"] = "all"
     incremental: bool = True

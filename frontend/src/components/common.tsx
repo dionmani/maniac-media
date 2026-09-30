@@ -88,6 +88,7 @@ const STATUS_COLORS: Record<string, ChipProps['color']> = {
   downloading: 'secondary', importing: 'secondary', running: 'secondary', queued: 'default', paused: 'default',
   warning: 'warning', import_failed: 'error', failed: 'error', error: 'error', missing: 'error', cancelled: 'default',
   grabbed: 'secondary', added: 'primary', renamed: 'primary', upgraded: 'success', deleted: 'warning', download_failed: 'error',
+  duplicate: 'warning', upgrade: 'success', new: 'success',
 };
 
 export function StatusChip({ status, label }: { status: string; label?: string }) {
