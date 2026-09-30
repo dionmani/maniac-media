@@ -11,6 +11,7 @@ from backend.api.schemas import public_art
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
+from backend.db.repositories import MediaFileRepository
 
 
 def _disk(path: str) -> dict | None:
@@ -38,14 +39,9 @@ def stats(db: Session) -> dict:
         .where(models.Episode.monitored.is_(True), models.Episode.has_file.is_(False), models.Series.monitored.is_(True),
                models.Episode.season_number > 0, or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today))
     )
-    movie_bytes = count(select(func.sum(models.Movie.file_size_bytes)).where(models.Movie.has_file.is_(True)))
-    # an episode file can hold several episodes; count distinct files
-    episode_bytes = count(
-        select(func.sum(func.coalesce(models.Episode.file_size_bytes, 0))).where(
-            models.Episode.has_file.is_(True),
-            models.Episode.id.in_(select(func.min(models.Episode.id)).where(models.Episode.has_file.is_(True)).group_by(models.Episode.file_path)),
-        )
-    )
+    repo = MediaFileRepository(db)
+    movie_bytes = repo.total_bytes("movie")
+    episode_bytes = repo.total_bytes("tv")
     active = count(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status.in_(("queued", "downloading", "paused"))))
     failed_imports = count(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed"))
     failed_recent = count(

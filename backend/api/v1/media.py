@@ -11,7 +11,7 @@ from backend.core.events import EventType, bus
 from backend.core.security import Permission
 from backend.core.settings import get_settings
 from backend.db import models
-from backend.db.repositories import MovieRepository, SeriesRepository
+from backend.db.repositories import MediaFileRepository, MovieRepository, SeriesRepository
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
 from backend.services import media_service, metadata_service
@@ -337,3 +337,27 @@ def calendar(db: DB, _: Requires(Permission.MEDIA_READ), start: str = Query(...,
                      for e, t, p in rows],
         "movies": [schemas.MovieSummary.model_validate(m).model_dump() | {"release_date": m.release_date, "digital_release_date": m.digital_release_date} for m in movies],
     }
+
+
+# ================================================================== media files
+@router.get("/media-files", tags=["media-files"])
+def list_media_files(
+    db: DB,
+    _: Requires(Permission.MEDIA_READ),
+    paging: Paging,
+    movie_id: int | None = None,
+    series_id: int | None = None,
+    episode_id: int | None = None,
+):
+    repo = MediaFileRepository(db)
+    stmt = repo.query(movie_id=movie_id, series_id=series_id, episode_id=episode_id)
+    page = repo.paginate(stmt, page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
+    return page_response(page, [schemas.MediaFileOut.model_validate(f) for f in page.items])
+
+
+@router.get("/media-files/{media_file_id}", response_model=schemas.MediaFileDetailOut, tags=["media-files"])
+def get_media_file(media_file_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
+    file = db.get(models.MediaFile, media_file_id)
+    if file is None:
+        raise HTTPException(404, "Media file not found")
+    return file
