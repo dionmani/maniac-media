@@ -24,7 +24,7 @@ import {
   Typography,
 } from '@mui/material';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, FolderInput, RefreshCw, RotateCcw, Trash2, Unlock } from 'lucide-react';
+import { Activity, FolderInput, RefreshCw, Trash2, Unlock } from 'lucide-react';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { del, get, post } from '../api/client';
@@ -114,9 +114,6 @@ function QueueTab() {
                 <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                   {can('files:import') && ['completed', 'import_failed'].includes(q.status) && (
                     <Tooltip title="Retry import"><IconButton size="small" onClick={() => act.mutate(() => post(`/queue/${q.id}/import`))}><FolderInput size={15} /></IconButton></Tooltip>
-                  )}
-                  {can('queue:write') && q.status === 'failed' && (
-                    <Tooltip title="Re-send to download client"><IconButton size="small" onClick={() => act.mutate(() => post(`/queue/${q.id}/retry`))}><RotateCcw size={15} /></IconButton></Tooltip>
                   )}
                   {can('queue:write') && (
                     <Tooltip title="Remove"><IconButton size="small" color="error" onClick={() => setRemoving(q)}><Trash2 size={15} /></IconButton></Tooltip>

@@ -116,10 +116,13 @@ async def cleanup(ctx: JobContext):
             audit_rows = db.execute(delete(models.AuditLog).where(models.AuditLog.timestamp < now - timedelta(days=settings.audit_retention_days))).rowcount
             queue = db.execute(delete(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "imported",
                                                                        models.DownloadQueueItem.completed_at < now - timedelta(days=2))).rowcount
+            # failed downloads are dropped from the queue once recorded in History; these are leftovers
+            queue += db.execute(delete(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "failed",
+                                                                        models.DownloadQueueItem.added_at < now - timedelta(hours=1))).rowcount
             issues = db.execute(delete(models.LibraryIssue).where(models.LibraryIssue.resolved.is_(True),
                                                                    models.LibraryIssue.detected_at < now - timedelta(days=30))).rowcount
         recycled = fileops.cleanup_recycle_bin(Path(settings.recycle_bin), settings.recycle_bin_days)
-        return {"jobs": jobs, "history": history, "audit": audit_rows, "imported_queue": queue, "issues": issues, "recycle_folders": recycled}
+        return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled}
 
     return await asyncio.to_thread(run)
 

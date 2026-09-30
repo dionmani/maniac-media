@@ -292,7 +292,8 @@ def _reconcile(client: ClientRef, items: dict[str, ClientItem], confirmed: bool 
 
 
 async def handle_failed(queue_id: int, reason: str, *, release_at_fault: bool = True) -> None:
-    """Record a failed download; blocklist the release and search again only if the release itself is to blame."""
+    """Record a failed download and drop it from the queue (History keeps the record); blocklist the release
+    and search again only if the release itself is to blame."""
     settings = get_settings()
 
     def mark() -> tuple[str, int, int | None, list[int] | None, int] | None:
@@ -300,18 +301,19 @@ async def handle_failed(queue_id: int, reason: str, *, release_at_fault: bool = 
             q = db.get(models.DownloadQueueItem, queue_id)
             if q is None:
                 return None
-            q.status = "failed"
-            q.error_message = q.error_message or reason
+            error = q.error_message or reason
             if release_at_fault:
-                db.add(models.Blocklist(media_type=q.media_type, media_id=q.media_id, release_title=q.release_title, indexer=q.indexer_name, reason=q.error_message))
-            history(db, q.media_type, q.media_id, q.release_title, "download_failed", quality=q.quality, download_id=q.id, details=q.error_message)
+                db.add(models.Blocklist(media_type=q.media_type, media_id=q.media_id, release_title=q.release_title, indexer=q.indexer_name, reason=error))
+            history(db, q.media_type, q.media_id, q.release_title, "download_failed", quality=q.quality, download_id=q.id, details=error)
             if q.media_type == "tv":
                 stmt = select(models.Episode).where(models.Episode.series_id == q.media_id, models.Episode.status == "downloading")
                 if q.season_num is not None:
                     stmt = stmt.where(models.Episode.season_number == q.season_num)
                 for ep in db.scalars(stmt):
                     ep.status = "missing"
-            return q.media_type, q.media_id, q.season_num, q.episode_numbers, q.retry_count or 0
+            info = q.media_type, q.media_id, q.season_num, q.episode_numbers, q.retry_count or 0
+            db.delete(q)
+            return info
 
     info = await asyncio.to_thread(mark)
     if info is None:

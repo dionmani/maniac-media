@@ -51,6 +51,16 @@ def _status(queue_id: int) -> tuple[str, int]:
         return q.status, blocked
 
 
+def _failed_out(queue_id: int, release_title: str) -> tuple[bool, int, int]:
+    """(still in the queue, blocklist rows, download_failed history rows) for a download that should have failed."""
+    with session_scope() as db:
+        queued = db.get(models.DownloadQueueItem, queue_id) is not None
+        blocked = db.scalar(select(func.count(models.Blocklist.id)).where(models.Blocklist.release_title == release_title))
+        failed = db.scalar(select(func.count(models.History.id)).where(models.History.title == release_title,
+                                                                        models.History.event_type == "download_failed"))
+        return queued, blocked, failed
+
+
 def test_item_outside_the_listing_is_found_by_id(database, monkeypatch):
     client_id, queue_id = _setup("nzo_hidden")
     stub = _StubClient(findable=[ClientItem(id="nzo_hidden", name="x", status="downloading", progress=42.0)])
@@ -68,8 +78,31 @@ def test_vanished_item_is_not_failed_immediately_nor_blocklisted(database, monke
 
     download_service._missing_since[queue_id] = utcnow() - timedelta(seconds=download_service.MISSING_GRACE_SECONDS + 1)
     _sync(client_id, _StubClient(), monkeypatch)
-    assert _status(queue_id) == ("failed", 0)
+    assert _failed_out(queue_id, "Show.S01E01.nzo_gone") == (False, 0, 1)
     assert not [a for a in retries if a and a[0] == "automatic_search"]
+
+
+def test_failed_download_leaves_the_queue_but_stays_in_history(database, monkeypatch):
+    client_id, queue_id = _setup("nzo_broken")
+    monkeypatch.setattr("backend.workers.queue.job_queue.enqueue", lambda *a, **k: None)
+    stub = _StubClient(listed=[ClientItem(id="nzo_broken", name="x", status="failed", message="Aborted, cannot be completed")])
+    _sync(client_id, stub, monkeypatch)
+    assert _failed_out(queue_id, "Show.S01E01.nzo_broken") == (False, 1, 1)
+    with session_scope() as db:
+        entry = db.scalar(select(models.History).where(models.History.title == "Show.S01E01.nzo_broken"))
+        assert entry.details == "Aborted, cannot be completed"
+
+
+def test_leftover_failed_rows_are_hidden_from_the_queue(database):
+    from backend.db.repositories import QueueRepository
+
+    _, queue_id = _setup("nzo_legacy")
+    with session_scope() as db:
+        db.get(models.DownloadQueueItem, queue_id).status = "failed"
+    with session_scope() as db:
+        repo = QueueRepository(db)
+        assert queue_id not in [q.id for q in repo.for_display()]
+        assert queue_id not in [q.id for q in repo.for_display(include_finished=True)]
 
 
 def test_miss_timer_resets_when_item_reappears(database, monkeypatch):
