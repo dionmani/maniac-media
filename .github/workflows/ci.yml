@@ -162,7 +162,10 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Attest build provenance
+        # Attestation requires a public repo (or org-owned) - not available for
+        # user-owned private repos, so don't fail the build over it.
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
