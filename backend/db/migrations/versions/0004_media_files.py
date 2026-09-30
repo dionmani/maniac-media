@@ -121,9 +121,10 @@ def _backfill(conn) -> None:
     movie_rows = conn.execute(
         sa.text(
             "SELECT id, file_path, file_size_bytes, quality, added_date, updated_at "
-            "FROM movies WHERE has_file = 1 AND file_path IS NOT NULL AND file_path != '' "
+            "FROM movies WHERE has_file = :has_file AND file_path IS NOT NULL AND file_path != '' "
             "ORDER BY id ASC"
-        )
+        ),
+        {"has_file": True},
     ).fetchall()
 
     for row in movie_rows:
@@ -174,9 +175,10 @@ def _backfill(conn) -> None:
     ep_rows = conn.execute(
         sa.text(
             "SELECT id, series_id, file_path, file_size_bytes, quality "
-            "FROM episodes WHERE has_file = 1 AND file_path IS NOT NULL AND file_path != '' "
+            "FROM episodes WHERE has_file = :has_file AND file_path IS NOT NULL AND file_path != '' "
             "ORDER BY series_id ASC, season_number ASC, episode_number ASC, id ASC"
-        )
+        ),
+        {"has_file": True},
     ).fetchall()
 
     path_to_eps: dict[str, list[dict]] = {}

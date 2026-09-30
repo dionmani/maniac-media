@@ -47,7 +47,11 @@ def test_full_download_and_import_pipeline(database, library):
     assert status in ("completed", "imported")
     if status == "completed":  # a live worker pool may already have auto-imported it
         outcome = import_service.import_queue_item(queue_id)
-        assert outcome.imported == ["Interstellar (2014)"], outcome
+        if not outcome.imported:  # lost the race: the worker imported between our status read and this call
+            with session_scope() as db:
+                assert db.get(models.DownloadQueueItem, queue_id).status == "imported", outcome
+        else:
+            assert outcome.imported == ["Interstellar (2014)"], outcome
     with session_scope() as db:
         movie = db.get(models.Movie, movie_id)
         assert movie.has_file and Path(movie.file_path).exists()
