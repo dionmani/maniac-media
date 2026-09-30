@@ -16,11 +16,12 @@ from sqlalchemy import select
 from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db import models
+from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import parse_episode, parse_movie
 from backend.domain.quality import get_quality, parse_quality
-from backend.services import fileops
+from backend.services import fileops, media_file_service
 from backend.services.audit import Actor, audit, history
 
 log = logging.getLogger("maniac.renamer")
@@ -175,13 +176,19 @@ def execute(items: list[dict], *, dry_run: bool, include_folders: bool, actor: A
                         tx.place(current, target, "move")
                         _rename_sidecars(tx, current, target)
                     new_path = str(target)
+                    mf = MediaFileRepository(db).by_path(proposal["current_path"])
+                    if mf:
+                        media_file_service.move_file(db, mf, target)
+                    else:
+                        if item["media_type"] == "movie":
+                            m.file_path = new_path
+                            m.path = str(target.parent)
+                        else:
+                            for e in db.scalars(select(models.Episode).where(models.Episode.id.in_(proposal["episode_ids"]))):
+                                e.file_path = new_path
                     if item["media_type"] == "movie":
-                        m.file_path = new_path
-                        m.path = str(target.parent)
                         history(db, "movie", m.id, m.title, "renamed", quality=m.quality, details=f"'{Path(proposal['current_path']).name}' → '{target.name}'")
                     else:
-                        for e in db.scalars(select(models.Episode).where(models.Episode.id.in_(proposal["episode_ids"]))):
-                            e.file_path = new_path
                         history(db, "tv", proposal["series_id"], proposal["title"], "renamed", details=f"'{Path(proposal['current_path']).name}' → '{target.name}'")
                     db.flush()
                 except Exception:

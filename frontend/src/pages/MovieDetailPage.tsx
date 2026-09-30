@@ -1,4 +1,4 @@
-import { Box, Button, Chip, FormControlLabel, Grid, MenuItem, Switch, Table, TableBody, TableCell, TableRow, TextField, Typography } from '@mui/material';
+import { Box, Button, Chip, FormControlLabel, Grid, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableRow, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, FileEdit, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
 import { useState } from 'react';
@@ -102,6 +102,51 @@ export default function MovieDetailPage() {
             ) : null}
           </Section>
           <Section title="Cast" sx={{ mb: 2 }}><CastList cast={m.cast_members} /></Section>
+          {m.files && m.files.length > 0 && (
+            <Section
+              title={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <span>Files</span>
+                  {m.files.length > 1 && (
+                    <Chip size="small" color="secondary" label={`+${m.files.length - 1} other files`} />
+                  )}
+                </Stack>
+              }
+              sx={{ mb: 2 }}
+            >
+              <Table size="small">
+                <TableBody>
+                  {m.files.map((file) => (
+                    <TableRow key={file.id}>
+                      <TableCell sx={{ width: 90 }}>
+                        {file.is_primary ? (
+                          <Chip size="small" color="primary" label="Primary" />
+                        ) : (
+                          <Chip size="small" variant="outlined" label="Duplicate" />
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                          {file.path}
+                        </Typography>
+                        {file.scene_name && file.scene_name !== file.path && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            Release: {file.scene_name}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell sx={{ whiteSpace: 'nowrap', width: 120 }}>
+                        <QualityChip quality={file.quality ?? 'Unknown'} />
+                      </TableCell>
+                      <TableCell sx={{ whiteSpace: 'nowrap', width: 100, color: 'text.secondary' }}>
+                        {bytes(file.size_bytes)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Section>
+          )}
           <Section title="History">
             {history.data?.items.length ? (
               <Table size="small">

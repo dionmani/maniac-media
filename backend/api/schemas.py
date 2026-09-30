@@ -88,6 +88,52 @@ class CastOut(BaseModel):
     image: str | None = None
 
 
+class MediaFileOut(BaseModel):
+    model_config = ORM
+    id: int
+    media_type: str
+    movie_id: int | None = None
+    series_id: int | None = None
+    path: str
+    size_bytes: int
+    quality: str | None = None
+    codec: str | None = None
+    release_group: str | None = None
+    scene_name: str | None = None
+    edition: str | None = None
+    is_primary: bool
+    added_at: datetime | None = None
+
+
+class EpisodeLinkOut(BaseModel):
+    model_config = ORM
+    id: int
+    series_id: int
+    season_number: int
+    episode_number: int
+    title: str
+
+
+class MovieLinkOut(BaseModel):
+    model_config = ORM
+    id: int
+    title: str
+    year: int
+
+
+class SeriesLinkOut(BaseModel):
+    model_config = ORM
+    id: int
+    title: str
+    year: int
+
+
+class MediaFileDetailOut(MediaFileOut):
+    movie: MovieLinkOut | None = None
+    series: SeriesLinkOut | None = None
+    episodes: list[EpisodeLinkOut] = []
+
+
 class MovieOut(_ArtMixin):
     model_config = ORM
     id: int
@@ -124,6 +170,7 @@ class MovieOut(_ArtMixin):
     last_metadata_refresh: datetime | None = None
     last_search_at: datetime | None = None
     added_date: datetime | None = None
+    files: list[MediaFileOut] = []
 
 
 class MovieSummary(_ArtMixin):
@@ -186,6 +233,7 @@ class EpisodeOut(BaseModel):
     quality: str | None = None
     status: str | None = None
     runtime_minutes: int | None = None
+    files: list[MediaFileOut] = []
 
 
 class SeasonOut(BaseModel):

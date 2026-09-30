@@ -1,6 +1,7 @@
 """Release / file name parsing for movies and episodes."""
 from __future__ import annotations
 
+import posixpath
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -174,3 +175,38 @@ def parse_folder_title(folder_name: str) -> tuple[str, int | None, str | None]:
         last = years[-1]
         return clean_title(folder_name[: last.start()]), int(last.group(1)), imdb.group(1) if imdb else None
     return clean_title(re.sub(r"[\[{(].*$", "", folder_name)) or folder_name, None, imdb.group(1) if imdb else None
+
+
+def normalise_path_key(path: str) -> str:
+    """Canonical key for path deduplication and path_hash:
+    normcase + normpath + casefold, normalized to forward slashes.
+    Handles Windows drive letters, UNC paths, trailing slashes, and \\?\\ prefixes.
+    """
+    if not path:
+        return ""
+    p = str(path).strip()
+    if p.startswith(("\\\\?\\UNC\\", "\\\\?\\unc\\", "//?/UNC/", "//?/unc/")):
+        p = "\\\\" + p[8:]
+    elif p.startswith(("\\\\?\\", "//?/")):
+        p = p[4:]
+
+    is_unc = p.startswith(("\\\\", "//")) and not p.startswith(("\\\\\\", "///"))
+    p = p.replace("\\", "/")
+
+    if is_unc:
+        rest = p[2:]
+        while "//" in rest:
+            rest = rest.replace("//", "/")
+        p = "//" + rest
+    else:
+        while "//" in p:
+            p = p.replace("//", "/")
+
+    p = posixpath.normpath(p).casefold()
+
+    if len(p) > 1 and p.endswith("/"):
+        if not (len(p) == 3 and p[1] == ":"):
+            p = p[:-1]
+
+    return p
+

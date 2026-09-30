@@ -6,7 +6,9 @@ interpolating user input into SQL.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Generic, Sequence, TypeVar
 
 from sqlalchemy import Select, and_, case, func, or_, select
@@ -14,6 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from backend.db import models
 from backend.db.base import Base
+from backend.domain.parser import normalise_path_key
 
 T = TypeVar("T", bound=Base)
 
@@ -267,3 +270,72 @@ class JobRepository(Repository[models.Job]):
     model = models.Job
     default_sort = "created"
     sortable = {"created": models.Job.created_at, "id": models.Job.id}
+
+
+class MediaFileRepository(Repository[models.MediaFile]):
+    model = models.MediaFile
+    default_sort = "added"
+    sortable = {
+        "size": models.MediaFile.size_bytes,
+        "added": models.MediaFile.added_at,
+        "quality": models.MediaFile.quality,
+        "id": models.MediaFile.id,
+    }
+
+    def by_path(self, path: str | Path) -> models.MediaFile | None:
+        h = hashlib.sha256(normalise_path_key(str(path)).encode()).hexdigest()
+        return self.db.scalar(select(models.MediaFile).where(models.MediaFile.path_hash == h))
+
+    def for_movie(self, movie_id: int) -> Sequence[models.MediaFile]:
+        return self.db.scalars(
+            select(models.MediaFile)
+            .where(models.MediaFile.movie_id == movie_id)
+            .order_by(models.MediaFile.is_primary.desc(), models.MediaFile.id)
+        ).all()
+
+    def for_series(self, series_id: int) -> Sequence[models.MediaFile]:
+        return self.db.scalars(
+            select(models.MediaFile)
+            .where(models.MediaFile.series_id == series_id)
+            .order_by(models.MediaFile.is_primary.desc(), models.MediaFile.id)
+        ).all()
+
+    def for_episode(self, episode_id: int) -> Sequence[models.MediaFile]:
+        return self.db.scalars(
+            select(models.MediaFile)
+            .join(models.EpisodeFile, models.EpisodeFile.media_file_id == models.MediaFile.id)
+            .where(models.EpisodeFile.episode_id == episode_id)
+            .order_by(models.MediaFile.is_primary.desc(), models.MediaFile.id)
+        ).all()
+
+    def total_bytes(self, media_type: str | None = None) -> int:
+        stmt = select(func.coalesce(func.sum(models.MediaFile.size_bytes), 0))
+        if media_type:
+            stmt = stmt.where(models.MediaFile.media_type == media_type)
+        return int(self.db.scalar(stmt) or 0)
+
+    def uninspected(self, limit: int = 100) -> Sequence[models.MediaFile]:
+        return self.db.scalars(
+            select(models.MediaFile)
+            .where(models.MediaFile.codec.is_(None))
+            .limit(limit)
+        ).all()
+
+    def query(
+        self,
+        *,
+        movie_id: int | None = None,
+        series_id: int | None = None,
+        episode_id: int | None = None,
+    ) -> Select:
+        stmt = select(models.MediaFile)
+        if episode_id is not None:
+            stmt = stmt.join(models.EpisodeFile, models.EpisodeFile.media_file_id == models.MediaFile.id).where(
+                models.EpisodeFile.episode_id == episode_id
+            )
+        elif movie_id is not None:
+            stmt = stmt.where(models.MediaFile.movie_id == movie_id)
+        elif series_id is not None:
+            stmt = stmt.where(models.MediaFile.series_id == series_id)
+        return stmt
+

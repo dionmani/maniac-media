@@ -264,8 +264,23 @@ function EpisodeRow({ ep, series, write, canSearch, call, onSearch }: {
   ep: Episode; series: Series; write: boolean; canSearch: boolean; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
 }) {
   const aired = !ep.air_date || ep.air_date <= today;
+  const primaryFile = ep.files?.find((f) => f.is_primary) ?? ep.files?.[0];
+  const filePath = primaryFile?.path ?? ep.file_path ?? '';
+  const otherEps = primaryFile?.episodes?.filter((e) => e.id !== ep.id);
+  const multiInfo = otherEps && otherEps.length > 0
+    ? `Linked episodes: ${[ep, ...otherEps].map((e) => `E${String(e.episode_number).padStart(2, '0')}`).join(', ')}`
+    : null;
+  const tooltipText = multiInfo ? `${filePath} · ${multiInfo}` : filePath;
+
   const status = ep.has_file ? (
-    <Tooltip title={ep.file_path ?? ''}><span><QualityChip quality={ep.quality ?? 'On disk'} /></span></Tooltip>
+    <Tooltip title={tooltipText}>
+      <span>
+        <QualityChip quality={primaryFile?.quality ?? ep.quality ?? 'On disk'} />
+        {otherEps && otherEps.length > 0 && (
+          <Chip size="small" variant="outlined" sx={{ ml: 0.75, fontSize: '0.7rem', height: 20 }} label={`Multi (+E${otherEps.map((e) => e.episode_number).join(', ')})`} />
+        )}
+      </span>
+    </Tooltip>
   ) : ep.status === 'downloading' ? <Chip size="small" color="secondary" label="Downloading" />
     : aired ? <Chip size="small" color="error" variant="outlined" label="Missing" />
     : <Chip size="small" variant="outlined" label="Unaired" />;

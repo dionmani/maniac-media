@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -69,6 +70,10 @@ class Movie(Base):
     last_metadata_refresh: Mapped[datetime | None] = mapped_column(DateTime)
     last_search_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    files: Mapped[list["MediaFile"]] = relationship(
+        back_populates="movie", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"
+    )
+
 
 class Series(Base):
     __tablename__ = "series"
@@ -112,6 +117,9 @@ class Series(Base):
         back_populates="series", cascade="all, delete-orphan", order_by="Season.season_number"
     )
     episodes: Mapped[list["Episode"]] = relationship(back_populates="series", cascade="all, delete-orphan")
+    files: Mapped[list["MediaFile"]] = relationship(
+        back_populates="series", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"
+    )
 
 
 class Season(Base):
@@ -155,6 +163,63 @@ class Episode(Base):
 
     series: Mapped[Series] = relationship(back_populates="episodes")
     season: Mapped[Season] = relationship(back_populates="episodes")
+    files: Mapped[list["MediaFile"]] = relationship(
+        secondary="episode_files", back_populates="episodes", order_by="MediaFile.is_primary.desc()"
+    )
+    episode_files: Mapped[list["EpisodeFile"]] = relationship(
+        cascade="all, delete-orphan", back_populates="episode", overlaps="files"
+    )
+
+
+class MediaFile(Base):
+    __tablename__ = "media_files"
+    __table_args__ = (
+        Index("ix_media_files_movie_primary", "movie_id", "is_primary"),
+        Index("ix_media_files_series_id", "series_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(16))  # movie | tv
+    movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"), nullable=True, index=True)
+    series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), nullable=True, index=True)
+    path: Mapped[str] = mapped_column(String(1024))
+    path_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    codec: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    release_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scene_name: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    edition: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    custom_formats: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    custom_format_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role: Mapped[str] = mapped_column(String(16), default="main")  # main | extra
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
+    added_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    source: Mapped[str] = mapped_column(String(16), default="scan")  # import | scan | manual
+
+    movie: Mapped[Movie | None] = relationship(back_populates="files")
+    series: Mapped[Series | None] = relationship(back_populates="files")
+    episodes: Mapped[list[Episode]] = relationship(secondary="episode_files", back_populates="files", overlaps="episode_files")
+    episode_files: Mapped[list["EpisodeFile"]] = relationship(cascade="all, delete-orphan", back_populates="media_file", overlaps="episodes,files")
+
+
+class EpisodeFile(Base):
+    __tablename__ = "episode_files"
+    __table_args__ = (
+        UniqueConstraint("media_file_id", "episode_id", name="uq_episode_files_file_episode"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_file_id: Mapped[int] = mapped_column(ForeignKey("media_files.id", ondelete="CASCADE"), index=True)
+    episode_id: Mapped[int] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), index=True)
+
+    media_file: Mapped[MediaFile] = relationship(back_populates="episode_files", overlaps="episodes,files")
+    episode: Mapped[Episode] = relationship(back_populates="episode_files", overlaps="episodes,files")
+
 
 
 # --------------------------------------------------------------------------- quality

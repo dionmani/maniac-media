@@ -17,6 +17,7 @@ from backend.services import (
     health_service,
     import_service,
     indexer_service,
+    media_file_service,
     metadata_service,
     renamer_service,
     scanner_service,
@@ -121,8 +122,9 @@ async def cleanup(ctx: JobContext):
                                                                         models.DownloadQueueItem.added_at < now - timedelta(hours=1))).rowcount
             issues = db.execute(delete(models.LibraryIssue).where(models.LibraryIssue.resolved.is_(True),
                                                                    models.LibraryIssue.detected_at < now - timedelta(days=30))).rowcount
+            consistency = media_file_service.check_consistency(db)
         recycled = fileops.cleanup_recycle_bin(Path(settings.recycle_bin), settings.recycle_bin_days)
-        return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled}
+        return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled, "consistency": consistency}
 
     return await asyncio.to_thread(run)
 

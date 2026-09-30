@@ -23,10 +23,11 @@ from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
+from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
 from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title
 from backend.domain.quality import parse_quality
-from backend.services import fileops
+from backend.services import fileops, media_file_service
 from backend.services.quality_service import spec_for, to_spec
 
 log = logging.getLogger("maniac.scanner")
@@ -121,8 +122,12 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None) -> d
         # missing-file detection across the whole library (cheap stat per file)
         for m in db.scalars(select(models.Movie).where(models.Movie.has_file.is_(True))):
             if not m.file_path or not os.path.exists(fileops.long_path(m.file_path)):
-                m.has_file = False
-                _issue(db, "missing_file", "movie", m.id, m.file_path, "File referenced by the library no longer exists")
+                mf = MediaFileRepository(db).by_path(m.file_path) if m.file_path else None
+                if mf:
+                    media_file_service.detach_file(db, mf, reason="missing")
+                else:
+                    m.has_file = False
+                _issue(db, "missing_file", "movie", m.id, m.file_path or "", "File referenced by the library no longer exists")
                 stats["missing"] += 1
             elif m.quality_profile_id is not None:
                 profile = profiles.get(m.quality_profile_id) or next(iter(profiles.values()), None)
@@ -173,13 +178,20 @@ def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stat
             _issue(db, "corrupt_file", "movie", movie.id, main.path, check.reason or "Corrupt")
             stats["corrupt"] += 1
         parsed = parse_quality(main.name)
-        movie.has_file = True
-        movie.file_path = main.path
-        movie.file_size_bytes = main.stat().st_size
-        if parsed.quality.weight or not movie.quality:
-            movie.quality = parsed.quality.name if parsed.quality.weight else movie.quality
+        media_file_service.attach_movie_file(
+            db, movie, Path(main.path), parsed, scene_name=Path(main.name).name, source="scan", make_primary=True
+        )
+        for extra in extras:
+            extra_parsed = parse_quality(extra.name)
+            media_file_service.attach_movie_file(
+                db, movie, Path(extra.path), extra_parsed, scene_name=Path(extra.name).name, source="scan", make_primary=False
+            )
     elif movie.has_file and movie.file_path and not os.path.exists(movie.file_path):
-        movie.has_file = False
+        mf = MediaFileRepository(db).by_path(movie.file_path)
+        if mf:
+            media_file_service.detach_file(db, mf, reason="missing")
+        else:
+            movie.has_file = False
         _issue(db, "missing_file", "movie", movie.id, movie.file_path, "File referenced by the library no longer exists")
         stats["missing"] += 1
 
@@ -225,8 +237,12 @@ def scan_series(incremental: bool = True, progress: Progress | None = None) -> d
         series_monitored = {s.id: (s.monitored, s.quality_profile_id) for s in db.scalars(select(models.Series))}
         for ep in db.scalars(select(models.Episode).where(models.Episode.has_file.is_(True))):
             if not ep.file_path or not os.path.exists(fileops.long_path(ep.file_path)):
-                ep.has_file, ep.status = False, "missing"
-                _issue(db, "missing_file", "tv", ep.series_id, ep.file_path, f"S{ep.season_number:02d}E{ep.episode_number:02d} file no longer exists")
+                mf = MediaFileRepository(db).by_path(ep.file_path) if ep.file_path else None
+                if mf:
+                    media_file_service.detach_file(db, mf, reason="missing")
+                else:
+                    ep.has_file, ep.status = False, "missing"
+                _issue(db, "missing_file", "tv", ep.series_id, ep.file_path or "", f"S{ep.season_number:02d}E{ep.episode_number:02d} file no longer exists")
                 stats["missing"] += 1
                 continue
             monitored, profile_id = series_monitored.get(ep.series_id, (False, 1))
@@ -269,8 +285,8 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
             if season_no is None:
                 continue
             stats["files"] += 1
-            size = f.stat().st_size
             quality = parse_quality(f.name)
+            file_episodes = []
             for number in parsed.episodes:
                 key = (season_no, number)
                 if key in seen and seen[key] != f.path:
@@ -292,11 +308,11 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
                     db.add(ep)
                     episodes[key] = ep
                     stats["new_episodes"] += 1
-                ep.has_file, ep.file_path, ep.status, ep.file_size_bytes = True, f.path, "downloaded", size
-                if quality.quality.weight:
-                    ep.quality = quality.quality.name
-                elif not ep.quality:
-                    ep.quality = "Unknown"
+                file_episodes.append(ep)
+            if file_episodes:
+                media_file_service.attach_episode_file(
+                    db, series, file_episodes, Path(f.path), quality, scene_name=Path(f.name).name, source="scan", make_primary=True
+                )
     real = [n for n in seasons if n > 0]
     series.total_seasons = max(real) if real else (series.total_seasons or 1)
 

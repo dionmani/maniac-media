@@ -1,7 +1,7 @@
 import pytest
 
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render, sanitize_segment, validate
-from backend.domain.parser import normalize_title, parse_episode, parse_folder_title, parse_movie
+from backend.domain.parser import normalize_title, normalise_path_key, parse_episode, parse_folder_title, parse_movie
 from backend.domain.quality import Codec, QualityProfileSpec, get_quality, parse_quality
 
 
@@ -118,3 +118,26 @@ def test_upgrades_respect_cutoff(hd_profile):
 
 def test_codec_preference_breaks_ties(hd_profile):
     assert hd_profile.score(parse_quality("WEB-DL 1080p x265")) > hd_profile.score(parse_quality("WEB-DL 1080p x264"))
+
+
+def test_normalise_path_key():
+    # Windows drive-letter case
+    assert normalise_path_key(r"C:\Movies\Film.mkv") == "c:/movies/film.mkv"
+    assert normalise_path_key(r"c:/Movies/film.MKV") == "c:/movies/film.mkv"
+
+    # Trailing slashes
+    assert normalise_path_key("C:\\Movies\\Folder\\") == "c:/movies/folder"
+    assert normalise_path_key("C:/Movies/Folder/") == "c:/movies/folder"
+
+    # UNC paths
+    assert normalise_path_key(r"\\Server\Share\Movies\Film.mkv") == "//server/share/movies/film.mkv"
+    assert normalise_path_key(r"//Server/Share/Movies/Folder/") == "//server/share/movies/folder"
+
+    # \\?\ extended-length paths
+    assert normalise_path_key(r"\\?\C:\Movies\Film.mkv") == "c:/movies/film.mkv"
+    assert normalise_path_key(r"\\?\UNC\Server\Share\Movies\Film.mkv") == "//server/share/movies/film.mkv"
+
+    # Redundant slashes and relative segments
+    assert normalise_path_key(r"c:\movies\sub\..\film.mkv") == "c:/movies/film.mkv"
+    assert normalise_path_key(r"c:/movies///film.mkv") == "c:/movies/film.mkv"
+

@@ -40,6 +40,23 @@ export interface MovieSummary {
   added_date?: string | null;
 }
 
+export interface MediaFile {
+  id: number;
+  media_type: 'movie' | 'tv';
+  movie_id?: number | null;
+  series_id?: number | null;
+  path: string;
+  size_bytes: number;
+  quality?: string | null;
+  codec?: string | null;
+  release_group?: string | null;
+  scene_name?: string | null;
+  edition?: string | null;
+  is_primary: boolean;
+  added_at?: string | null;
+  episodes?: { id: number; series_id?: number; season_number: number; episode_number: number; title: string }[];
+}
+
 export interface Movie extends MovieSummary {
   quality_profile_id?: number | null;
   root_folder?: string | null;
@@ -60,6 +77,7 @@ export interface Movie extends MovieSummary {
   metadata_source?: string | null;
   last_metadata_refresh?: string | null;
   last_search_at?: string | null;
+  files?: MediaFile[];
 }
 
 export interface Episode {
@@ -78,6 +96,7 @@ export interface Episode {
   status?: string | null;
   runtime_minutes?: number | null;
   series_title?: string;
+  files?: MediaFile[];
 }
 
 export interface Season {

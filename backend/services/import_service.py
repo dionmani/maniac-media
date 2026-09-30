@@ -19,11 +19,12 @@ from backend.core.events import EventType, bus
 from backend.core.observability import IMPORTS_TOTAL
 from backend.core.settings import get_settings
 from backend.db import models
+from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import is_partial, is_sample, is_video, normalize_title, parse_episode, parse_folder_title, parse_movie
 from backend.domain.quality import ParsedQuality, parse_quality
-from backend.services import fileops
+from backend.services import fileops, media_file_service
 from backend.services.audit import SYSTEM, Actor, audit, history
 from backend.services.quality_service import spec_for
 
@@ -223,15 +224,16 @@ def _import_one(
         existing = Path(movie.file_path) if movie.has_file and movie.file_path else None
         current_q = parse_quality(movie.quality or movie.file_path or "") if existing else None
         upgrade = _check_existing(existing, src, current_q, quality, profile)
+        existing_mf = MediaFileRepository(db).by_path(existing) if existing else None
         dest = movie_destination(movie, src, quality, original_name)
         _clear_destination(tx, dest, existing, recycle_root)
+        if upgrade and existing_mf:
+            media_file_service.detach_file(db, existing_mf, reason="upgraded")
         used = tx.place(src, dest, mode)
         _move_sidecars(tx, src, dest, mode)
-        movie.path = str(dest.parent)
-        movie.file_path = str(dest)
-        movie.file_size_bytes = dest.stat().st_size
-        movie.has_file = True
-        movie.quality = quality.quality.name
+        media_file_service.attach_movie_file(
+            db, movie, dest, quality, scene_name=original_name, source="import", make_primary=True
+        )
         event = "upgraded" if upgrade else "imported"
         history(db, "movie", movie.id, movie.title, event, quality=quality.quality.name, download_id=queue_id,
                 details=f"{used} → {dest}", data={"source": str(src), "previous_quality": current_q.quality.name if current_q else None})
@@ -271,14 +273,15 @@ def _import_one(
     for old in existing_paths:
         if old != dest and old.exists():
             tx.recycle(old, recycle_root)
+            old_mf = MediaFileRepository(db).by_path(old)
+            if old_mf:
+                media_file_service.detach_file(db, old_mf, reason="upgraded")
     _clear_destination(tx, dest, None, recycle_root)
     used = tx.place(src, dest, mode)
     _move_sidecars(tx, src, dest, mode)
-    size = dest.stat().st_size
-    for e in episodes:
-        e.has_file, e.file_path, e.quality, e.status, e.file_size_bytes = True, str(dest), quality.quality.name, "downloaded", size
-    if not series.path:
-        series.path = str(dest.parent.parent)
+    media_file_service.attach_episode_file(
+        db, series, episodes, dest, quality, scene_name=original_name, source="import", make_primary=True
+    )
     label = f"{series.title} S{season:02d}E{episode_numbers[0]:02d}" + (f"-E{episode_numbers[-1]:02d}" if len(episode_numbers) > 1 else "")
     event = "upgraded" if upgrade else "imported"
     history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}", data={"source": str(src)})
