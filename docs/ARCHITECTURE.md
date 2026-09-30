@@ -1,8 +1,8 @@
 # Maniac Media – Architecture
 
 This document is the design record for Maniac Media v2. Every major decision is stated together
-with *why* it was made and what was traded away. Section numbers follow the deliverables list in
-`prompt-v2.md`.
+with *why* it was made and what was traded away. Section numbers originally followed the
+deliverables list in `prompt-v2.md` (historical; the code is the source of truth where they differ).
 
 ---
 
@@ -57,9 +57,13 @@ backend/
   services/    one module per use-case family (see §6)
   workers/     queue.py (persistent queue + pool), scheduler.py, tasks.py, watcher.py
   api/         deps.py (auth/paging), schemas.py (contracts), v1/ routers
-frontend/src/  api/ (client + types), store/ (Zustand), hooks/ (live events), components/, pages/
+frontend/src/  api/ (client + types), store/ (Zustand: auth, ui), hooks/ (useLiveEvents – WebSocket),
+               components/ (Layout, MediaHeader, InteractiveSearchDialog, common),
+               pages/ (Dashboard, Library, Movie/Series detail, AddMedia, Calendar, Wanted, Activity,
+               Import, Renamer, System, Login) + pages/settings/ (General, Quality, Integration,
+               Database, User); server state via React Query
 tests/         unit/, integration/, e2e/ (Playwright)
-docs/          this file
+docs/          this file; roadmap/ (prioritised feature implementation plans)
 ```
 
 ## 3. Database schema
@@ -103,7 +107,7 @@ Contracts in `plugins/base.py`: `MetadataProvider`, `IndexerPlugin`, `DownloadCl
 `maniac_media.plugins` entry-point group (pip-installable). A failing plugin is recorded and
 skipped; the core never imports a concrete plugin.
 
-Built in: TMDB, TVDB v4, TVmaze, IMDb · Torznab, Newznab, RSS, Demo · qBittorrent, Transmission,
+Built in: TMDB, TVDB v4, TVmaze, IMDb · Torznab (subclass of Newznab, same module), Newznab, RSS, Demo · qBittorrent, Transmission,
 Deluge, SABnzbd, NZBGet, Simulator · Email, Discord, Telegram, Webhook (HMAC-signed).
 
 **Decision – classes + registry over setuptools-only plugins.** Drop-in files make
@@ -114,7 +118,7 @@ the same registry.
 
 | Service | Responsibility |
 |---|---|
-| `media_service` | add/edit/delete, monitoring presets, add season/episode, recycle on delete |
+| `media_service` | add/edit/delete, monitoring presets, add season/episode, prune stale seasons (removes file-less episodes/seasons no longer in provider metadata; dry-run supported), recycle on delete |
 | `metadata_service` | provider chain by priority, merge richer data over keyless data, batch refresh |
 | `indexer_service` | fan-out search (asyncio.gather), per-indexer token bucket, retry/backoff, circuit breaker, health |
 | `decision_engine` | accept/reject + score every release with human-readable reasons |
@@ -125,6 +129,12 @@ the same registry.
 | `scanner_service` | full/incremental scans, missing/duplicate/corrupt/upgrade detection |
 | `database_service` | migration wizard |
 | `notification_service` | event → channel fan-out |
+| `quality_service` | quality profile CRUD and defaults |
+| `fileops` | filesystem primitives: transfer modes, `FileTransaction`, recycle bin, file validation |
+| `audit` | append-only audit-log writer (same transaction as the change) |
+| `dashboard_service` | dashboard aggregates |
+| `health_service` | health checks (indexers, clients, disk, database) |
+| `user_service` | users, roles, lockout, token revocation |
 
 ## 7. Repository pattern
 
@@ -142,13 +152,20 @@ never blocked, which is the actual goal behind "async I/O everywhere possible".
 ## 8. API specification
 
 * Base path `/api/v1`, OpenAPI at `/api/openapi.json`, Swagger UI `/api/docs`, ReDoc `/api/redoc`.
-* Auth: `POST /auth/setup` (first run only), `POST /auth/login` → Bearer JWT; `GET /auth/me`;
-  `POST /auth/logout` (revokes all tokens); `POST /auth/password`.
-* Resources: `/movies`, `/series`, `/episodes/monitor`, `/calendar`, `/lookup`, `/releases`,
-  `/releases/grab`, `/search/automatic`, `/search/missing`, `/queue`, `/history`, `/blocklist`,
-  `/wanted/missing`, `/wanted/cutoff`, `/library/scan`, `/library/issues`, `/library/manual-import`,
-  `/rename/preview`, `/rename`, `/settings`, `/quality-profiles`, `/indexers`, `/download-clients`,
-  `/notifications`, `/metadata-providers`, `/database/*`, `/users`, `/system/*`, `/dashboard`, `/ws`.
+* Auth: `GET /auth/status`, `POST /auth/setup` (first run only), `POST /auth/login` → Bearer JWT;
+  `GET /auth/me`; `POST /auth/logout` (revokes all tokens); `POST /auth/password`.
+* Resources: `/movies` (+ `/{id}/refresh`, `/bulk`), `/series` (+ `/{id}/refresh`, `/{id}/monitoring`,
+  `/{id}/seasons`, `/{id}/episodes`, `/{id}/seasons/{n}/monitor`, `/{id}/prune-stale`),
+  `/episodes/monitor`, `/artwork/{type}/{id}/{kind}`, `/calendar`, `/lookup`, `/releases`,
+  `/releases/grab`, `/search/automatic`, `/search/missing`, `/queue` (+ `/{id}/retry`, `/{id}/import`,
+  `/refresh`), `/history`, `/blocklist`, `/wanted/missing`, `/wanted/cutoff`, `/library/scan`,
+  `/library/issues` (+ `/{id}/resolve`), `/library/manual-import` (+ `/scan`, `/match`, `/delete`),
+  `/library/download-folder`, `/rename/preview`, `/rename`, `/settings` (+ `/naming/preview`),
+  `/qualities`, `/quality-profiles`, `/plugins`, `/indexers`, `/download-clients`, `/notifications`
+  (indexers/clients/notifications each have `/test`), `/metadata-providers`, `/database`
+  (`/test`, `/migrate`, `/migration`, `/backup`), `/users`, `/dashboard`, `/system/{status,health,
+  tasks,jobs,audit,logs}` (tasks: `PUT /{name}`, `POST /{name}/run`; jobs: `POST /{id}/cancel`),
+  `/ws`; plus `/metrics` (Prometheus, outside `/api/v1`).
 * Lists return `{items,total,page,page_size,pages}`; `page`, `page_size ≤ 500`, `sort`, `order`
   plus resource-specific filters.
 * Errors: `{"detail": "..."}` with 401/403/404/409/410/422/429/503 semantics.
@@ -190,8 +207,10 @@ WorkerPool (4 asyncio workers, exclusive-by-name, exponential retry)
 *Survives restart:* queued jobs persist; jobs found `running` at startup are re-queued; the
 scheduler derives the next run from `last_run`. Event-driven jobs (import after download,
 follow-up monitoring every 5 s while downloads are active, watcher-triggered scans) use the same
-queue. Tasks: RSS sync, download monitoring, download-folder scan, metadata refresh (self-continuing
-backlog), library scan, missing search, health check, housekeeping.
+queue. Scheduled tasks (default interval): download monitor (1 min), download-folder scan (5 min),
+RSS sync (15 min), health check (15 min), metadata refresh (12 h, self-continuing backlog), library
+scan (6 h), missing search (24 h, off by default), cleanup/housekeeping (24 h). On-demand job types:
+import download, automatic search, rename.
 
 **Decision – DB-backed queue over Redis/Celery.** Zero extra infrastructure for self-hosters,
 transactional with the data it touches, and portable across all supported databases.
@@ -246,6 +265,7 @@ build; Playwright E2E against the built SPA; Docker build with layer cache.
 * **Schema:** Alembic. On startup the migrator detects a v1 database (tables but no
   `alembic_version`), backs it up with SQLite's online backup API, stamps it at `0001_baseline`
   and upgrades. Revision `0002` is additive only and encrypts any plaintext credentials in place.
+  Revision `0003` adds `download_queue.client_position` (idempotent: skipped if the column exists).
   Every later upgrade is also preceded by a backup.
 * **Configuration:** v1's encrypted DB URL moves from `config.json` to `encrypted_config.db`;
   plaintext is never re-written.
@@ -267,12 +287,10 @@ build; Playwright E2E against the built SPA; Docker build with layer cache.
 - [x] Persistent job system, WebSocket live UI, Prometheus metrics, structured logs
 - [x] DB migration wizard (SQLite ↔ PostgreSQL/MySQL/MariaDB/MSSQL), Docker, CI
 
-## 18. Version 1.0 → next roadmap
+## 18. Next roadmap
 
-1. Custom formats (regex scoring on release names: HDR flavours, audio, editions, groups).
-2. Anime absolute numbering & scene mapping (XEM); alternative titles from providers.
-3. Import lists (Trakt, IMDb lists, Plex watchlist) and collection tracking.
-4. Media inspection via ffprobe (real resolution/codec instead of name-based detection).
-5. API keys for integrations (Overseerr/Home Assistant) alongside JWT; OIDC single sign-on.
-6. Kubernetes Helm chart; horizontally scaled read replicas for the API tier.
-7. Subtitle provider plugins; Plex/Jellyfin/Emby library-refresh notifications.
+The post-v2.1 roadmap now lives in [roadmap/README.md](roadmap/README.md). It has a prioritised,
+phased list with a dependency graph and one detailed implementation plan per feature. Every item
+previously listed here is covered there: custom formats, anime/XEM and alternate titles, import
+lists, ffprobe inspection, API keys, subtitles and media-server refresh. OIDC, Helm and read
+replicas are tracked in [roadmap/15-deferred-and-reframed.md](roadmap/15-deferred-and-reframed.md).
