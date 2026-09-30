@@ -79,6 +79,7 @@ class ImportResult:
     imported: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    failed_paths: dict[str, str] = field(default_factory=dict)  # path -> reason, so the UI can show it per-row
 
     @property
     def ok(self) -> bool:
@@ -449,6 +450,7 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
         check = fileops.check_video_file(src, 0)
         if not check.ok:
             result.failed.append(f"{src.name}: {check.reason}")
+            result.failed_paths[item["path"]] = check.reason or "Invalid file"
             continue
         try:
             label = _run_import(src, parse_quality(item.get("quality") or src.name), item["media_type"], int(item["media_id"]),
@@ -457,6 +459,7 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
         except Exception as exc:
             result.failed.append(f"{src.name}: {exc}")
+            result.failed_paths[item["path"]] = str(exc)
             IMPORTS_TOTAL.labels(item.get("media_type") or "unknown", "failed").inc()
     with session_scope() as db:
         audit(db, "import", "manual_import", actor=actor, details={"imported": len(result.imported), "failed": result.failed[:20]},
@@ -464,6 +467,37 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
     if result.imported:
         bus.publish(EventType.IMPORT_COMPLETED, title=f"Manual import ({len(result.imported)} files)", items=result.imported)
     return result
+
+
+def annotate_match(path: str, media_type: str, media_id: int, season: int | None, episodes: list[int]) -> dict:
+    """Re-run the duplicate/upgrade comparison for a file against a manually-chosen match.
+
+    `manual_scan` only annotates `library_state` when it can guess the match itself; once the
+    user picks a target by hand in the UI, this recomputes the same comparison against that
+    explicit choice so upgrade/duplicate/equal-quality shows up before Import is clicked.
+    """
+    src = Path(path)
+    if not src.exists():
+        raise ImportError_(f"File not found: {path}")
+    settings = get_settings()
+    candidate = inspect(src, settings.min_import_size_mb)
+    if candidate.state != "ok":
+        return candidate.to_dict()
+    candidate.media_type, candidate.media_id = media_type, media_id
+    with session_scope() as db:
+        if media_type == "movie":
+            movie = db.get(models.Movie, media_id)
+            if movie is None:
+                raise ImportError_("Movie not found")
+            candidate.title = f"{movie.title} ({movie.year})"
+        else:
+            series = db.get(models.Series, media_id)
+            if series is None:
+                raise ImportError_("Series not found")
+            candidate.title = series.title
+            candidate.season, candidate.episodes = season, episodes or []
+        _annotate_library_state(db, candidate)
+    return candidate.to_dict()
 
 
 def delete_candidates(paths: list[str], actor: Actor) -> DeleteResult:
@@ -568,4 +602,4 @@ def failed_imports(db: Session) -> int:
     return db.scalar(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed")) or 0
 
 
-__all__ = ["import_queue_item", "manual_scan", "manual_import", "delete_candidates", "scan_download_folder", "failed_imports", "SYSTEM"]
+__all__ = ["import_queue_item", "manual_scan", "manual_import", "annotate_match", "delete_candidates", "scan_download_folder", "failed_imports", "SYSTEM"]

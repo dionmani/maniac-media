@@ -66,7 +66,15 @@ async def manual_import_scan(req: schemas.ManualImportScanRequest, _: Requires(P
 @router.post("/library/manual-import")
 async def manual_import(req: schemas.ManualImportRequest, user: Requires(Permission.IMPORT)):
     result = await asyncio.to_thread(import_service.manual_import, [i.model_dump() for i in req.items], req.mode, user.actor)
-    return {"imported": result.imported, "failed": result.failed}
+    return {"imported": result.imported, "failed": result.failed, "failed_paths": result.failed_paths}
+
+
+@router.post("/library/manual-import/match")
+async def manual_import_match(req: schemas.ManualImportItem, _: Requires(Permission.IMPORT)):
+    try:
+        return await asyncio.to_thread(import_service.annotate_match, req.path, req.media_type, req.media_id, req.season, req.episodes)
+    except import_service.ImportError_ as exc:
+        raise HTTPException(404, str(exc))
 
 
 @router.post("/library/manual-import/delete")

@@ -68,21 +68,30 @@ function ManualImport() {
     }
   }, [settings.data, folder]);
 
+  const [failReasons, setFailReasons] = useState<Record<string, string>>({});
   const scan = useMutation({
     mutationFn: () => post<Candidate[]>('/library/manual-import/scan', { folder }),
-    onSuccess: (data) => setRows(data.map((c) => ({ ...c, selected: c.state === 'ok' && !!c.media_id && c.library_state !== 'duplicate' && c.library_state !== 'upgrade' }))),
+    onSuccess: (data) => {
+      setRows(data.map((c) => ({ ...c, selected: c.state === 'ok' && !!c.media_id && c.library_state !== 'duplicate' && c.library_state !== 'upgrade' })));
+      // drop stale failure reasons for files that are no longer in the folder (imported, deleted, moved)
+      setFailReasons((fr) => Object.fromEntries(Object.entries(fr).filter(([p]) => data.some((d) => d.path === p))));
+    },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const run = useMutation({
-    mutationFn: (explicit?: Row[]) => post<{ imported: string[]; failed: string[] }>('/library/manual-import', {
+    mutationFn: (explicit?: Row[]) => post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', {
       mode, items: (explicit ?? rows.filter((r) => r.selected && isImportable(r)))
         .map((r) => ({ path: r.path, media_type: r.media_type, media_id: r.media_id, season: r.season, episodes: r.episodes, quality: r.quality })),
     }),
     onSuccess: (r) => {
       toast(`Imported ${r.imported.length} file(s)${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length ? 'warning' : 'success');
-      r.failed.forEach((f) => toast(f, 'error'));
+      setFailReasons((fr) => ({ ...fr, ...r.failed_paths }));
       scan.mutate();
     },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  const match = useMutation({
+    mutationFn: (r: Row) => post<Candidate>('/library/manual-import/match', { path: r.path, media_type: r.media_type, media_id: r.media_id, season: r.season, episodes: r.episodes }),
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const del = useMutation({
@@ -128,6 +137,7 @@ function ManualImport() {
           <TableBody>
             {rows.map((r, i) => {
               const statusLabel = r.state !== 'ok' ? r.state : r.library_state === 'duplicate' ? 'duplicate' : r.library_state === 'upgrade' ? 'upgrade' : 'ok';
+              const failReason = failReasons[r.path];
               return (
                 <TableRow key={r.path}>
                   <TableCell padding="checkbox">
@@ -140,31 +150,47 @@ function ManualImport() {
                   <TableCell>
                     <StatusChip status={r.state !== 'ok' ? (r.state === 'partial' ? 'downloading' : 'error') : statusLabel} label={statusLabel} />
                     {r.state === 'ok' && r.library_state === 'duplicate' && (
-                      <Typography variant="caption" display="block" color="text.secondary">existing: {r.existing_quality} ({bytes(r.existing_size)})</Typography>
+                      <Typography variant="caption" display="block" color="text.secondary">existing: {r.existing_quality} ({bytes(r.existing_size)}) — equal or better, not an upgrade</Typography>
                     )}
                     {r.state === 'ok' && r.library_state === 'upgrade' && (
                       <Typography variant="caption" display="block" color="text.secondary">upgrade from {r.existing_quality} ({bytes(r.existing_size)})</Typography>
                     )}
                     {r.reason && <Typography variant="caption" display="block" color="text.secondary">{r.reason}</Typography>}
+                    {failReason && (
+                      <Typography variant="caption" display="block" color="error.main">Import failed: {failReason}</Typography>
+                    )}
                   </TableCell>
                   <TableCell><QualityChip quality={r.quality} /></TableCell>
-                  <TableCell><MatchPicker row={r} onChange={(p) => update(i, { ...p, selected: r.state === 'ok' })} /></TableCell>
+                  <TableCell>
+                    <MatchPicker row={r} onChange={(p) => update(i, { ...p, selected: r.state === 'ok', library_state: null, existing_quality: null, existing_size: null })} />
+                  </TableCell>
                   <TableCell>
                     {r.media_type === 'tv' && (
                       <Stack direction="row" spacing={1}>
-                        <TextField size="small" type="number" label="S" value={r.season ?? ''} sx={{ width: 70 }} onChange={(e) => update(i, { season: Number(e.target.value) })} />
+                        <TextField size="small" type="number" label="S" value={r.season ?? ''} sx={{ width: 70 }}
+                          onChange={(e) => update(i, { season: Number(e.target.value), library_state: null, existing_quality: null, existing_size: null })} />
                         <TextField size="small" label="E" value={r.episodes.join(',')} sx={{ width: 90 }}
-                          onChange={(e) => update(i, { episodes: e.target.value.split(',').map((x) => Number(x.trim())).filter(Boolean) })} />
+                          onChange={(e) => update(i, {
+                            episodes: e.target.value.split(',').map((x) => Number(x.trim())).filter(Boolean),
+                            library_state: null, existing_quality: null, existing_size: null,
+                          })} />
                       </Stack>
                     )}
                   </TableCell>
                   <TableCell>
-                    {(r.state === 'corrupt' || r.library_state === 'duplicate') && (
-                      <Button size="small" color="error" startIcon={<Trash2 size={14} />} onClick={() => del.mutate([r.path])}>Delete</Button>
-                    )}
-                    {r.library_state === 'upgrade' && (
-                      <Button size="small" color="success" startIcon={<RefreshCw size={14} />} onClick={() => run.mutate([r])}>Replace</Button>
-                    )}
+                    <Stack direction="row" spacing={0.5}>
+                      {r.state === 'ok' && r.media_id && (
+                        <Button size="small" disabled={match.isPending} onClick={() => match.mutate(r, { onSuccess: (c) => update(i, c) })}>
+                          {r.library_state ? 'Re-check' : 'Match'}
+                        </Button>
+                      )}
+                      {(r.state === 'corrupt' || r.library_state === 'duplicate') && (
+                        <Button size="small" color="error" startIcon={<Trash2 size={14} />} onClick={() => del.mutate([r.path])}>Delete</Button>
+                      )}
+                      {r.library_state === 'upgrade' && (
+                        <Button size="small" color="success" startIcon={<RefreshCw size={14} />} onClick={() => run.mutate([r])}>Replace</Button>
+                      )}
+                    </Stack>
                   </TableCell>
                 </TableRow>
               );
