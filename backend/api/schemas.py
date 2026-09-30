@@ -81,6 +81,42 @@ class PasswordChange(BaseModel):
     new_password: SecretStr
 
 
+# ------------------------------------------------------------------ api keys
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    permissions: list[str] = Field(default_factory=list)
+    expires_in_days: int | None = Field(None, ge=1, le=3650)
+    allow_query_param: bool = False
+
+
+class ApiKeyOut(BaseModel):
+    model_config = ORM
+    id: int
+    name: str
+    prefix: str
+    user_id: int
+    permissions: list[str] = []
+    allow_query_param: bool = False
+    created_at: datetime
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    last_used_ip: str | None = None
+    revoked_at: datetime | None = None
+
+
+class ApiKeyCreatedResponse(ApiKeyOut):
+    api_key: str = ""
+
+
+
+class ApiKeyPreset(BaseModel):
+    name: str
+    description: str
+    permissions: list[str]
+    allow_query_param: bool
+
+
+
 # ------------------------------------------------------------------ media
 class CastOut(BaseModel):
     name: str

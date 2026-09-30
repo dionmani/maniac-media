@@ -79,7 +79,19 @@ def test_role_permissions_are_hierarchical():
         ('{"password": "topsecret"}', "topsecret"),
         ("Authorization: Bearer eyJhbGciOi.xyz.abc", "eyJhbGciOi"),
         ("https://api.telegram.org/bot123456:ABC-DEF/sendMessage", "ABC-DEF"),
+        ("X-Api-Key: mm_1234567890abcdefghijklmnopqrstuvwxyz", "mm_1234567890abcdefghijklmnopqrstuvwxyz"),
+        ("key is mm_1234567890abcdefghijklmnopqrstuvwxyz in line", "mm_1234567890abcdefghijklmnopqrstuvwxyz"),
     ],
 )
 def test_logs_never_contain_credentials(text, leak):
     assert leak not in redact(text)
+
+
+def test_api_key_generation_and_hashing():
+    plaintext, key_hash, prefix = security.generate_api_key()
+    assert plaintext.startswith("mm_")
+    assert prefix == plaintext[:9]
+    assert len(key_hash) == 64
+    assert security.hash_api_key(plaintext) == key_hash
+    assert security.hash_api_key(plaintext) == security.hash_api_key(plaintext)
+

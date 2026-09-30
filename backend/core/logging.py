@@ -32,6 +32,7 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         r"\g<k>***",
     ),
     (re.compile(r"(?i)/bot\d+:[a-z0-9_-]+"), "/bot***"),  # telegram tokens embedded in URLs
+    (re.compile(r"mm_[A-Za-z0-9_-]{20,}"), "mm_***"),
 ]
 
 

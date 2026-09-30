@@ -70,6 +70,8 @@ def logout(user: User, db: DB):
 
 @router.post("/auth/password", response_model=schemas.Message)
 def change_password(req: schemas.PasswordChange, user: User, db: DB):
+    if user.auth_method != "jwt":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Interactive (JWT) session required")
     row = db.get(models.User, user.id)
     try:
         user_service.change_password(db, row, req.current_password.get_secret_value(), req.new_password.get_secret_value(), user.actor)
@@ -82,13 +84,13 @@ def change_password(req: schemas.PasswordChange, user: User, db: DB):
 
 # ------------------------------------------------------------------ user management
 @router.get("/users")
-def list_users(db: DB, _: Requires(Permission.USERS_MANAGE), paging: Paging):
+def list_users(db: DB, _: Requires(Permission.USERS_MANAGE, interactive=True), paging: Paging):
     page = UserRepository(db).paginate(select(models.User), page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
     return page_response(page, [_user_out(u) for u in page.items])
 
 
 @router.post("/users", response_model=schemas.UserOut, status_code=201)
-def create_user(req: schemas.UserCreate, db: DB, admin: Requires(Permission.USERS_MANAGE)):
+def create_user(req: schemas.UserCreate, db: DB, admin: Requires(Permission.USERS_MANAGE, interactive=True)):
     try:
         user = user_service.create_user(db, req.username, req.password.get_secret_value(), req.role, admin.actor)
     except ValueError as exc:
@@ -98,7 +100,7 @@ def create_user(req: schemas.UserCreate, db: DB, admin: Requires(Permission.USER
 
 
 @router.patch("/users/{user_id}", response_model=schemas.UserOut)
-def update_user(user_id: int, req: schemas.UserUpdate, db: DB, admin: Requires(Permission.USERS_MANAGE)):
+def update_user(user_id: int, req: schemas.UserUpdate, db: DB, admin: Requires(Permission.USERS_MANAGE, interactive=True)):
     user = db.get(models.User, user_id)
     if user is None:
         raise HTTPException(404, "User not found")
@@ -124,7 +126,7 @@ def update_user(user_id: int, req: schemas.UserUpdate, db: DB, admin: Requires(P
 
 
 @router.delete("/users/{user_id}", response_model=schemas.Message)
-def delete_user(user_id: int, db: DB, admin: Requires(Permission.USERS_MANAGE)):
+def delete_user(user_id: int, db: DB, admin: Requires(Permission.USERS_MANAGE, interactive=True)):
     user = db.get(models.User, user_id)
     if user is None:
         raise HTTPException(404, "User not found")
@@ -136,3 +138,4 @@ def delete_user(user_id: int, db: DB, admin: Requires(Permission.USERS_MANAGE)):
     db.delete(user)
     db.commit()
     return schemas.Message(message=f"User '{user.username}' deleted")
+

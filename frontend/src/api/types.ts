@@ -16,6 +16,32 @@ export interface User {
   permissions: string[];
 }
 
+export interface ApiKey {
+  id: number;
+  name: string;
+  prefix: string;
+  user_id: number;
+  permissions: string[];
+  allow_query_param: boolean;
+  created_at: string;
+  expires_at?: string | null;
+  last_used_at?: string | null;
+  last_used_ip?: string | null;
+  revoked_at?: string | null;
+}
+
+export interface ApiKeyCreatedResponse extends ApiKey {
+  api_key: string;
+}
+
+export interface ApiKeyPreset {
+  name: string;
+  description: string;
+  permissions: string[];
+  allow_query_param: boolean;
+}
+
+
 export interface Cast {
   name: string;
   character?: string | null;

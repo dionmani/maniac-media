@@ -1,6 +1,7 @@
 """Authentication primitives: argon2id password hashing, JWT tokens, role based permissions."""
 from __future__ import annotations
 
+import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,21 @@ from backend.core.secrets import SECRET_JWT, secret_store
 _hasher = PasswordHasher()  # argon2id, library defaults follow RFC 9106 recommendations
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "maniac-media"
+API_KEY_PREFIX = "mm_"
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """returns (plaintext 'mm_<43 url-safe chars>', sha256 hex digest, display prefix 'mm_ab12cd')"""
+    plaintext = f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+    key_hash = hash_api_key(plaintext)
+    display_prefix = plaintext[:9]
+    return plaintext, key_hash, display_prefix
+
+
+def hash_api_key(plaintext: str) -> str:
+    """sha256 hex digest; high-entropy secrets don't need argon2"""
+    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+
 
 
 class Role(StrEnum):
