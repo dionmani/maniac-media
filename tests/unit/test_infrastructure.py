@@ -162,6 +162,7 @@ def test_sabnzbd_reports_only_the_active_job_as_downloading(monkeypatch):
     items = {i.id: i for i in asyncio.run(sab.get_items("tv"))}
     a, b, c, d = (items[f"SABnzbd_nzo_{k}"] for k in "abcd")
     assert (a.status, a.speed_bps, a.eta_seconds) == ("downloading", 2048 * 1024, 30)
+    assert (a.position, b.position, c.position) == (0, 1, None)
     assert (b.status, b.speed_bps, b.eta_seconds) == ("queued", 0, None)
     assert (c.status, c.progress) == ("downloading", 100.0)
     assert (d.status, d.message) == ("failed", "Repair failed")

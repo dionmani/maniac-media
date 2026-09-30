@@ -299,6 +299,7 @@ class QueueItemOut(BaseModel):
     size_bytes: int | None = 0
     download_speed_bps: int | None = 0
     eta_seconds: int | None = None
+    client_position: int | None = None
     progress: float | None = 0
     status: str
     protocol: str | None = None

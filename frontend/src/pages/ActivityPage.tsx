@@ -106,6 +106,7 @@ function QueueTab() {
                     {(q.progress ?? 0).toFixed(0)}% of {bytes(q.size_bytes)}
                     {q.status === 'downloading' && q.download_speed_bps ? ` · ${speed(q.download_speed_bps)}` : ''}
                     {['queued', 'downloading'].includes(q.status) && q.eta_seconds ? ` · ETA ${duration(q.eta_seconds)}` : ''}
+                    {['queued', 'paused'].includes(q.status) && q.client_position != null ? ` · #${q.client_position + 1} in client queue` : ''}
                   </Typography>
                 </TableCell>
                 <TableCell><StatusChip status={q.status} /></TableCell>

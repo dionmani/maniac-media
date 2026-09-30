@@ -128,6 +128,7 @@ class ClientItem:
     category: str | None = None
     message: str | None = None
     can_remove: bool = True
+    position: int | None = None  # order in the client's download queue (lower downloads sooner); None when not queued
 
 
 @dataclass

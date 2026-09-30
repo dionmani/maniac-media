@@ -11,7 +11,7 @@ from backend.plugins.download_clients._common import base_url, fetch_torrent, ma
 from backend.plugins.registry import register
 
 FIELDS = ["id", "hashString", "name", "status", "percentDone", "totalSize", "leftUntilDone", "rateDownload",
-          "eta", "downloadDir", "errorString", "error", "labels", "isFinished"]
+          "eta", "downloadDir", "errorString", "error", "labels", "isFinished", "queuePosition"]
 
 
 @register
@@ -87,6 +87,7 @@ class TransmissionClient(DownloadClientPlugin):
                     output_path=map_remote_path(os.path.join(t.get("downloadDir", ""), t["name"]), self.settings),
                     category=category,
                     message=t.get("errorString") or None,
+                    position=None if done else t.get("queuePosition"),
                 )
             )
         return items

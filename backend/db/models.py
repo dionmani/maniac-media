@@ -256,6 +256,7 @@ class DownloadQueueItem(Base):
     indexer_id: Mapped[int | None] = mapped_column(Integer)
     episode_numbers: Mapped[list[int] | None] = mapped_column(JSON)
     eta_seconds: Mapped[int | None] = mapped_column(Integer)
+    client_position: Mapped[int | None] = mapped_column(Integer)  # order in the client's queue, 0 = next up
     error_message: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int | None] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

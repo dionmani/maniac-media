@@ -270,6 +270,7 @@ def _reconcile(client: ClientRef, items: dict[str, ClientItem], confirmed: bool 
             q.progress = item.progress
             q.download_speed_bps = item.speed_bps
             q.eta_seconds = item.eta_seconds
+            q.client_position = item.position
             q.download_path = item.output_path or q.download_path
             q.error_message = item.message
             if item.status == "completed":

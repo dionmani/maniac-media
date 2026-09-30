@@ -91,6 +91,8 @@ class QBittorrentClient(DownloadClientPlugin):
                         output_path=map_remote_path(content, self.settings),
                         category=t.get("category"),
                         message="Missing files" if t.get("state") == "missingFiles" else None,
+                        # 1-based queue position; <= 0 when queueing is off or the torrent is seeding
+                        position=t["priority"] - 1 if int(t.get("priority", 0)) > 0 else None,
                     )
                 )
             return items

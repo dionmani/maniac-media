@@ -179,6 +179,7 @@ export interface QueueItem {
   size_bytes?: number | null;
   download_speed_bps?: number | null;
   eta_seconds?: number | null;
+  client_position?: number | null;
   progress?: number | null;
   status: string;
   protocol?: string | null;

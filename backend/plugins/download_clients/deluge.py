@@ -15,7 +15,7 @@ from backend.plugins.registry import register
 
 STATE_MAP = {"Downloading": "downloading", "Seeding": "completed", "Paused": "paused", "Checking": "downloading",
              "Queued": "queued", "Error": "failed", "Moving": "downloading", "Allocating": "downloading"}
-FIELDS = ["name", "state", "progress", "save_path", "total_size", "total_done", "download_payload_rate", "eta", "message", "label", "is_finished"]
+FIELDS = ["name", "state", "progress", "save_path", "total_size", "total_done", "download_payload_rate", "eta", "message", "label", "is_finished", "queue"]
 
 
 @register
@@ -94,6 +94,7 @@ class DelugeClient(DownloadClientPlugin):
                     output_path=map_remote_path(os.path.join(t.get("save_path", ""), t.get("name", "")), self.settings),
                     category=t.get("label"),
                     message=t.get("message") if t.get("state") == "Error" else None,
+                    position=t["queue"] if int(t.get("queue", -1)) >= 0 else None,  # -1 once finished
                 )
             )
         return items

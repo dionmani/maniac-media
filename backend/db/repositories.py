@@ -207,6 +207,22 @@ class EpisodeRepository(Repository[models.Episode]):
 class QueueRepository(Repository[models.DownloadQueueItem]):
     model = models.DownloadQueueItem
     ACTIVE = ("queued", "downloading", "paused", "completed", "importing", "warning")
+    # Activity view order: what's moving now, then the waiting line, then things needing attention
+    DISPLAY_ORDER = ("downloading", "importing", "completed", "queued", "paused", "warning", "failed", "import_failed", "imported")
+
+    def for_display(self, include_finished: bool = False, limit: int = 500) -> Sequence[models.DownloadQueueItem]:
+        """The queue as the Activity view shows it, mirroring each download client's own queue order."""
+        q = models.DownloadQueueItem
+        stmt = select(q).order_by(
+            case({s: i for i, s in enumerate(self.DISPLAY_ORDER)}, value=q.status, else_=len(self.DISPLAY_ORDER)),
+            case((q.client_position.is_(None), 1), else_=0),  # portable NULLS LAST
+            q.client_position,
+            q.added_at.desc(),
+            q.id.desc(),
+        )
+        if not include_finished:
+            stmt = stmt.where(q.status.in_((*self.ACTIVE, "failed", "import_failed")))
+        return self.db.scalars(stmt.limit(limit)).all()
 
     def active(self) -> Sequence[models.DownloadQueueItem]:
         return self.db.scalars(

@@ -62,10 +62,7 @@ def search_missing(user: Requires(Permission.SEARCH), limit: int = Query(50, ge=
 # ------------------------------------------------------------------ queue
 @router.get("/queue", tags=["queue"])
 def get_queue(db: DB, _: Requires(Permission.QUEUE_READ), include_finished: bool = False):
-    stmt = select(models.DownloadQueueItem).order_by(models.DownloadQueueItem.added_at.desc())
-    if not include_finished:
-        stmt = stmt.where(models.DownloadQueueItem.status.in_((*QueueRepository.ACTIVE, "failed", "import_failed")))
-    return [schemas.QueueItemOut.model_validate(q) for q in db.scalars(stmt.limit(500))]
+    return [schemas.QueueItemOut.model_validate(q) for q in QueueRepository(db).for_display(include_finished)]
 
 
 @router.delete("/queue/{queue_id}", response_model=schemas.Message, tags=["queue"])

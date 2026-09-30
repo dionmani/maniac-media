@@ -72,7 +72,7 @@ All v1 tables are preserved (additive migration only):
 | `series`, `seasons`, `episodes` | TV library | tvdb/tvmaze/imdb ids, `monitor_new_seasons`; episodes indexed by `(series_id, season_number, episode_number)` |
 | `quality_profiles` | Ranking | `items` (allowed qualities, best first), `cutoff`, codec preferences/rejections, size limits |
 | `indexers`, `download_clients` | Integrations | **encrypted** `api_key`/`password`; health, failure counters, circuit-breaker `disabled_until`, remote path mapping |
-| `download_queue` | Grab → import lifecycle | client item id, **encrypted** download URL (contains indexer keys), status machine, retry count |
+| `download_queue` | Grab → import lifecycle | client item id, **encrypted** download URL (contains indexer keys), status machine, retry count, client queue position (Activity mirrors the client's order) |
 | `history` | Per-media timeline | event type, quality, JSON data |
 | `blocklist` | Never-again releases | |
 | `jobs`, `scheduled_tasks` | Persistent background work | status, attempts, progress, result; `last_run` per task |

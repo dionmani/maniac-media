@@ -56,7 +56,7 @@ class SabnzbdClient(DownloadClientPlugin):
     def _queue_items(self, queue: dict) -> list[ClientItem]:
         items = []
         speed_assigned = False
-        for s in queue.get("slots", []):
+        for n, s in enumerate(queue.get("slots", [])):
             mb, mbleft = float(s.get("mb", 0)), float(s.get("mbleft", 0))
             status = QUEUE_STATUS.get(s.get("status"), "queued")
             # SABnzbd labels every unpaused job "Downloading"; only the one with bytes transferred is really active
@@ -76,6 +76,7 @@ class SabnzbdClient(DownloadClientPlugin):
                     speed_bps=speed,
                     eta_seconds=_hms(s.get("timeleft")) or None,  # "0:00:00" means unknown (paused, propagating, no speed)
                     category=s.get("cat"),
+                    position=int(s.get("index", n)),
                 )
             )
         return items

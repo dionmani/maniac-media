@@ -47,7 +47,7 @@ class NzbgetClient(DownloadClientPlugin):
 
     async def get_items(self, category: str) -> list[ClientItem]:
         items = []
-        for g in await self._rpc("listgroups", 0) or []:
+        for position, g in enumerate(await self._rpc("listgroups", 0) or []):  # listed in download order
             if category and g.get("Category") != category:
                 continue
             size = int(g.get("FileSizeMB", 0)) * 1024 * 1024
@@ -62,6 +62,7 @@ class NzbgetClient(DownloadClientPlugin):
                     size_bytes=size,
                     remaining_bytes=remaining,
                     category=g.get("Category"),
+                    position=position,
                 )
             )
         for h in await self._rpc("history", False) or []:
