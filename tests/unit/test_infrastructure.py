@@ -133,3 +133,40 @@ def test_file_transaction_rolls_back(tmp_path, make_video):
     assert tx.rollback() == []
     assert src.exists() and existing.exists()
     assert not (tmp_path / "lib" / "Movie (2000)" / "Movie (2000).mkv").exists()
+
+
+def test_sabnzbd_reports_only_the_active_job_as_downloading(monkeypatch):
+    import asyncio
+
+    from backend.plugins.download_clients.sabnzbd import SabnzbdClient
+
+    responses = {
+        "queue": {"queue": {"kbpersec": "2048.00", "slots": [
+            # SABnzbd calls every unpaused job "Downloading" and gives waiting ones a 0:00:00 timeleft
+            {"nzo_id": "SABnzbd_nzo_a", "filename": "A", "status": "Downloading", "mb": "100", "mbleft": "40", "percentage": "60", "timeleft": "0:00:30"},
+            {"nzo_id": "SABnzbd_nzo_b", "filename": "B", "status": "Downloading", "mb": "100", "mbleft": "100", "percentage": "0", "timeleft": "0:00:00"},
+        ]}},
+        "history": {"history": {"slots": [
+            {"nzo_id": "SABnzbd_nzo_c", "name": "C", "status": "Extracting", "bytes": 10},
+            {"nzo_id": "SABnzbd_nzo_d", "name": "D", "status": "Failed", "bytes": 10, "fail_message": "Repair failed"},
+        ]}},
+    }
+    calls = []
+
+    async def fake_api(self, mode, **params):
+        calls.append((mode, params))
+        return responses[mode]
+
+    monkeypatch.setattr(SabnzbdClient, "_api", fake_api)
+    sab = SabnzbdClient({"host": "sab", "api_key": "k"})
+    items = {i.id: i for i in asyncio.run(sab.get_items("tv"))}
+    a, b, c, d = (items[f"SABnzbd_nzo_{k}"] for k in "abcd")
+    assert (a.status, a.speed_bps, a.eta_seconds) == ("downloading", 2048 * 1024, 30)
+    assert (b.status, b.speed_bps, b.eta_seconds) == ("queued", 0, None)
+    assert (c.status, c.progress) == ("downloading", 100.0)
+    assert (d.status, d.message) == ("failed", "Repair failed")
+
+    calls.clear()
+    found = asyncio.run(sab.find_items(["SABnzbd_nzo_B", "SABnzbd_nzo_gone"]))
+    assert [i.id for i in found] == ["SABnzbd_nzo_b"]
+    assert all("category" not in params and params["nzo_ids"] == "SABnzbd_nzo_B,SABnzbd_nzo_gone" for _, params in calls)

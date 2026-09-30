@@ -133,6 +133,14 @@ class DownloadClientPlugin(Plugin):
     @abstractmethod
     async def get_items(self, category: str) -> list[ClientItem]: ...
 
+    async def find_items(self, item_ids: list[str]) -> list[ClientItem]:
+        """Look up specific items regardless of category filters or listing limits.
+
+        Called before a tracked download that vanished from ``get_items`` is written off, so clients
+        whose listings are filtered or truncated (e.g. SABnzbd history) can confirm it really is gone.
+        """
+        return []
+
     async def remove(self, item_id: str, delete_data: bool = False) -> None:
         return None
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import func, select
 
@@ -178,19 +179,34 @@ async def sync_clients() -> dict:
     completed_ids: list[int] = []
     for client in clients:
         try:
-            items = await client.plugin.get_items(client.category)
+            items = {i.id.lower(): i for i in await client.plugin.get_items(client.category)}
             await asyncio.to_thread(_set_client_health, client.id, True, f"{len(items)} item(s)")
         except Exception as exc:
             log.warning("Download client %s unreachable: %s", client.name, exc)
             await asyncio.to_thread(_set_client_health, client.id, False, str(exc))
             bus.publish(EventType.HEALTH_ISSUE, source=f"download_client:{client.id}", message=f"{client.name}: {exc}")
             continue
-        result = await asyncio.to_thread(_reconcile, client, {i.id.lower(): i for i in items})
+        # a listing can be filtered or truncated; ask for anything we track but didn't see before writing it off
+        confirmed = True
+        unseen = await asyncio.to_thread(_tracked_ids_missing, client.id, items)
+        if unseen:
+            try:
+                for item in await client.plugin.find_items(unseen):
+                    items.setdefault(item.id.lower(), item)
+            except Exception as exc:
+                log.warning("Could not look up %d item(s) on %s: %s", len(unseen), client.name, exc)
+                confirmed = False
+        result = await asyncio.to_thread(_reconcile, client, items, confirmed)
         for key in ("updated", "completed", "failed"):
             stats[key] += len(result[key])
+        stats["failed"] += len(result["removed"])
         completed_ids.extend(result["completed"])
         for queue_id in result["failed"]:
             await handle_failed(queue_id, reason="Download client reported failure")
+        for queue_id in result["removed"]:
+            # nothing says the release is bad (duplicate handling, a user, another app or a script removed
+            # it), so don't blocklist it or hammer the indexers with a replacement search
+            await handle_failed(queue_id, reason="Removed from the download client", release_at_fault=False)
 
     with session_scope() as db:
         active = db.scalar(
@@ -209,24 +225,47 @@ async def sync_clients() -> dict:
     return stats
 
 
-def _reconcile(client: ClientRef, items: dict[str, ClientItem]) -> dict[str, list[int]]:
-    changed: dict[str, list[int]] = {"updated": [], "completed": [], "failed": []}
+TRACKED_STATUSES = ("queued", "downloading", "paused", "warning")
+ADD_GRACE_SECONDS = 300  # clients take a moment to register magnets / fetch NZBs
+MISSING_GRACE_SECONDS = 600  # an item must stay unseen this long before it's considered removed
+
+# queue id -> when the item was first found missing from its client. In-memory on purpose: a restart
+# only restarts the grace period, which errs on the side of not writing off live downloads.
+_missing_since: dict[int, datetime] = {}
+
+
+def _tracked_query(client_id: int):
+    return select(models.DownloadQueueItem).where(
+        models.DownloadQueueItem.download_client_id == client_id,
+        models.DownloadQueueItem.status.in_(TRACKED_STATUSES),
+    )
+
+
+def _tracked_ids_missing(client_id: int, items: dict[str, ClientItem]) -> list[str]:
     with session_scope() as db:
-        queue = db.scalars(
-            select(models.DownloadQueueItem).where(
-                models.DownloadQueueItem.download_client_id == client.id,
-                models.DownloadQueueItem.status.in_(("queued", "downloading", "paused", "warning")),
-            )
-        ).all()
-        for q in queue:
+        return [q.client_item_id for q in db.scalars(_tracked_query(client_id))
+                if q.client_item_id and q.client_item_id.lower() not in items]
+
+
+def _reconcile(client: ClientRef, items: dict[str, ClientItem], confirmed: bool = True) -> dict[str, list[int]]:
+    """Apply client state to the queue. ``confirmed`` is False when unseen items couldn't be double-checked."""
+    changed: dict[str, list[int]] = {"updated": [], "completed": [], "failed": [], "removed": []}
+    now = utcnow()
+    with session_scope() as db:
+        for q in db.scalars(_tracked_query(client.id)).all():
             item = items.get((q.client_item_id or "").lower())
             if item is None:
-                age = (utcnow() - (q.added_at or utcnow())).total_seconds()
-                if age > 300:  # grace period: clients take a moment to register magnets
+                if not confirmed:
+                    continue
+                first_missing = _missing_since.setdefault(q.id, now)
+                age = (now - (q.added_at or now)).total_seconds()
+                if age > ADD_GRACE_SECONDS and (now - first_missing).total_seconds() > MISSING_GRACE_SECONDS:
+                    _missing_since.pop(q.id, None)
                     q.status = "failed"
                     q.error_message = "Removed from the download client"
-                    changed["failed"].append(q.id)
+                    changed["removed"].append(q.id)
                 continue
+            _missing_since.pop(q.id, None)
             before = (q.status, round(q.progress or 0, 1))
             q.progress = item.progress
             q.download_speed_bps = item.speed_bps
@@ -251,7 +290,8 @@ def _reconcile(client: ClientRef, items: dict[str, ClientItem]) -> dict[str, lis
     return changed
 
 
-async def handle_failed(queue_id: int, reason: str) -> None:
+async def handle_failed(queue_id: int, reason: str, *, release_at_fault: bool = True) -> None:
+    """Record a failed download; blocklist the release and search again only if the release itself is to blame."""
     settings = get_settings()
 
     def mark() -> tuple[str, int, int | None, list[int] | None, int] | None:
@@ -261,7 +301,8 @@ async def handle_failed(queue_id: int, reason: str) -> None:
                 return None
             q.status = "failed"
             q.error_message = q.error_message or reason
-            db.add(models.Blocklist(media_type=q.media_type, media_id=q.media_id, release_title=q.release_title, indexer=q.indexer_name, reason=q.error_message))
+            if release_at_fault:
+                db.add(models.Blocklist(media_type=q.media_type, media_id=q.media_id, release_title=q.release_title, indexer=q.indexer_name, reason=q.error_message))
             history(db, q.media_type, q.media_id, q.release_title, "download_failed", quality=q.quality, download_id=q.id, details=q.error_message)
             if q.media_type == "tv":
                 stmt = select(models.Episode).where(models.Episode.series_id == q.media_id, models.Episode.status == "downloading")
@@ -277,7 +318,7 @@ async def handle_failed(queue_id: int, reason: str) -> None:
     media_type, media_id, season, episodes, retries = info
     bus.publish(EventType.DOWNLOAD_FAILED, queue_id=queue_id, reason=reason, media_type=media_type, media_id=media_id)
     bus.publish(EventType.QUEUE_CHANGED)
-    if settings.auto_retry_failed_downloads and retries < settings.max_download_retries:
+    if release_at_fault and settings.auto_retry_failed_downloads and retries < settings.max_download_retries:
         from backend.workers.queue import job_queue
 
         payload = {

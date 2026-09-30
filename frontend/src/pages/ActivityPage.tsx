@@ -103,7 +103,9 @@ function QueueTab() {
                 <TableCell>
                   <LinearProgress variant="determinate" value={q.progress ?? 0} />
                   <Typography variant="caption" color="text.secondary">
-                    {(q.progress ?? 0).toFixed(0)}% of {bytes(q.size_bytes)}{q.status === 'downloading' && ` · ${speed(q.download_speed_bps)} · ETA ${duration(q.eta_seconds)}`}
+                    {(q.progress ?? 0).toFixed(0)}% of {bytes(q.size_bytes)}
+                    {q.status === 'downloading' && q.download_speed_bps ? ` · ${speed(q.download_speed_bps)}` : ''}
+                    {['queued', 'downloading'].includes(q.status) && q.eta_seconds ? ` · ETA ${duration(q.eta_seconds)}` : ''}
                   </Typography>
                 </TableCell>
                 <TableCell><StatusChip status={q.status} /></TableCell>
