@@ -80,7 +80,7 @@ async def library_scan(ctx: JobContext):
 async def automatic_search(ctx: JobContext):
     p = ctx.payload
     return await search_service.automatic(p["media_type"], int(p["media_id"]), p.get("season"), p.get("episodes") or None,
-                                          actor=Actor(p.get("user_id"), p.get("username")))
+                                          actor=Actor(p.get("user_id"), p.get("username")), retry_count=int(p.get("retry_count", 0)))
 
 
 @job_queue.register("missing_search", "Wanted: Missing Search", priority=8)

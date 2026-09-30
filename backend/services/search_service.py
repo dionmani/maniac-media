@@ -26,6 +26,25 @@ class SearchError(ValueError):
     pass
 
 
+# `_already_queued` (a SELECT) and the eventual grab (an INSERT) are separated by a real
+# indexer search, so two concurrent calls for the same target can both pass the check before
+# either grabs, producing duplicate downloads. Serialize per-target with an in-process lock —
+# the worker pool is a single asyncio event loop, so this closes the race for every caller
+# (automatic search, RSS sync, missing-search sweep, failed-download retry) without a DB migration.
+_target_locks: dict[tuple, asyncio.Lock] = {}
+_target_locks_guard = asyncio.Lock()
+
+
+async def _lock_for(media_type: str, media_id: int, season: int | None, episodes: list[int] | None) -> asyncio.Lock:
+    key = (media_type, media_id, season, tuple(sorted(episodes)) if episodes else ())
+    async with _target_locks_guard:
+        lock = _target_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _target_locks[key] = lock
+        return lock
+
+
 def _min_seeders(db) -> dict[int, int]:
     return {i.id: (i.minimum_seeders or 1) for i in db.scalars(select(models.Indexer))}
 
@@ -123,36 +142,41 @@ def _touch_search(media_type: str, media_id: int, season: int | None, episodes: 
                 e.last_search_at = now
 
 
-async def automatic(media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None, actor: Actor = SYSTEM) -> dict:
+async def automatic(media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None,
+                     actor: Actor = SYSTEM, retry_count: int = 0) -> dict:
     """Search and grab the best approved release for the target."""
-    queued = await asyncio.to_thread(_already_queued, media_type, media_id, season, episodes)
-    if queued:
-        return {"grabbed": None, "reason": "Already in the download queue"}
-    target, criteria, blocked = await asyncio.to_thread(build_target, media_type, media_id, season, episodes)
-    if media_type == "tv" and season is not None and not episodes:
-        # season search: prefer a pack, fall back to individual episodes
-        releases, _ = await indexer_service.search(criteria)
-        best = _best(releases, target, blocked)
-        if best:
-            qid = await download_service.grab(best.release, media_type="tv", media_id=media_id, season=season, episodes=best.episodes, actor=actor)
-            await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
-            return {"grabbed": best.release.title, "queue_id": qid}
-        missing = await asyncio.to_thread(_missing_episode_numbers, media_id, season)
-        grabbed = []
-        for number in missing:
-            result = await automatic("tv", media_id, season, [number], actor)
-            if result.get("grabbed"):
-                grabbed.append(result["grabbed"])
-        return {"grabbed": grabbed or None, "reason": None if grabbed else "No acceptable releases found"}
+    lock = await _lock_for(media_type, media_id, season, episodes)
+    async with lock:
+        queued = await asyncio.to_thread(_already_queued, media_type, media_id, season, episodes)
+        if queued:
+            return {"grabbed": None, "reason": "Already in the download queue"}
+        target, criteria, blocked = await asyncio.to_thread(build_target, media_type, media_id, season, episodes)
+        if media_type == "tv" and season is not None and not episodes:
+            # season search: prefer a pack, fall back to individual episodes
+            releases, _ = await indexer_service.search(criteria)
+            best = _best(releases, target, blocked)
+            if best:
+                qid = await download_service.grab(best.release, media_type="tv", media_id=media_id, season=season,
+                                                    episodes=best.episodes, actor=actor, retry_count=retry_count)
+                await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
+                return {"grabbed": best.release.title, "queue_id": qid}
+            missing = await asyncio.to_thread(_missing_episode_numbers, media_id, season)
+            grabbed = []
+            for number in missing:
+                # each episode is a distinct lock key, so recursing here does not self-deadlock
+                result = await automatic("tv", media_id, season, [number], actor, retry_count=retry_count)
+                if result.get("grabbed"):
+                    grabbed.append(result["grabbed"])
+            return {"grabbed": grabbed or None, "reason": None if grabbed else "No acceptable releases found"}
 
-    releases, report = await indexer_service.search(criteria)
-    best = _best(releases, target, blocked)
-    await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
-    if not best:
-        return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases)}
-    qid = await download_service.grab(best.release, media_type=media_type, media_id=media_id, season=season if season is not None else best.season,
-                                      episodes=episodes or best.episodes, actor=actor)
-    return {"grabbed": best.release.title, "queue_id": qid, "quality": best.quality.quality.name}
+        releases, report = await indexer_service.search(criteria)
+        best = _best(releases, target, blocked)
+        await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
+        if not best:
+            return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases)}
+        qid = await download_service.grab(best.release, media_type=media_type, media_id=media_id, season=season if season is not None else best.season,
+                                          episodes=episodes or best.episodes, actor=actor, retry_count=retry_count)
+        return {"grabbed": best.release.title, "queue_id": qid, "quality": best.quality.quality.name}
 
 
 def _best(releases: list[ReleaseInfo], target: Target, blocked: set[str]) -> Decision | None:
@@ -242,10 +266,12 @@ async def rss_sync() -> dict:
                 best_per_target[tkey] = decision
     for (media_type, media_id, season), decision in best_per_target.items():
         try:
-            if await asyncio.to_thread(_already_queued, media_type, media_id, season, decision.episodes):
-                continue
-            await download_service.grab(decision.release, media_type=media_type, media_id=media_id, season=season, episodes=decision.episodes)
-            grabbed += 1
+            lock = await _lock_for(media_type, media_id, season, decision.episodes)
+            async with lock:
+                if await asyncio.to_thread(_already_queued, media_type, media_id, season, decision.episodes):
+                    continue
+                await download_service.grab(decision.release, media_type=media_type, media_id=media_id, season=season, episodes=decision.episodes)
+                grabbed += 1
         except Exception as exc:
             log.warning("RSS grab failed for %s: %s", decision.release.title, exc)
     return {"releases": len(releases), "matched": len(matches), "grabbed": grabbed}

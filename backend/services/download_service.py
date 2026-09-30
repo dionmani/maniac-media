@@ -87,7 +87,7 @@ def _set_client_health(client_id: int, ok: bool, message: str | None) -> None:
 
 async def grab(
     release: ReleaseInfo, *, media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None,
-    actor: Actor = SYSTEM,
+    actor: Actor = SYSTEM, retry_count: int = 0,
 ) -> int:
     clients = await asyncio.to_thread(_clients, release.protocol)
     if not clients:
@@ -134,7 +134,7 @@ async def grab(
                 download_url=release.download_url,
                 guid=release.guid,
                 protocol=release.protocol,
-                retry_count=0,
+                retry_count=retry_count,
             )
             db.add(item)
             db.flush()
@@ -280,8 +280,12 @@ async def handle_failed(queue_id: int, reason: str) -> None:
     if settings.auto_retry_failed_downloads and retries < settings.max_download_retries:
         from backend.workers.queue import job_queue
 
-        payload = {"media_type": media_type, "media_id": media_id, "season": season, "episodes": episodes or [], "retry_of": queue_id}
-        await asyncio.to_thread(job_queue.enqueue, "automatic_search", payload, trigger="event")
+        payload = {
+            "media_type": media_type, "media_id": media_id, "season": season, "episodes": episodes or [],
+            "retry_of": queue_id, "retry_count": retries + 1,
+        }
+        dedupe_key = f"retry:{media_type}:{media_id}:{season}:{','.join(str(e) for e in (episodes or []))}"
+        await asyncio.to_thread(job_queue.enqueue, "automatic_search", payload, trigger="event", dedupe_key=dedupe_key)
 
 
 async def retry(queue_id: int, actor: Actor) -> None:
