@@ -50,7 +50,7 @@ def stats(db: Session) -> dict:
         )
     )
     issues = dict(
-        db.execute(select(models.LibraryIssue.issue_type, func.count(models.LibraryIssue.id)).where(models.LibraryIssue.resolved.is_(False))
+        db.execute(select(models.LibraryIssue.issue_type, func.count(models.LibraryIssue.id)).where(models.LibraryIssue.status == "open")
                    .group_by(models.LibraryIssue.issue_type)).all()
     )
     upcoming = db.execute(

@@ -28,6 +28,7 @@ QUEUE_DEPTH = Gauge("maniac_job_queue_depth", "Jobs waiting in the persistent qu
 ACTIVE_DOWNLOADS = Gauge("maniac_active_downloads", "Downloads currently in progress")
 IMPORTS_TOTAL = Counter("maniac_imports_total", "Import attempts", ["media_type", "result"])
 INDEXER_REQUESTS = Counter("maniac_indexer_requests_total", "Indexer requests", ["indexer", "result"])
+LIBRARY_ISSUES_OPEN = Gauge("maniac_library_issues_open", "Open library issues", ["type", "severity"])
 WS_CLIENTS = Gauge("maniac_websocket_clients", "Connected WebSocket clients")
 
 

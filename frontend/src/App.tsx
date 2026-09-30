@@ -12,6 +12,7 @@ const MovieDetail = lazy(() => import('./pages/MovieDetailPage'));
 const SeriesDetail = lazy(() => import('./pages/SeriesDetailPage'));
 const AddMedia = lazy(() => import('./pages/AddMediaPage'));
 const Wanted = lazy(() => import('./pages/WantedPage'));
+const Issues = lazy(() => import('./pages/IssuesPage'));
 const Calendar = lazy(() => import('./pages/CalendarPage'));
 const Activity = lazy(() => import('./pages/ActivityPage'));
 const Import = lazy(() => import('./pages/ImportPage'));
@@ -31,6 +32,7 @@ function Authenticated() {
           <Route path="/series/:id" element={<SeriesDetail />} />
           <Route path="/add" element={<AddMedia />} />
           <Route path="/wanted" element={<Wanted />} />
+          <Route path="/issues" element={<Issues />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/import" element={<Import />} />

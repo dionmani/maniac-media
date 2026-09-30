@@ -451,13 +451,24 @@ class ScanState(Base):
 
 class LibraryIssue(Base):
     __tablename__ = "library_issues"
+    __table_args__ = (Index("ix_library_issues_status_type", "status", "issue_type"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # missing_file | duplicate_file | upgrade_available | corrupt_file | unmatched_folder
+    # see backend/domain/issues.py for the registry of types
     issue_type: Mapped[str] = mapped_column(String(32), index=True)
     media_type: Mapped[str | None] = mapped_column(String(16))
     media_id: Mapped[int | None] = mapped_column(Integer)
+    episode_id: Mapped[int | None] = mapped_column(Integer)
     path: Mapped[str | None] = mapped_column(String(1024))
     details: Mapped[str | None] = mapped_column(Text)
-    detected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)  # compat alias of first_detected_at
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # mirrors status != 'open'
+    # unique among *open* rows, enforced in code (partial unique indexes aren't portable)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="warning")
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open | resolved | dismissed
+    data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    first_detected_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    resolution: Mapped[str | None] = mapped_column(String(32))  # auto | dismissed | <action>

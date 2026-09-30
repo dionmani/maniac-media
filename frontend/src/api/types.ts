@@ -299,3 +299,39 @@ export interface LiveEvent {
   payload: Record<string, unknown>;
   timestamp?: string;
 }
+
+export type IssueSeverity = 'info' | 'warning' | 'error';
+export type IssueStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface IssueTypeSpec {
+  type: string;
+  label: string;
+  severity: IssueSeverity;
+  actions: string[];
+  health_component: string | null;
+}
+
+export interface LibraryIssue {
+  id: number;
+  issue_type: string;
+  label: string;
+  media_type: 'movie' | 'tv' | null;
+  media_id: number | null;
+  episode_id: number | null;
+  path: string | null;
+  details: string | null;
+  data: Record<string, unknown> | null;
+  severity: IssueSeverity;
+  status: IssueStatus;
+  detected_at: string;
+  first_detected_at: string;
+  last_seen_at: string | null;
+  resolved_at: string | null;
+  resolution: string | null;
+  actions: string[];
+}
+
+export interface IssueSummary {
+  by_type: Record<string, { open: number; dismissed: number; severity: IssueSeverity }>;
+  by_severity: Partial<Record<IssueSeverity, number>>;
+}

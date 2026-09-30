@@ -20,6 +20,7 @@ import {
 } from '@mui/material';
 import {
   Activity,
+  AlertTriangle,
   CalendarClock,
   FileText,
   Film,
@@ -48,6 +49,7 @@ const NAV = [
   { to: '/library', label: 'Library', icon: Film, perm: 'media:read', modeIcon: true },
   { to: '/add', label: 'Add New', icon: PlusCircle, perm: 'media:write' },
   { to: '/wanted', label: 'Wanted', icon: Search, perm: 'media:read' },
+  { to: '/issues', label: 'Issues', icon: AlertTriangle, perm: 'media:read' },
   { to: '/calendar', label: 'Calendar', icon: CalendarClock, perm: 'media:read' },
   { to: '/activity', label: 'Activity', icon: Activity, perm: 'queue:read' },
   { to: '/import', label: 'Import', icon: FolderInput, perm: 'files:import' },

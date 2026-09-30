@@ -82,7 +82,7 @@ All v1 tables are preserved (additive migration only):
 | `jobs`, `scheduled_tasks` | Persistent background work | status, attempts, progress, result; `last_run` per task |
 | `users`, `audit_log` | Security | argon2 hash, `token_version`, lockout; append-only audit |
 | `notification_channels` | Notifications | plain settings JSON + **encrypted** secret JSON |
-| `scan_state`, `library_issues` | Scanner | folder mtimes; missing / duplicate / corrupt / upgrade issues |
+| `scan_state`, `library_issues` | Scanner | folder mtimes; typed issues (see `domain/issues.py`) with fingerprint, severity, JSON evidence and an open/resolved/dismissed lifecycle, reconciled by `IssueRecorder` so dismissals persist |
 
 Sizes are `BIGINT` (files > 2 GiB overflow 32-bit `INTEGER` on PostgreSQL/MSSQL). A naming
 convention on `MetaData` gives deterministic constraint names across engines.

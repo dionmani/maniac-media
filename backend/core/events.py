@@ -30,6 +30,7 @@ class EventType:
     RENAME_COMPLETED = "rename.completed"
     SCAN_PROGRESS = "scan.progress"
     SCAN_COMPLETED = "scan.completed"
+    ISSUES_CHANGED = "library.issues_changed"
     JOB_UPDATED = "job.updated"
     HEALTH_ISSUE = "health.issue"
     HEALTH_RESTORED = "health.restored"

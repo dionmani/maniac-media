@@ -437,6 +437,18 @@ class ScanRequest(BaseModel):
     incremental: bool = True
 
 
+class IssueActionRequest(BaseModel):
+    """Body for ``POST /library/issues/{id}/resolve``; no body at all means ``dismiss``."""
+    action: str = Field("dismiss", max_length=32)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class IssueBulkRequest(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+    action: str = Field(max_length=32)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 # ------------------------------------------------------------------ settings & integrations
 class QualityProfileIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)

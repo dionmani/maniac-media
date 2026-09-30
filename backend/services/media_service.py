@@ -76,8 +76,13 @@ def update_movie(db: Session, movie: models.Movie, changes: dict, actor: Actor) 
 
 def delete_movie(db: Session, movie: models.Movie, *, delete_files: bool, actor: Actor) -> None:
     recycled = None
-    if delete_files and movie.file_path and Path(movie.file_path).exists():
-        recycled = str(fileops.recycle(Path(movie.file_path), Path(get_settings().recycle_bin)))
+    if delete_files:
+        # every tracked file (primary + extras/duplicates), not just the legacy mirrored path
+        paths = [f.path for f in movie.files] or ([movie.file_path] if movie.file_path else [])
+        for path in paths:
+            if Path(path).exists():
+                target = str(fileops.recycle(Path(path), Path(get_settings().recycle_bin)))
+                recycled = recycled or target
     history(db, "movie", movie.id, movie.title, "deleted", details=f"Removed from library{'; file moved to recycle bin' if recycled else ''}")
     audit(db, "delete", "movie.delete", actor=actor, entity_type="movie", entity_id=movie.id,
           details={"title": movie.title, "delete_files": delete_files, "recycled_to": recycled}, severity="warning")
@@ -238,9 +243,14 @@ def delete_series(db: Session, series: models.Series, *, delete_files: bool, act
     recycled = 0
     if delete_files:
         recycle_root = Path(get_settings().recycle_bin)
-        for ep in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id, models.Episode.has_file.is_(True))):
-            if ep.file_path and Path(ep.file_path).exists():
-                fileops.recycle(Path(ep.file_path), recycle_root)
+        paths = {f.path for f in series.files}
+        paths.update(
+            ep.file_path for ep in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id, models.Episode.has_file.is_(True)))
+            if ep.file_path
+        )
+        for path in sorted(paths):
+            if Path(path).exists():
+                fileops.recycle(Path(path), recycle_root)
                 recycled += 1
     history(db, "tv", series.id, series.title, "deleted", details=f"Removed from library; {recycled} file(s) recycled")
     audit(db, "delete", "series.delete", actor=actor, entity_type="series", entity_id=series.id,

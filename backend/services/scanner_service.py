@@ -6,7 +6,9 @@
 * All lookups are pre-loaded into dictionaries; the scan issues O(changed folders) queries,
   not O(files), and commits in batches.
 * Detection: missing files, duplicate files, corrupt files and upgrade opportunities (quality
-  below the profile cutoff) are recorded as ``library_issues``.
+  below the profile cutoff) are recorded as ``library_issues`` through an ``IssueRecorder``, which
+  reconciles them against stored rows (dismissals stick, ``first_detected_at`` is stable, unseen
+  issues auto-resolve). Incremental scans only reconcile the media they actually visited.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 
 from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
@@ -25,9 +27,11 @@ from backend.db import models
 from backend.db.base import utcnow
 from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
+from backend.domain.issues import IssueType
 from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title
 from backend.domain.quality import parse_quality
 from backend.services import fileops, media_file_service
+from backend.services.issue_service import IssueRecorder
 from backend.services.quality_service import spec_for, to_spec
 
 log = logging.getLogger("maniac.scanner")
@@ -70,12 +74,13 @@ class _ScanState:
             row.mtime, row.last_scanned = mtime, utcnow()
 
 
-def _issue(db, issue_type: str, media_type: str, media_id: int | None, path: str | None, details: str) -> None:
-    db.add(models.LibraryIssue(issue_type=issue_type, media_type=media_type, media_id=media_id, path=path, details=details, resolved=False))
+def _same_path(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 # --------------------------------------------------------------------------- movies
-def scan_movies(incremental: bool = True, progress: Progress | None = None) -> dict:
+def scan_movies(incremental: bool = True, progress: Progress | None = None, media_id: int | None = None) -> dict:
+    """Scan the movie root. ``media_id`` restricts the pass (and issue reconciliation) to one movie."""
     settings = get_settings()
     root = settings.media_root_movies
     stats = {"folders": 0, "scanned": 0, "skipped": 0, "new": 0, "updated": 0, "missing": 0, "duplicates": 0, "upgrades": 0, "corrupt": 0}
@@ -83,10 +88,13 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None) -> d
         raise FileNotFoundError(f"Movie root folder not found: {root}")
 
     entries = [e for e in _dir_entries(root) if e.is_dir()]
-    stats["folders"] = len(entries)
     with session_scope() as db:
-        db.execute(update(models.LibraryIssue).where(models.LibraryIssue.media_type == "movie", models.LibraryIssue.resolved.is_(False))
-                   .values(resolved=True))
+        if media_id is not None:
+            target = db.get(models.Movie, media_id)
+            entries = [e for e in entries if target is not None and _same_path(e.path, target.path)]
+            incremental = False
+        stats["folders"] = len(entries)
+        recorder = IssueRecorder(db, "movie")
         state = _ScanState(db, "movie")
         by_path = {}
         by_imdb = {}
@@ -111,7 +119,7 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None) -> d
                 stats["skipped"] += 1
             else:
                 stats["scanned"] += 1
-                _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stats)
+                _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stats, recorder)
                 state.mark(folder, mtime)
             if i % BATCH == 0:
                 db.commit()
@@ -120,26 +128,36 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None) -> d
         db.commit()
 
         # missing-file detection across the whole library (cheap stat per file)
-        for m in db.scalars(select(models.Movie).where(models.Movie.has_file.is_(True))):
+        pass_types = (IssueType.MISSING_FILE, IssueType.UPGRADE_AVAILABLE)
+        movie_stmt = select(models.Movie).where(models.Movie.has_file.is_(True))
+        if media_id is not None:
+            movie_stmt = movie_stmt.where(models.Movie.id == media_id)
+            recorder.touch(media_id, *pass_types)
+        else:
+            recorder.touch_all(*pass_types)
+        for m in db.scalars(movie_stmt):
             if not m.file_path or not os.path.exists(fileops.long_path(m.file_path)):
                 mf = MediaFileRepository(db).by_path(m.file_path) if m.file_path else None
                 if mf:
                     media_file_service.detach_file(db, mf, reason="missing")
                 else:
                     m.has_file = False
-                _issue(db, "missing_file", "movie", m.id, m.file_path or "", "File referenced by the library no longer exists")
+                recorder.report(IssueType.MISSING_FILE, "movie", m.id, m.file_path or "", "File referenced by the library no longer exists")
                 stats["missing"] += 1
             elif m.quality_profile_id is not None:
                 profile = profiles.get(m.quality_profile_id) or next(iter(profiles.values()), None)
                 if profile and m.monitored and profile.upgrade_allowed and not profile.cutoff_met(parse_quality(m.quality or m.file_path).quality):
-                    _issue(db, "upgrade_available", "movie", m.id, m.file_path, f"{m.quality or 'Unknown'} is below the profile cutoff {profile.cutoff}")
+                    recorder.report(IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path,
+                                    f"{m.quality or 'Unknown'} is below the profile cutoff {profile.cutoff}",
+                                    data={"current": m.quality, "cutoff": profile.cutoff})
                     stats["upgrades"] += 1
+        recorder.finish()
     if progress:
         progress(100, "Movie scan complete")
     return stats
 
 
-def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stats) -> None:
+def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stats, recorder) -> None:
     files = [e for e in _dir_entries(entry.path) if e.is_file() and is_video(e.name) and not is_sample(e.name)]
     # one level deeper handles "Movie (2009)/Movie.2009.1080p.BluRay/movie.mkv" layouts
     if not files:
@@ -170,12 +188,17 @@ def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stat
     movie.root_folder = movie.root_folder or root
     if imdb and not movie.imdb_id:
         movie.imdb_id = imdb
+    # this folder was fully inspected: duplicates/corruption not reported below are genuinely gone
+    recorder.touch(movie.id, IssueType.DUPLICATE_FILE, IssueType.CORRUPT_FILE)
     if extras:
-        _issue(db, "duplicate_file", "movie", movie.id, entry.path, f"{len(extras) + 1} full-size video files: " + ", ".join(f.name for f in [main, *extras][:4]))
+        candidates = [{"path": f.path, "size_bytes": f.stat().st_size} for f in [main, *extras]]
+        recorder.report(IssueType.DUPLICATE_FILE, "movie", movie.id, entry.path,
+                        f"{len(extras) + 1} full-size video files: " + ", ".join(f.name for f in [main, *extras][:4]),
+                        data={"candidates": candidates, "signature": sorted(c["path"] for c in candidates)})
     if main is not None:
         check = fileops.check_video_file(Path(main.path))
         if check.state == "corrupt":
-            _issue(db, "corrupt_file", "movie", movie.id, main.path, check.reason or "Corrupt")
+            recorder.report(IssueType.CORRUPT_FILE, "movie", movie.id, main.path, check.reason or "Corrupt", data={"reason": check.reason})
             stats["corrupt"] += 1
         parsed = parse_quality(main.name)
         media_file_service.attach_movie_file(
@@ -192,21 +215,26 @@ def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stat
             media_file_service.detach_file(db, mf, reason="missing")
         else:
             movie.has_file = False
-        _issue(db, "missing_file", "movie", movie.id, movie.file_path, "File referenced by the library no longer exists")
+        recorder.report(IssueType.MISSING_FILE, "movie", movie.id, movie.file_path, "File referenced by the library no longer exists")
         stats["missing"] += 1
 
 
 # --------------------------------------------------------------------------- series
-def scan_series(incremental: bool = True, progress: Progress | None = None) -> dict:
+def scan_series(incremental: bool = True, progress: Progress | None = None, media_id: int | None = None) -> dict:
+    """Scan the TV root. ``media_id`` restricts the pass (and issue reconciliation) to one series."""
     settings = get_settings()
     root = settings.media_root_tv
     stats = {"folders": 0, "scanned": 0, "skipped": 0, "new_series": 0, "new_episodes": 0, "files": 0, "missing": 0, "duplicates": 0, "upgrades": 0}
     if not root or not os.path.isdir(root):
         raise FileNotFoundError(f"TV root folder not found: {root}")
     entries = [e for e in _dir_entries(root) if e.is_dir()]
-    stats["folders"] = len(entries)
     with session_scope() as db:
-        db.execute(update(models.LibraryIssue).where(models.LibraryIssue.media_type == "tv", models.LibraryIssue.resolved.is_(False)).values(resolved=True))
+        if media_id is not None:
+            target = db.get(models.Series, media_id)
+            entries = [e for e in entries if target is not None and _same_path(e.path, target.path)]
+            incremental = False
+        stats["folders"] = len(entries)
+        recorder = IssueRecorder(db, "tv")
         state = _ScanState(db, "tv")
         by_path, by_title = {}, {}
         for s in db.scalars(select(models.Series)):
@@ -225,7 +253,7 @@ def scan_series(incremental: bool = True, progress: Progress | None = None) -> d
                 stats["skipped"] += 1
             else:
                 stats["scanned"] += 1
-                _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats)
+                _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder)
                 state.mark(entry.path, mtime)
             if i % 25 == 0:
                 db.commit()
@@ -235,27 +263,40 @@ def scan_series(incremental: bool = True, progress: Progress | None = None) -> d
 
         profiles = {}
         series_monitored = {s.id: (s.monitored, s.quality_profile_id) for s in db.scalars(select(models.Series))}
-        for ep in db.scalars(select(models.Episode).where(models.Episode.has_file.is_(True))):
+        pass_types = (IssueType.MISSING_FILE, IssueType.UPGRADE_AVAILABLE)
+        ep_stmt = select(models.Episode).where(models.Episode.has_file.is_(True))
+        if media_id is not None:
+            ep_stmt = ep_stmt.where(models.Episode.series_id == media_id)
+            recorder.touch(media_id, *pass_types)
+        else:
+            recorder.touch_all(*pass_types)
+        for ep in db.scalars(ep_stmt):
+            code = f"S{ep.season_number:02d}E{ep.episode_number:02d}"
             if not ep.file_path or not os.path.exists(fileops.long_path(ep.file_path)):
                 mf = MediaFileRepository(db).by_path(ep.file_path) if ep.file_path else None
                 if mf:
                     media_file_service.detach_file(db, mf, reason="missing")
                 else:
                     ep.has_file, ep.status = False, "missing"
-                _issue(db, "missing_file", "tv", ep.series_id, ep.file_path or "", f"S{ep.season_number:02d}E{ep.episode_number:02d} file no longer exists")
+                recorder.report(IssueType.MISSING_FILE, "tv", ep.series_id, ep.file_path or "", f"{code} file no longer exists",
+                                episode_id=ep.id, discriminator=code)
                 stats["missing"] += 1
                 continue
             monitored, profile_id = series_monitored.get(ep.series_id, (False, 1))
             if monitored and ep.monitored:
                 profile = profiles.get(profile_id) or profiles.setdefault(profile_id, spec_for(db, profile_id))
                 if profile.upgrade_allowed and ep.quality and ep.quality != "Detected (File)" and not profile.cutoff_met(parse_quality(ep.quality).quality):
+                    recorder.report(IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path,
+                                    f"{code}: {ep.quality} is below the profile cutoff {profile.cutoff}",
+                                    data={"current": ep.quality, "cutoff": profile.cutoff}, episode_id=ep.id, discriminator=code)
                     stats["upgrades"] += 1
+        recorder.finish()
     if progress:
         progress(100, "TV scan complete")
     return stats
 
 
-def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) -> None:
+def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder) -> None:
     title, year, imdb = parse_folder_title(entry.name)
     series = known or by_title.get(normalize_title(title))
     if series is None:
@@ -266,6 +307,7 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
         by_title[normalize_title(title)] = series
         stats["new_series"] += 1
     series.path = entry.path
+    recorder.touch(series.id, IssueType.DUPLICATE_FILE)
 
     seasons = {s.season_number: s for s in db.scalars(select(models.Season).where(models.Season.series_id == series.id))}
     episodes = {(e.season_number, e.episode_number): e for e in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id))}
@@ -275,7 +317,7 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
         (0 if (m := SEASON_DIR.match(d.name)).group(2) else int(m.group(1)), d.path) for d in season_dirs
     ]
     for folder_season, folder in sources:
-        for f in _dir_entries(folder):
+        for f in sorted(_dir_entries(folder), key=lambda e: e.name):  # stable order -> stable duplicate fingerprints
             if not f.is_file() or not is_video(f.name) or is_sample(f.name):
                 continue
             parsed = parse_episode(f.name)
@@ -291,7 +333,14 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
                 key = (season_no, number)
                 if key in seen and seen[key] != f.path:
                     stats["duplicates"] += 1
-                    _issue(db, "duplicate_file", "tv", series.id, f.path, f"S{season_no:02d}E{number:02d} also in {Path(seen[key]).name}")
+                    code = f"S{season_no:02d}E{number:02d}"
+                    dup_ep = episodes.get(key)
+                    if dup_ep is not None and dup_ep.id is None:
+                        db.flush()
+                    paths = sorted([seen[key], f.path])
+                    recorder.report(IssueType.DUPLICATE_FILE, "tv", series.id, f.path, f"{code} also in {Path(seen[key]).name}",
+                                    data={"episode": code, "candidates": [{"path": p} for p in paths], "signature": paths},
+                                    episode_id=dup_ep.id if dup_ep is not None else None, discriminator=code)
                     continue
                 seen[key] = f.path
                 season = seasons.get(season_no)
@@ -318,12 +367,12 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats) ->
 
 
 # --------------------------------------------------------------------------- entry points
-def scan(scope: str = "all", incremental: bool = True, progress: Progress | None = None) -> dict:
+def scan(scope: str = "all", incremental: bool = True, progress: Progress | None = None, media_id: int | None = None) -> dict:
     result: dict = {}
     if scope in ("movies", "movie", "all"):
-        result["movies"] = scan_movies(incremental, (lambda p, m: progress(p / 2 if scope == "all" else p, m)) if progress else None)
+        result["movies"] = scan_movies(incremental, (lambda p, m: progress(p / 2 if scope == "all" else p, m)) if progress else None, media_id)
     if scope in ("tv", "all"):
-        result["tv"] = scan_series(incremental, (lambda p, m: progress(50 + p / 2 if scope == "all" else p, m)) if progress else None)
+        result["tv"] = scan_series(incremental, (lambda p, m: progress(50 + p / 2 if scope == "all" else p, m)) if progress else None, media_id)
     bus.publish(EventType.SCAN_COMPLETED, scope=scope, result=result)
     return result
 

@@ -155,7 +155,7 @@ def wanted_missing(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, m
 
 @router.get("/wanted/cutoff", tags=["wanted"])
 def wanted_cutoff(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging):
-    stmt = select(models.LibraryIssue).where(models.LibraryIssue.issue_type == "upgrade_available", models.LibraryIssue.resolved.is_(False))
+    stmt = select(models.LibraryIssue).where(models.LibraryIssue.issue_type == "upgrade_available", models.LibraryIssue.status == "open")
 
     class _R(Repository[models.LibraryIssue]):
         model = models.LibraryIssue

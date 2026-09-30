@@ -71,7 +71,8 @@ async def metadata_refresh(ctx: JobContext):
 @job_queue.register("library_scan", "Library Scan", priority=6)
 async def library_scan(ctx: JobContext):
     result = await asyncio.to_thread(
-        scanner_service.scan, ctx.payload.get("scope", "all"), ctx.payload.get("incremental", True), ctx.progress
+        scanner_service.scan, ctx.payload.get("scope", "all"), ctx.payload.get("incremental", True), ctx.progress,
+        ctx.payload.get("media_id"),
     )
     job_queue.enqueue("metadata_refresh", {"media_type": "all"}, trigger="event", dedupe_key="post-scan")
     return result
@@ -120,8 +121,14 @@ async def cleanup(ctx: JobContext):
             # failed downloads are dropped from the queue once recorded in History; these are leftovers
             queue += db.execute(delete(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "failed",
                                                                         models.DownloadQueueItem.added_at < now - timedelta(hours=1))).rowcount
-            issues = db.execute(delete(models.LibraryIssue).where(models.LibraryIssue.resolved.is_(True),
-                                                                   models.LibraryIssue.detected_at < now - timedelta(days=30))).rowcount
+            # resolved issues are noise after 30 days; dismissed ones carry the user's intent and stay
+            # unless the title they point at is gone
+            issues = db.execute(delete(models.LibraryIssue).where(models.LibraryIssue.status == "resolved",
+                                                                   models.LibraryIssue.resolved_at < now - timedelta(days=30))).rowcount
+            for media_type, model in (("movie", models.Movie), ("tv", models.Series)):
+                issues += db.execute(delete(models.LibraryIssue).where(
+                    models.LibraryIssue.status == "dismissed", models.LibraryIssue.media_type == media_type,
+                    models.LibraryIssue.media_id.not_in(select(model.id)))).rowcount
             consistency = media_file_service.check_consistency(db)
         recycled = fileops.cleanup_recycle_bin(Path(settings.recycle_bin), settings.recycle_bin_days)
         return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled, "consistency": consistency}

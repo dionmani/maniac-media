@@ -70,7 +70,7 @@ def test_migration_and_backfill(tmp_path):
         cfg.attributes["connection"] = conn
         command.upgrade(cfg, "head")
 
-    assert migrator.current_revision(engine) == "0004_media_files"
+    assert migrator.current_revision(engine) == migrator.head_revision()
 
     with engine.connect() as conn:
         # Check media_files rows
@@ -279,3 +279,19 @@ def test_media_files_api(client, admin_headers, library, make_video):
     page = r3.json()
     assert page["total"] == 1
     assert page["items"][0]["id"] == mf_id
+
+
+def test_delete_movie_recycles_all_tracked_files(database, library, make_video):
+    folder = library["movies"] / "Arrival (2016)"
+    a = make_video(folder / "Arrival.2016.2160p.UHD.mkv", b"\x1a\x45\xdf\xa3" + b"\x07" * 10000)
+    b = make_video(folder / "Arrival.2016.1080p.BluRay.mkv", b"\x1a\x45\xdf\xa3" + b"\x08" * 8000)
+    scanner_service.scan("movies", incremental=False)
+
+    with session_scope() as db:
+        movie = db.scalar(select(models.Movie).where(models.Movie.title == "Arrival"))
+        assert len(movie.files) == 2
+        media_service.delete_movie(db, movie, delete_files=True, actor=SYSTEM)
+
+    assert not a.exists() and not b.exists()
+    with session_scope() as db:
+        assert db.scalar(select(models.MediaFile).where(models.MediaFile.path.in_([str(a), str(b)]))) is None

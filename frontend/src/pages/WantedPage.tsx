@@ -2,7 +2,7 @@ import { Button, Chip, IconButton, Pagination, Stack, Tab, Table, TableBody, Tab
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCheck, Search, Zap } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { Episode, MovieSummary, Page } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader } from '../components/common';
@@ -15,6 +15,7 @@ interface Issue { id: number; issue_type: string; media_type: string; media_id: 
 
 export default function WantedPage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const tab = params.get('tab') ?? 'missing';
   const mode = useUi((s) => s.mode);
   const can = useAuth((s) => s.can);
@@ -55,7 +56,7 @@ export default function WantedPage() {
       <Tabs value={tab} onChange={(_, v) => { setParams({ tab: v }); setPage(1); }} sx={{ mb: 2 }}>
         <Tab value="missing" label={`Missing ${mode === 'movie' ? 'movies' : 'episodes'}`} />
         <Tab value="cutoff" label="Cutoff unmet" />
-        <Tab value="issues" label="All library issues" />
+        <Tab value="issues" label="All library issues" onClick={(e) => { e.preventDefault(); navigate('/issues'); }} />
       </Tabs>
       <ErrorAlert error={data.error} />
       {data.isLoading ? <Loading /> : !data.data?.items.length ? (

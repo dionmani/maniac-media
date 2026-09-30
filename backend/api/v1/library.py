@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
@@ -11,7 +12,8 @@ from backend.api.deps import DB, Paging, Requires, page_response
 from backend.core.security import Permission
 from backend.db import models
 from backend.db.repositories import Repository
-from backend.services import import_service, renamer_service, scanner_service
+from backend.domain.issues import REGISTRY
+from backend.services import import_service, issue_service, renamer_service, scanner_service
 from backend.workers.queue import job_queue
 
 router = APIRouter(tags=["library"])
@@ -28,31 +30,82 @@ def scan(req: schemas.ScanRequest, user: Requires(Permission.LIBRARY_SCAN)):
 class _IssueRepo(Repository[models.LibraryIssue]):
     model = models.LibraryIssue
     default_sort = "detected"
-    sortable = {"detected": models.LibraryIssue.detected_at, "id": models.LibraryIssue.id, "type": models.LibraryIssue.issue_type}
+    sortable = {
+        "detected": models.LibraryIssue.first_detected_at, "id": models.LibraryIssue.id, "type": models.LibraryIssue.issue_type,
+        "last_seen": models.LibraryIssue.last_seen_at, "severity": models.LibraryIssue.severity,
+    }
 
 
 @router.get("/library/issues")
-def issues(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, issue_type: str | None = None, media_type: str | None = None):
-    stmt = select(models.LibraryIssue).where(models.LibraryIssue.resolved.is_(False))
+def issues(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, issue_type: str | None = None, media_type: str | None = None,
+           media_id: int | None = None, severity: Literal["info", "warning", "error"] | None = None,
+           status: Literal["open", "resolved", "dismissed", "all"] = "open"):
+    stmt = select(models.LibraryIssue)
+    if status != "all":
+        stmt = stmt.where(models.LibraryIssue.status == status)
     if issue_type:
         stmt = stmt.where(models.LibraryIssue.issue_type == issue_type)
     if media_type:
         stmt = stmt.where(models.LibraryIssue.media_type == media_type)
+    if media_id is not None:
+        stmt = stmt.where(models.LibraryIssue.media_id == media_id)
+    if severity:
+        stmt = stmt.where(models.LibraryIssue.severity == severity)
     page = _IssueRepo(db).paginate(stmt, page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
-    return page_response(page, [
-        {"id": i.id, "issue_type": i.issue_type, "media_type": i.media_type, "media_id": i.media_id, "path": i.path,
-         "details": i.details, "detected_at": i.detected_at} for i in page.items
-    ])
+    return page_response(page, [issue_service.serialize(i) for i in page.items])
+
+
+@router.get("/library/issues/summary")
+def issues_summary(db: DB, _: Requires(Permission.MEDIA_READ)):
+    return issue_service.summary(db)
+
+
+@router.get("/library/issue-types")
+def issue_types(_: Requires(Permission.MEDIA_READ)):
+    return [spec.to_dict() for spec in REGISTRY.values()]
+
+
+def _apply(db, user, issue: models.LibraryIssue, action: str, params: dict) -> str:
+    if action == "delete_file" and Permission.MEDIA_DELETE not in user.permissions:
+        raise HTTPException(403, f"Missing permission: {Permission.MEDIA_DELETE.value}")
+    try:
+        return issue_service.resolve(db, issue, action, params, user.actor)
+    except issue_service.IssueActionError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.post("/library/issues/bulk")
+def bulk_issues(req: schemas.IssueBulkRequest, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+    rows = {i.id: i for i in db.scalars(select(models.LibraryIssue).where(models.LibraryIssue.id.in_(req.ids)))}
+    done, failed = 0, []
+    for issue_id in dict.fromkeys(req.ids):
+        issue = rows.get(issue_id)
+        if issue is None:
+            failed.append({"id": issue_id, "error": "Issue not found"})
+            continue
+        try:
+            with db.begin_nested():
+                _apply(db, user, issue, req.action, req.params)
+            done += 1
+        except HTTPException as exc:
+            failed.append({"id": issue_id, "error": exc.detail})
+    if not done and failed and all(f["error"] != "Issue not found" for f in failed):
+        raise HTTPException(422, failed[0]["error"])  # the action itself is invalid for these issues
+    db.commit()
+    issue_service.publish_changed(db)
+    return {"processed": done, "failed": failed}
 
 
 @router.post("/library/issues/{issue_id}/resolve", response_model=schemas.Message)
-def resolve_issue(issue_id: int, db: DB, _: Requires(Permission.MEDIA_WRITE)):
+def resolve_issue(issue_id: int, db: DB, user: Requires(Permission.MEDIA_WRITE), req: schemas.IssueActionRequest | None = None):
     issue = db.get(models.LibraryIssue, issue_id)
     if issue is None:
         raise HTTPException(404, "Issue not found")
-    issue.resolved = True
+    req = req or schemas.IssueActionRequest()
+    message = _apply(db, user, issue, req.action, req.params)
     db.commit()
-    return schemas.Message(message="Issue dismissed")
+    issue_service.publish_changed(db)
+    return schemas.Message(message=message)
 
 
 @router.post("/library/manual-import/scan")

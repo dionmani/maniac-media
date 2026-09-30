@@ -17,6 +17,7 @@ const INVALIDATES: Record<string, string[][]> = {
   'media.deleted': [['movies'], ['series'], ['dashboard']],
   'rename.completed': [['rename'], ['movie'], ['series']],
   'scan.completed': [['movies'], ['series'], ['dashboard'], ['issues']],
+  'library.issues_changed': [['issues'], ['dashboard']],
   'job.updated': [['jobs'], ['tasks']],
   'health.issue': [['health']],
   'database.migration': [['database']],

@@ -87,7 +87,7 @@ export default function DashboardPage() {
               ))}
             </Section>
             {Object.keys(data.issues).length > 0 && (
-              <Section title="Library issues" actions={<Chip size="small" component={Link} to="/wanted?tab=issues" clickable label="Review" />}>
+              <Section title="Library issues" actions={<Chip size="small" component={Link} to="/issues" clickable label="Review" />}>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   {Object.entries(data.issues).map(([k, v]) => (
                     <Chip key={k} label={`${ISSUE_LABELS[k] ?? k}: ${v}`} color={k === 'upgrade_available' ? 'secondary' : 'warning'} variant="outlined" />
