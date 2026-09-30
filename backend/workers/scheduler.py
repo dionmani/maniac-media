@@ -6,6 +6,7 @@ the persisted ``last_run``, so a restart neither skips nor double-fires a task.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -23,6 +24,7 @@ log = logging.getLogger("maniac.scheduler")
 class TaskScheduler:
     def __init__(self) -> None:
         self._scheduler: AsyncIOScheduler | None = None
+        self._reload_lock = threading.Lock()
 
     def start(self) -> None:
         self._scheduler = AsyncIOScheduler(timezone="UTC", job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 300})
@@ -38,21 +40,25 @@ class TaskScheduler:
     def reload(self) -> None:
         if not self._scheduler:
             return
-        self._scheduler.remove_all_jobs()
-        with session_scope() as db:
-            tasks = list(db.scalars(select(models.ScheduledTask)))
-        now = utcnow()
-        for task in tasks:
-            if not task.enabled or task.name not in job_queue.definitions:
-                continue
-            interval = timedelta(minutes=max(1, task.interval_minutes))
-            first = (task.last_run + interval) if task.last_run else now + timedelta(seconds=20)
-            if first < now:
-                first = now + timedelta(seconds=15)
-            self._scheduler.add_job(
-                self._fire, IntervalTrigger(minutes=max(1, task.interval_minutes), start_date=_utc(first), timezone="UTC"),
-                args=[task.name], id=task.name, next_run_time=_utc(first),
-            )
+        # PUT /system/tasks/{name} calls this from a thread-pool worker on every request; without
+        # serializing, two overlapping remove_all_jobs()+add_job() passes race and APScheduler
+        # raises ConflictingIdError, turning a successful DB write into a 500 for the caller.
+        with self._reload_lock:
+            self._scheduler.remove_all_jobs()
+            with session_scope() as db:
+                tasks = list(db.scalars(select(models.ScheduledTask)))
+            now = utcnow()
+            for task in tasks:
+                if not task.enabled or task.name not in job_queue.definitions:
+                    continue
+                interval = timedelta(minutes=max(1, task.interval_minutes))
+                first = (task.last_run + interval) if task.last_run else now + timedelta(seconds=20)
+                if first < now:
+                    first = now + timedelta(seconds=15)
+                self._scheduler.add_job(
+                    self._fire, IntervalTrigger(minutes=max(1, task.interval_minutes), start_date=_utc(first), timezone="UTC"),
+                    args=[task.name], id=task.name, next_run_time=_utc(first),
+                )
 
     async def _fire(self, name: str) -> None:
         import asyncio
