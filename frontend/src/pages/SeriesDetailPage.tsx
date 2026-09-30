@@ -127,15 +127,15 @@ export default function SeriesDetailPage() {
         <Grid size={{ xs: 12, lg: 4 }}>
           <Section title="Management">
             <FormControlLabel sx={{ mb: 1 }} label={s.monitored ? 'Series monitored' : 'Series unmonitored'}
-              control={<Switch checked={s.monitored} disabled={!write} onChange={(e) => run.mutate(() => patch(`/series/${id}`, { monitored: e.target.checked }))} />} />
+              control={<Switch checked={s.monitored} disabled={!write} onChange={(_, monitored) => run.mutate(() => patch(`/series/${id}`, { monitored }))} />} />
             <FormControlLabel sx={{ mb: 2 }} label="Monitor new seasons"
-              control={<Switch checked={s.monitor_new_seasons !== false} disabled={!write} onChange={(e) => run.mutate(() => patch(`/series/${id}`, { monitor_new_seasons: e.target.checked }))} />} />
+              control={<Switch checked={s.monitor_new_seasons !== false} disabled={!write} onChange={(_, monitor_new_seasons) => run.mutate(() => patch(`/series/${id}`, { monitor_new_seasons }))} />} />
             <TextField select fullWidth size="small" label="Quality profile" value={s.quality_profile_id ?? 1} disabled={!write} sx={{ mb: 2 }}
-              onChange={(e) => run.mutate(() => patch(`/series/${id}`, { quality_profile_id: Number(e.target.value) }))}>
+              onChange={(e) => { const quality_profile_id = Number(e.target.value); run.mutate(() => patch(`/series/${id}`, { quality_profile_id })); }}>
               {profiles.data?.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
             </TextField>
             <TextField select fullWidth size="small" label="Apply monitoring preset" value="" disabled={!write} sx={{ mb: 2 }}
-              onChange={(e) => run.mutate(() => put(`/series/${id}/monitoring`, undefined, { preset: e.target.value }))}>
+              onChange={(e) => { const preset = e.target.value; run.mutate(() => put(`/series/${id}/monitoring`, undefined, { preset })); }}>
               {[['all', 'All episodes'], ['future', 'Future episodes'], ['missing', 'Missing episodes'], ['latest', 'Latest season'], ['first', 'First season'], ['none', 'None']]
                 .map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
             </TextField>

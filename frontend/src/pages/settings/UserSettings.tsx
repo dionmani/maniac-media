@@ -60,11 +60,11 @@ export function UserSettings() {
             <TableRow key={u.id}>
               <TableCell sx={{ fontWeight: 600 }}>{u.username} {u.id === me?.id && <Chip size="small" label="you" />}</TableCell>
               <TableCell>
-                <TextField select size="small" value={u.role} disabled={u.id === me?.id} onChange={(e) => call.mutate(() => patch(`/users/${u.id}`, { role: e.target.value }))}>
+                <TextField select size="small" value={u.role} disabled={u.id === me?.id} onChange={(e) => { const role = e.target.value; call.mutate(() => patch(`/users/${u.id}`, { role })); }}>
                   {ROLES.map((r) => <MenuItem key={r.value} value={r.value}>{r.label}</MenuItem>)}
                 </TextField>
               </TableCell>
-              <TableCell><Switch checked={u.is_active} disabled={u.id === me?.id} onChange={(e) => call.mutate(() => patch(`/users/${u.id}`, { is_active: e.target.checked }))} /></TableCell>
+              <TableCell><Switch checked={u.is_active} disabled={u.id === me?.id} onChange={(_, is_active) => call.mutate(() => patch(`/users/${u.id}`, { is_active }))} /></TableCell>
               <TableCell>{relative(u.last_login)}</TableCell>
               <TableCell align="right">
                 <Tooltip title="Reset password"><IconButton size="small" onClick={() => setReset(u)}><KeyRound size={15} /></IconButton></Tooltip>

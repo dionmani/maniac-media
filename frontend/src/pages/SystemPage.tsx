@@ -128,9 +128,9 @@ function TasksTab() {
             <TableCell>
               <TextField size="small" type="number" defaultValue={t.interval_minutes} disabled={!can('system:admin')} sx={{ width: 110 }}
                 InputProps={{ endAdornment: <Typography variant="caption">min</Typography> }}
-                onBlur={(e) => Number(e.target.value) !== t.interval_minutes && call.mutate(() => put(`/system/tasks/${t.name}`, { interval_minutes: Number(e.target.value) }))} />
+                onBlur={(e) => { const interval_minutes = Number(e.target.value); if (interval_minutes !== t.interval_minutes) call.mutate(() => put(`/system/tasks/${t.name}`, { interval_minutes })); }} />
             </TableCell>
-            <TableCell><Switch checked={t.enabled} disabled={!can('system:admin')} onChange={(e) => call.mutate(() => put(`/system/tasks/${t.name}`, { enabled: e.target.checked }))} /></TableCell>
+            <TableCell><Switch checked={t.enabled} disabled={!can('system:admin')} onChange={(_, enabled) => call.mutate(() => put(`/system/tasks/${t.name}`, { enabled }))} /></TableCell>
             <TableCell>{relative(t.last_run)} {t.last_status && <StatusChip status={t.last_status} />}</TableCell>
             <TableCell>{t.last_duration_ms !== null ? `${(t.last_duration_ms / 1000).toFixed(1)}s` : '—'}</TableCell>
             <TableCell>{t.enabled && t.next_run ? dateTime(t.next_run) : '—'}</TableCell>
