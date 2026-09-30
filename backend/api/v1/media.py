@@ -250,6 +250,35 @@ def delete_series(series_id: int, db: DB, user: Requires(Permission.MEDIA_DELETE
     return schemas.Message(message=f"'{title}' removed")
 
 
+@router.post("/series/{series_id}/prune-stale", response_model=schemas.PruneStaleResult, tags=["series"])
+async def prune_stale(series_id: int, user: Requires(Permission.MEDIA_WRITE), dry_run: bool = True):
+    """Remove file-less seasons/episodes that current metadata no longer lists. Defaults to a preview."""
+    def lookup():
+        with session_scope() as db:
+            s = db.get(models.Series, series_id)
+            if s is None:
+                raise HTTPException(404, "Series not found")
+            return metadata_service.series_lookup(s), s.title, s.year
+
+    ids, title, year = await asyncio.to_thread(lookup)
+    meta = await metadata_service.fetch_series_for(ids, title, year)
+    if meta is None or not meta.episodes:
+        raise HTTPException(502, "No metadata provider returned an episode list for this series; nothing can be compared")
+
+    def persist():
+        with session_scope() as db:
+            s = db.get(models.Series, series_id)
+            if s is None:
+                raise HTTPException(404, "Series not found")
+            return media_service.prune_stale_seasons(db, s, meta, apply=not dry_run, actor=user.actor)
+
+    result = await asyncio.to_thread(persist)
+    applied = not dry_run and result["episodes"] + len(result["seasons"]) > 0
+    if applied:
+        bus.publish(EventType.MEDIA_UPDATED, media_type="tv", media_id=series_id)
+    return schemas.PruneStaleResult(**result, applied=applied)
+
+
 @router.post("/series/{series_id}/refresh", tags=["series"])
 def refresh_series(series_id: int, user: Requires(Permission.MEDIA_WRITE)):
     job = job_queue.enqueue("metadata_refresh", {"media_type": "tv", "ids": [series_id]}, dedupe_key=f"series:{series_id}")

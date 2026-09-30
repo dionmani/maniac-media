@@ -261,6 +261,20 @@ class AddSeasonRequest(BaseModel):
     episode_count: int = Field(0, ge=0, le=500)
 
 
+class StaleSeason(BaseModel):
+    season_number: int
+    episodes: int
+    removed: bool  # True when the whole season goes, False when only some of its episodes do
+
+
+class PruneStaleResult(BaseModel):
+    provider: str
+    episodes: int
+    kept_with_files: int
+    seasons: list[StaleSeason]
+    applied: bool
+
+
 class AddEpisodeRequest(BaseModel):
     season_number: int = Field(ge=0, le=500)
     episode_number: int = Field(ge=0, le=5000)

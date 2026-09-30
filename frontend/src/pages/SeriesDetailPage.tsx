@@ -26,11 +26,11 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, FileEdit, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post, put } from '../api/client';
-import type { Episode, QualityProfile, Season, Series } from '../api/types';
+import type { Episode, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
 import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
@@ -82,6 +82,41 @@ export default function SeriesDetailPage() {
     }
   };
 
+  const pruneStale = async () => {
+    try {
+      const preview = await post<PruneStaleResult>(`/series/${id}/prune-stale`, undefined, { dry_run: true });
+      if (!preview.seasons.length) {
+        toast(`Nothing to clean up – every season matches ${preview.provider} metadata`, 'info');
+        return;
+      }
+      const ok = await confirm('Clean up stale seasons?',
+        <Stack spacing={1.5}>
+          <Typography variant="body2" color="text.secondary">
+            These file-less entries aren't in the current {preview.provider} metadata and would be removed. Files on disk are never touched.
+          </Typography>
+          <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+            {preview.seasons.map((x) => (
+              <li key={x.season_number}>
+                <Typography variant="body2">
+                  {x.season_number === 0 ? 'Specials' : `Season ${x.season_number}`}: {x.removed ? `whole season (${x.episodes} episodes)` : `${x.episodes} episode(s)`}
+                </Typography>
+              </li>
+            ))}
+          </Box>
+          {preview.kept_with_files > 0 && (
+            <Typography variant="body2" color="text.secondary">{preview.kept_with_files} unlisted episode(s) with files will be kept.</Typography>
+          )}
+        </Stack>,
+        { confirmLabel: `Remove ${preview.episodes} episode(s)`, danger: true });
+      if (!ok) return;
+      const done = await post<PruneStaleResult>(`/series/${id}/prune-stale`, undefined, { dry_run: false });
+      refresh();
+      toast(`Removed ${done.episodes} stale episode(s)`, 'success');
+    } catch (e) {
+      toast(errorMessage(e), 'error');
+    }
+  };
+
   return (
     <>
       <Button startIcon={<ArrowLeft size={16} />} onClick={() => navigate(-1)} sx={{ mb: 2 }}>Back</Button>
@@ -108,6 +143,7 @@ export default function SeriesDetailPage() {
             {can('files:rename') && <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=tv&media_id=${id}`)}>Rename files</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('season')}>Add season</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('episode')}>Add episode</Button>}
+            {write && <Button variant="outlined" startIcon={<Eraser size={16} />} onClick={pruneStale}>Clean up seasons</Button>}
             {can('media:delete') && <Button color="error" variant="outlined" startIcon={<Trash2 size={16} />} onClick={remove}>Delete</Button>}
           </>
         }

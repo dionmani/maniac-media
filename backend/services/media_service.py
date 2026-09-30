@@ -201,6 +201,39 @@ def add_episode(db: Session, series: models.Series, season_number: int, episode_
     return ep
 
 
+def prune_stale_seasons(db: Session, series: models.Series, meta: MediaMetadata, *, apply: bool, actor: Actor) -> dict:
+    """Preview (apply=False) or remove file-less episodes/seasons the current metadata no longer contains."""
+    episodes, seasons, kept = metadata_service.stale_rows(db, series, meta)
+    per_season: dict[int, int] = {}
+    for ep in episodes:
+        per_season[ep.season_number] = per_season.get(ep.season_number, 0) + 1
+    removed_whole = {s.season_number for s in seasons}
+    result = {
+        "provider": meta.provider,
+        "episodes": len(episodes),
+        "kept_with_files": kept,
+        "seasons": [
+            {"season_number": n, "episodes": per_season.get(n, 0), "removed": n in removed_whole}
+            for n in sorted(set(per_season) | removed_whole)
+        ],
+    }
+    if not apply or not (episodes or seasons):
+        return result
+    for ep in episodes:
+        db.delete(ep)
+    db.flush()
+    for season in seasons:
+        db.delete(season)
+    db.flush()
+    real = db.scalars(select(models.Season.season_number).where(models.Season.series_id == series.id, models.Season.season_number > 0)).all()
+    series.total_seasons = max(real) if real else (series.total_seasons or 1)
+    history(db, "tv", series.id, series.title, "updated",
+            details=f"Removed {len(episodes)} stale episode(s) and {len(seasons)} stale season(s) not in {meta.provider} metadata")
+    audit(db, "media", "series.prune_stale", actor=actor, entity_type="series", entity_id=series.id,
+          details={"episodes": len(episodes), "seasons": sorted(removed_whole), "provider": meta.provider}, severity="warning")
+    return result
+
+
 def delete_series(db: Session, series: models.Series, *, delete_files: bool, actor: Actor) -> None:
     recycled = 0
     if delete_files:
@@ -221,6 +254,6 @@ def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
 
 __all__ = [
     "MediaError", "ConflictError", "add_movie", "update_movie", "delete_movie", "add_series", "update_series",
-    "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "delete_series",
+    "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "prune_stale_seasons", "delete_series",
     "apply_monitoring_preset", "publish_change", "EventType",
 ]

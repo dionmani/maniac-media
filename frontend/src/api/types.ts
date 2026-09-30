@@ -105,6 +105,14 @@ export interface SeriesSummary {
   added_date?: string | null;
 }
 
+export interface PruneStaleResult {
+  provider: string;
+  episodes: number;
+  kept_with_files: number;
+  seasons: { season_number: number; episodes: number; removed: boolean }[];
+  applied: boolean;
+}
+
 export interface Series extends SeriesSummary {
   quality_profile_id?: number | null;
   root_folder?: string | null;

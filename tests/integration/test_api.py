@@ -120,6 +120,45 @@ def test_series_add_with_episodes_and_monitoring(client, admin_headers, monkeypa
     assert listing["items"][0]["episode_count"] == 9 and "seasons" not in listing["items"][0]
 
 
+def test_series_prune_stale_seasons(client, admin_headers, monkeypatch):
+    from sqlalchemy import update
+
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.services import metadata_service
+
+    def meta(seasons):
+        return MediaMetadata(media_type="tv", provider="test", title="Dark Shadows", year=1966, tvmaze_id=13129,
+                             episodes=[EpisodeMetadata(s, e, f"Ep {s}x{e}") for s, count in seasons.items() for e in range(1, count + 1)])
+
+    current = {"meta": meta({1966: 3, 1967: 2})}
+
+    async def fake_series(**kw):
+        return current["meta"]
+
+    monkeypatch.setattr(metadata_service, "fetch_series", fake_series)
+    sid = client.post(f"{API}/series", json={"title": "Dark Shadows", "tvmaze_id": 13129}, headers=admin_headers).json()["id"]
+    with session_scope() as db:
+        db.execute(update(models.Episode).where(models.Episode.series_id == sid, models.Episode.season_number == 1966,
+                                                models.Episode.episode_number == 1).values(has_file=True, file_path="/x/ep1.mkv"))
+    # the provider now numbers the show 1..2 instead of by year
+    current["meta"] = meta({1: 2, 2: 2})
+
+    preview = client.post(f"{API}/series/{sid}/prune-stale", headers=admin_headers).json()
+    assert preview["applied"] is False and preview["episodes"] == 4 and preview["kept_with_files"] == 1
+    assert preview["seasons"] == [{"season_number": 1966, "episodes": 2, "removed": False},
+                                  {"season_number": 1967, "episodes": 2, "removed": True}]
+    assert client.get(f"{API}/series/{sid}", headers=admin_headers).json()["episode_count"] == 5  # preview changes nothing
+
+    done = client.post(f"{API}/series/{sid}/prune-stale", params={"dry_run": False}, headers=admin_headers).json()
+    assert done["applied"] is True and done["episodes"] == 4
+    detail = client.get(f"{API}/series/{sid}", headers=admin_headers).json()
+    assert {s["season_number"]: len(s["episodes"]) for s in detail["seasons"]} == {1966: 1}  # file-backed episode survives
+
+    current["meta"] = meta({})  # a provider with no episode list must never read as "everything is stale"
+    assert client.post(f"{API}/series/{sid}/prune-stale", params={"dry_run": False}, headers=admin_headers).status_code == 502
+
+
 def test_naming_validation(client, admin_headers):
     assert client.put(f"{API}/settings", json={"movie_format": "{Title.__class__}"}, headers=admin_headers).status_code == 422
     preview = client.post(f"{API}/settings/naming/preview", json={"template": "{Title} ({Year})", "kind": "movie"}, headers=admin_headers).json()

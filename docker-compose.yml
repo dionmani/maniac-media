@@ -17,10 +17,10 @@ services:
     container_name: maniac-media
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8193:8000"
     environment:
-      PUID: 99              # Unraid: nobody
-      PGID: 100             # Unraid: users
+      PUID: 99 # Unraid: nobody
+      PGID: 100 # Unraid: users
       UMASK: "002"
       TZ: ${TZ:-America/New_York}
       MANIAC_MASTER_KEY: ${MANIAC_MASTER_KEY:?Set MANIAC_MASTER_KEY in .env}
@@ -30,8 +30,8 @@ services:
       MANIAC_DOWNLOADS_DIR: /data/downloads/complete
       # MANIAC_LOG_FORMAT: json
     volumes:
-      - /mnt/user/appdata/maniac-media:/config   # database, encrypted secrets, logs, backups, plugins
-      - /mnt/user/data:/data                     # media + downloads on the same share
+      - /mnt/user/appdata/maniac-media:/config # database, encrypted secrets, logs, backups, plugins
+      - /mnt/user/data:/data # media + downloads on the same share
     security_opt:
       - no-new-privileges:true
 
@@ -40,7 +40,7 @@ services:
   postgres:
     image: postgres:17-alpine
     container_name: maniac-postgres
-    profiles: [postgres]
+    profiles: [ postgres ]
     restart: unless-stopped
     environment:
       POSTGRES_DB: maniac_media
@@ -49,5 +49,5 @@ services:
     volumes:
       - /mnt/user/appdata/maniac-media-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U maniac"]
+      test: [ "CMD-SHELL", "pg_isready -U maniac" ]
       interval: 10s

@@ -131,6 +131,16 @@ async def fetch_series(
     return best
 
 
+def series_lookup(series: models.Series) -> dict:
+    """The ids a refresh looks a library series up by (a TVDB id only counts once a provider confirmed it)."""
+    return {"tvmaze_id": series.tvmaze_id, "imdb_id": series.imdb_id, "tvdb_id": series.tvdb_id if series.metadata_source else None}
+
+
+async def fetch_series_for(ids: dict, title: str, year: int | None) -> MediaMetadata | None:
+    meta = await fetch_series(**ids) if any(ids.values()) else None
+    return meta or await fetch_series(title=title, year=year)
+
+
 def _merge(base: MediaMetadata | None, extra: MediaMetadata) -> MediaMetadata:
     if base is None:
         return extra
@@ -273,6 +283,34 @@ def merge_episodes(db: Session, series: models.Series, meta: MediaMetadata) -> d
     return {"added": added, "updated": updated}
 
 
+def stale_rows(db: Session, series: models.Series, meta: MediaMetadata) -> tuple[list[models.Episode], list[models.Season], int]:
+    """Rows `merge_episodes` left behind that `meta` no longer describes (e.g. from a provider that numbered seasons differently).
+
+    Returns (episodes to drop, seasons left empty by that, episodes kept only because they have a file / are downloading).
+    With no episode list from the provider nothing is stale – an empty answer must never read as "delete everything".
+    """
+    if not meta.episodes:
+        return [], [], 0
+    known = {(e.season_number, e.episode_number) for e in meta.episodes}
+    episodes: list[models.Episode] = []
+    kept = 0
+    remaining: dict[int, int] = {}
+    for ep in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id)):
+        if (ep.season_number, ep.episode_number) in known:
+            remaining[ep.season_id] = remaining.get(ep.season_id, 0) + 1
+        elif ep.has_file or ep.status == "downloading":
+            remaining[ep.season_id] = remaining.get(ep.season_id, 0) + 1
+            kept += 1
+        else:
+            episodes.append(ep)
+    meta_seasons = {e.season_number for e in meta.episodes}
+    seasons = [
+        s for s in db.scalars(select(models.Season).where(models.Season.series_id == series.id))
+        if not remaining.get(s.id) and s.season_number not in meta_seasons
+    ]
+    return episodes, seasons, kept
+
+
 # --------------------------------------------------------------------------- refresh job
 async def refresh_library(session_factory, *, media_type: str = "all", limit: int | None = None, force_ids: list[int] | None = None, progress=None) -> dict:
     """Refresh stale metadata in batches; unmatched items are matched by title/year."""
@@ -337,11 +375,8 @@ async def refresh_library(session_factory, *, media_type: str = "all", limit: in
                 s = db.get(models.Series, series_id)
                 if s is None:
                     continue
-                ids = {"tvmaze_id": s.tvmaze_id, "imdb_id": s.imdb_id, "tvdb_id": s.tvdb_id if s.metadata_source else None}
-                title, year = s.title, s.year
-            meta = await fetch_series(**ids) if any(ids.values()) else None
-            if meta is None:
-                meta = await fetch_series(title=title, year=year)
+                ids, title, year = series_lookup(s), s.title, s.year
+            meta = await fetch_series_for(ids, title, year)
             with session_factory() as db:
                 s = db.get(models.Series, series_id)
                 if s is None:
