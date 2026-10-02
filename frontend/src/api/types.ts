@@ -51,6 +51,7 @@ export interface Cast {
 export interface MovieSummary {
   id: number;
   title: string;
+  sort_title?: string | null;
   year: number;
   monitored: boolean;
   has_file: boolean;
@@ -135,6 +136,7 @@ export interface Season {
 export interface SeriesSummary {
   id: number;
   title: string;
+  sort_title?: string | null;
   year: number;
   status?: string | null;
   monitored: boolean;

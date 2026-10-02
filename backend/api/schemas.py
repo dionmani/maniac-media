@@ -213,6 +213,7 @@ class MovieSummary(_ArtMixin):
     model_config = ORM
     id: int
     title: str
+    sort_title: str | None = None
     year: int
     monitored: bool
     has_file: bool
@@ -285,6 +286,7 @@ class SeriesSummary(_ArtMixin):
     art_type: ClassVar[str] = "tv"
     id: int
     title: str
+    sort_title: str | None = None
     year: int
     status: str | None = None
     monitored: bool
