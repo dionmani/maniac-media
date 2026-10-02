@@ -119,6 +119,8 @@ async def inspect_file(db: Session, media_file_id: int, *, force: bool = False) 
             
     path = Path(media_file.path)
     if not path.exists():
+        media_file.inspection_error = "File not found on disk"
+        db.commit()
         return InspectionOutcome("error", "File not found on disk")
         
     # Check for ffprobe early
@@ -222,7 +224,7 @@ async def inspect_backlog(db: Session, limit: int = 100, progress=None) -> dict[
         return {"processed": 0, "status": "disabled_or_missing_binary"}
         
     files = db.query(MediaFile).filter(
-        (MediaFile.inspected_at == None) |
+        ((MediaFile.inspected_at == None) & (MediaFile.inspection_error == None)) |  # failed files wait until they change
         (MediaFile.inspected_size != MediaFile.size_bytes) |
         (MediaFile.inspected_mtime != MediaFile.mtime)
     ).limit(limit).all()
@@ -244,10 +246,10 @@ async def inspect_backlog(db: Session, limit: int = 100, progress=None) -> dict[
             errors += 1
             
         if progress:
-            progress(i + 1, len(files))
+            progress((i + 1) * 100 / len(files), f"Inspected {i + 1}/{len(files)} files")
             
     has_more = db.query(MediaFile).filter(
-        (MediaFile.inspected_at == None) |
+        ((MediaFile.inspected_at == None) & (MediaFile.inspection_error == None)) |  # failed files wait until they change
         (MediaFile.inspected_size != MediaFile.size_bytes) |
         (MediaFile.inspected_mtime != MediaFile.mtime)
     ).first() is not None

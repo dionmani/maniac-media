@@ -722,6 +722,7 @@ class GeneralSettings(BaseModel):
     import_mode: Literal["move", "copy", "hardlink", "symlink"] | None = None
     min_import_size_mb: int | None = Field(None, ge=0)
     watch_download_folder: bool | None = None
+    download_poll_seconds: int | None = Field(None, ge=5, le=600)
     import_untracked_downloads: bool | None = None
     search_on_add: bool | None = None
     auto_retry_failed_downloads: bool | None = None

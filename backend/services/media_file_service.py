@@ -122,6 +122,7 @@ def attach_movie_file(
         mf.movie_id = movie.id
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
             mf.inspected_at = None
+            mf.inspection_error = None
             
         mf.path = path_str
         mf.relative_path = rel_path
@@ -228,6 +229,7 @@ def attach_episode_file(
         mf.series_id = series.id
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
             mf.inspected_at = None
+            mf.inspection_error = None
             
         mf.path = path_str
         mf.relative_path = rel_path

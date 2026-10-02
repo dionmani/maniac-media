@@ -51,6 +51,9 @@ class AppSettings(BaseModel):
     import_mode: Literal["move", "copy", "hardlink", "symlink"] = "move"
     min_import_size_mb: int = 0
     watch_download_folder: bool = True
+    # how often clients are re-polled while downloads are active; completions are still picked up at once
+    # by the folder watcher, so this mostly sets how fresh the progress bars are
+    download_poll_seconds: int = 30
     import_untracked_downloads: bool = False  # also import files dropped in the folder by hand
     recycle_bin_days: int = 30
     follow_symlinks: bool = False

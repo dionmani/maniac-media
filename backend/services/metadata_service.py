@@ -8,7 +8,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -312,25 +312,39 @@ def stale_rows(db: Session, series: models.Series, meta: MediaMetadata) -> tuple
 
 
 # --------------------------------------------------------------------------- refresh job
+THIN_PROVIDERS = {"imdb"}  # can match a title, but returns no overview/dates/genres
+
+
+def _richer_provider(media_type: str) -> bool:
+    return any(p.key not in THIN_PROVIDERS for p in providers(media_type))  # type: ignore[attr-defined]
+
+
 async def refresh_library(session_factory, *, media_type: str = "all", limit: int | None = None, force_ids: list[int] | None = None, progress=None) -> dict:
     """Refresh stale metadata in batches; unmatched items are matched by title/year."""
     settings = get_settings()
     batch = limit or settings.metadata_refresh_batch_size
     stale_before = utcnow() - timedelta(days=7)
+    thin_before = utcnow() - timedelta(days=1)
     stats = {"movies": 0, "series": 0, "failed": 0}
 
-    def pick(model):
+    def pick(model, kind: str):
         with session_factory() as db:
             stmt = select(model.id)
             if force_ids:
                 stmt = stmt.where(model.id.in_(force_ids))
             else:
-                stmt = stmt.where(or_(model.last_metadata_refresh.is_(None), model.last_metadata_refresh < stale_before))
-                stmt = stmt.order_by(model.last_metadata_refresh.is_not(None), model.last_metadata_refresh).limit(batch)
+                due = or_(model.last_metadata_refresh.is_(None), model.last_metadata_refresh < stale_before)
+                if _richer_provider(kind):
+                    # matched, but only thinly (IMDb suggest has no plot or dates): worth a daily retry once a
+                    # provider that can fill it in is configured, instead of waiting out the 7-day cycle
+                    thin = and_(model.metadata_source.is_not(None), or_(model.overview.is_(None), model.overview == ""),
+                                model.last_metadata_refresh < thin_before)
+                    due = or_(due, thin)
+                stmt = stmt.where(due).order_by(model.last_metadata_refresh.is_not(None), model.last_metadata_refresh).limit(batch)
             return list(db.scalars(stmt))
 
-    movie_ids = pick(models.Movie) if media_type in ("all", "movie") else []
-    series_ids = pick(models.Series) if media_type in ("all", "tv") else []
+    movie_ids = pick(models.Movie, "movie") if media_type in ("all", "movie") else []
+    series_ids = pick(models.Series, "tv") if media_type in ("all", "tv") else []
     total = len(movie_ids) + len(series_ids)
     done = 0
     stats["more_pending"] = not force_ids and (len(movie_ids) >= batch or len(series_ids) >= batch)

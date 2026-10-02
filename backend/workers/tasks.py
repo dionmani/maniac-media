@@ -37,7 +37,8 @@ async def download_monitor(ctx: JobContext):
     stats = await download_service.sync_clients()
     if stats.get("active"):
         # adaptive polling: follow active downloads closely, idle back to the scheduled interval
-        await asyncio.to_thread(job_queue.enqueue, "download_monitor", trigger="event", dedupe_key="follow-up", delay_seconds=5)
+        await asyncio.to_thread(job_queue.enqueue, "download_monitor", trigger="event", dedupe_key="follow-up",
+                                delay_seconds=get_settings().download_poll_seconds)
     return stats
 
 
@@ -115,6 +116,9 @@ async def cleanup(ctx: JobContext):
         with session_scope() as db:
             jobs = db.execute(delete(models.Job).where(models.Job.status.in_(("completed", "failed", "cancelled")),
                                                         models.Job.created_at < now - timedelta(days=settings.job_retention_days))).rowcount
+            # routine download polls (thousands a day while anything downloads) carry nothing worth a week's keep
+            jobs += db.execute(delete(models.Job).where(models.Job.name == "download_monitor", models.Job.status == "completed",
+                                                         models.Job.created_at < now - timedelta(days=1))).rowcount
             history = db.execute(delete(models.History).where(models.History.timestamp < now - timedelta(days=settings.history_retention_days))).rowcount
             audit_rows = db.execute(delete(models.AuditLog).where(models.AuditLog.timestamp < now - timedelta(days=settings.audit_retention_days))).rowcount
             queue = db.execute(delete(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "imported",
@@ -142,14 +146,22 @@ async def inspect_file(ctx: JobContext):
     from backend.services.inspection_service import inspect_file as _inspect_file
     media_file_id = int(ctx.payload["media_file_id"])
     force = bool(ctx.payload.get("force", False))
-    outcome = await _inspect_file(db_manager.session, media_file_id, force=force)
+    db = db_manager.session()
+    try:
+        outcome = await _inspect_file(db, media_file_id, force=force)
+    finally:
+        db.close()
     return {"status": outcome.status, "error": outcome.error}
 
 
 @job_queue.register("media_inspection", "Media Inspection (Backlog)", priority=7)
 async def media_inspection(ctx: JobContext):
     from backend.services.inspection_service import inspect_backlog
-    stats = await inspect_backlog(db_manager.session, limit=200, progress=ctx.progress)
+    db = db_manager.session()
+    try:
+        stats = await inspect_backlog(db, limit=200, progress=ctx.progress)
+    finally:
+        db.close()
     if stats.get("status") == "more_pending":
         await asyncio.to_thread(
             job_queue.enqueue, "media_inspection", {}, trigger="event", dedupe_key="backlog", delay_seconds=10
