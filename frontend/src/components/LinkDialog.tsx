@@ -203,7 +203,7 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
         <Button variant="contained" startIcon={merging ? <GitMerge size={16} /> : <Link2 size={16} />} onClick={apply}
           disabled={!m || (!!existing && !merging) || (mustPick && !keepPath) || busy}>
-          {merging ? 'Merge' : 'Link'}
+          {merging ? (busy ? 'Merging…' : 'Merge') : 'Link'}
         </Button>
       </DialogActions>
     </Dialog>

@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -171,3 +172,32 @@ def test_sabnzbd_reports_only_the_active_job_as_downloading(monkeypatch):
     found = asyncio.run(sab.find_items(["SABnzbd_nzo_B", "SABnzbd_nzo_gone"]))
     assert [i.id for i in found] == ["SABnzbd_nzo_b"]
     assert all("category" not in params and params["nzo_ids"] == "SABnzbd_nzo_B,SABnzbd_nzo_gone" for _, params in calls)
+
+
+def test_recycle_stays_on_the_files_volume(tmp_path, make_video, monkeypatch):
+    """A bin on another volume would turn recycling into a full copy of the file (minutes for a remux)."""
+    volume = tmp_path / "data"
+    video = make_video(volume / "media" / "movies" / "Movie (2000)" / "movie.mkv")
+    config_bin = tmp_path / "config" / "recycle"
+    copies = []
+    monkeypatch.setattr(fileops, "same_volume", lambda a, b: False)
+    monkeypatch.setattr(fileops, "_mount_root", lambda p: volume)
+    monkeypatch.setattr(fileops, "_copy_atomic", lambda src, dst: copies.append(src))
+
+    target = fileops.recycle(video, config_bin)
+    assert target.parent.parent == volume / fileops.VOLUME_RECYCLE_DIR and target.exists() and not video.exists()
+    assert copies == [] and not config_bin.exists()
+
+    tx = fileops.FileTransaction()  # and it still rolls back
+    tx.recycle(make_video(video), config_bin)
+    assert not video.exists()
+    tx.rollback()
+    assert video.exists()
+
+
+def test_recycle_never_uses_a_filesystem_root(tmp_path, make_video, monkeypatch):
+    video = make_video(tmp_path / "movie.mkv")
+    config_bin = tmp_path / "recycle"
+    monkeypatch.setattr(fileops, "same_volume", lambda a, b: False)
+    monkeypatch.setattr(fileops, "_mount_root", lambda p: Path(Path(p).anchor))
+    assert fileops.recycle_root_for(video, config_bin) == config_bin

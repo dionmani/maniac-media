@@ -163,9 +163,53 @@ def iter_files(root: Path, follow_symlinks: bool = False):
 
 
 # --------------------------------------------------------------------------- recycle bin
+VOLUME_RECYCLE_DIR = ".maniac-recycle"  # dot-prefixed: the library scanner skips it
+
+
+def _mount_root(path: Path) -> Path | None:
+    """Top directory of the filesystem ``path`` lives on (e.g. ``/data`` for a Docker bind mount)."""
+    try:
+        p = Path(os.path.abspath(path))
+        dev = os.stat(long_path(p)).st_dev
+        while p.parent != p and os.stat(long_path(p.parent)).st_dev == dev:
+            p = p.parent
+        return p
+    except OSError:
+        return None
+
+
+def volume_recycle_root(path: Path) -> Path | None:
+    """The hidden recycle bin on ``path``'s own volume, or None at a filesystem root ("/", "C:\\")."""
+    mount = _mount_root(path)
+    if mount is None or mount.parent == mount:
+        return None
+    return mount / VOLUME_RECYCLE_DIR
+
+
+def recycle_root_for(path: Path, recycle_root: Path) -> Path:
+    """Where to recycle ``path`` without copying it.
+
+    Moving a file onto another volume means copying every byte – a 20 GB remux into an appdata
+    recycle bin takes minutes. So when the configured bin is on a different volume, use a hidden
+    bin at the top of the file's own volume, where the move is an instant rename. Falls back to the
+    configured bin (a copy) only if that hidden bin can't be created.
+    """
+    if same_volume(path, recycle_root):
+        return recycle_root
+    local = volume_recycle_root(path)
+    if local is None:
+        return recycle_root
+    try:
+        local.mkdir(exist_ok=True)
+    except OSError as exc:
+        log.warning("Can't create %s (%s); recycling %s by copying it to %s", local, exc, path.name, recycle_root)
+        return recycle_root
+    return local
+
+
 def recycle(path: Path, recycle_root: Path) -> Path:
     """Move a file into the recycle bin (dated folder) instead of deleting it."""
-    target_dir = recycle_root / datetime.now().strftime("%Y-%m-%d")
+    target_dir = recycle_root_for(path, recycle_root) / datetime.now().strftime("%Y-%m-%d")
     target = target_dir / path.name
     n = 1
     while target.exists():

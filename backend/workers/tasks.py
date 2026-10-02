@@ -135,7 +135,12 @@ async def cleanup(ctx: JobContext):
                     models.LibraryIssue.status == "dismissed", models.LibraryIssue.media_type == media_type,
                     models.LibraryIssue.media_id.not_in(select(model.id)))).rowcount
             consistency = media_file_service.check_consistency(db)
-        recycled = fileops.cleanup_recycle_bin(Path(settings.recycle_bin), settings.recycle_bin_days)
+        bins = {Path(settings.recycle_bin)}
+        # files on another volume than the bin are recycled to a hidden bin on their own volume (see fileops.recycle)
+        for root in (settings.media_root_movies, settings.media_root_tv, settings.download_folder):
+            if root and (local := fileops.volume_recycle_root(Path(root))) is not None:
+                bins.add(local)
+        recycled = sum(fileops.cleanup_recycle_bin(b, settings.recycle_bin_days) for b in bins)
         return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled, "consistency": consistency}
 
     return await asyncio.to_thread(run)
