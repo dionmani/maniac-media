@@ -18,7 +18,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { FolderInput, FolderSearch, RefreshCw, Trash2, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { MovieSummary, Page, SeriesSummary } from '../api/types';
@@ -39,9 +39,10 @@ interface Suggestion {
 }
 interface Identified { path: string; query: string; year: number | null; kind: string; season: number | null; episodes: number[]; candidates: Suggestion[] }
 /** A TMDb hit that isn't in the library yet; it is added when the import runs. */
+interface ImportResult { imported: string[]; failed: string[]; failed_paths: Record<string, string>; failed_codes: Record<string, string> }
 interface PendingAdd { title: string; year: number | null; tmdb_id: number }
 
-type Row = Candidate & { selected: boolean; query?: string; suggestions?: Suggestion[]; pending?: PendingAdd | null };
+type Row = Candidate & { selected: boolean; query?: string; suggestions?: Suggestion[]; pending?: PendingAdd | null; haveIt?: boolean };
 
 const suggestionKey = (s: Suggestion) => `${s.media_type}:${s.media_id ?? `t${s.tmdb_id}`}`;
 const suggestionLabel = (s: Suggestion) => `${s.title}${s.year ? ` (${s.year})` : ''}`;
@@ -51,8 +52,12 @@ function isImportable(r: Row): boolean {
   return r.state === 'ok' && (!!r.media_id || !!r.pending) && r.library_state !== 'duplicate';
 }
 
+/** Import rejected it because the library already has an equal-or-better copy (or the identical file). */
+const ALREADY_HAVE = ['duplicate', 'not_an_upgrade'];
+
 function isDeletable(r: Row): boolean {
-  return r.state === 'corrupt' || r.library_state === 'duplicate';
+  // corrupt files, duplicates, extras/samples (never importable) and anything the library already has
+  return r.state === 'corrupt' || r.state === 'sample' || r.library_state === 'duplicate' || !!r.haveIt;
 }
 
 export default function ImportPage() {
@@ -85,10 +90,14 @@ function ManualImport() {
   }, [settings.data]);
 
   const [failReasons, setFailReasons] = useState<Record<string, string>>({});
+  const haveIt = useRef(new Set<string>());   // paths the library already has; survives the post-import rescan
   const scan = useMutation({
     mutationFn: () => post<Candidate[]>('/library/manual-import/scan', { folder }),
     onSuccess: (data) => {
-      setRows(data.map((c) => ({ ...c, selected: c.state === 'ok' && !!c.media_id && c.library_state !== 'duplicate' && c.library_state !== 'upgrade' })));
+      setRows(data.map((c) => ({
+        ...c, haveIt: haveIt.current.has(c.path),
+        selected: c.state === 'ok' && !!c.media_id && c.library_state !== 'duplicate' && c.library_state !== 'upgrade' && !haveIt.current.has(c.path),
+      })));
       // drop stale failure reasons for files that are no longer in the folder (imported, deleted, moved)
       setFailReasons((fr) => Object.fromEntries(Object.entries(fr).filter(([p]) => data.some((d) => d.path === p))));
     },
@@ -154,13 +163,16 @@ function ManualImport() {
         items.push({ path: r.path, media_type: r.media_type, media_id: id, season: r.season, episodes: r.episodes, quality: r.quality });
       }
       const res = items.length
-        ? await post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', { mode, items })
-        : { imported: [], failed: [], failed_paths: {} };
+        ? await post<ImportResult>('/library/manual-import', { mode, items })
+        : { imported: [], failed: [], failed_paths: {}, failed_codes: {} };
       return { ...res, failed: [...res.failed, ...Object.keys(addFailed)], failed_paths: { ...res.failed_paths, ...addFailed } };
     },
     onSuccess: (r) => {
       toast(`Imported ${r.imported.length} file(s)${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length ? 'warning' : 'success');
-      setFailReasons((fr) => ({ ...fr, ...r.failed_paths }));
+      const dupes = Object.entries(r.failed_codes ?? {}).filter(([, code]) => ALREADY_HAVE.includes(code)).map(([path]) => path);
+      dupes.forEach((p) => haveIt.current.add(p));
+      setFailReasons((fr) => ({ ...fr, ...Object.fromEntries(Object.entries(r.failed_paths).filter(([p]) => !haveIt.current.has(p))) }));
+      if (dupes.length) toast(`${dupes.length} file(s) already in your library — select them and Delete to clean up`, 'info');
       scan.mutate();
     },
     onError: (e) => toast(errorMessage(e), 'error'),
@@ -216,7 +228,7 @@ function ManualImport() {
           </TableHead>
           <TableBody>
             {rows.map((r, i) => {
-              const statusLabel = r.state !== 'ok' ? r.state : r.library_state === 'duplicate' ? 'duplicate' : r.library_state === 'upgrade' ? 'upgrade' : 'ok';
+              const statusLabel = r.state !== 'ok' ? (r.state === 'sample' ? 'extra' : r.state) : r.haveIt ? 'in library' : r.library_state === 'duplicate' ? 'duplicate' : r.library_state === 'upgrade' ? 'upgrade' : 'ok';
               const failReason = failReasons[r.path];
               return (
                 <TableRow key={r.path}>
@@ -235,6 +247,8 @@ function ManualImport() {
                     {r.state === 'ok' && r.library_state === 'upgrade' && (
                       <Typography variant="caption" display="block" color="text.secondary">upgrade from {r.existing_quality} ({bytes(r.existing_size)})</Typography>
                     )}
+                    {r.haveIt && <Typography variant="caption" display="block" color="text.secondary">Library already has this (equal or better) — safe to delete the download</Typography>}
+                    {r.state === 'sample' && <Typography variant="caption" display="block" color="text.secondary">Sample / bonus material — not importable</Typography>}
                     {r.reason && <Typography variant="caption" display="block" color="text.secondary">{r.reason}</Typography>}
                     {failReason && (
                       <Typography variant="caption" display="block" color="error.main">Import failed: {failReason}</Typography>
@@ -279,15 +293,15 @@ function ManualImport() {
                   </TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={0.5}>
-                      {r.state === 'ok' && r.media_id && (
+                      {r.state === 'ok' && r.media_id && !r.haveIt && (
                         <Button size="small" disabled={match.isPending} onClick={() => match.mutate(r, { onSuccess: (c) => update(i, c) })}>
                           {r.library_state ? 'Re-check' : 'Match'}
                         </Button>
                       )}
-                      {(r.state === 'corrupt' || r.library_state === 'duplicate') && (
+                      {isDeletable(r) && (
                         <Button size="small" color="error" startIcon={<Trash2 size={14} />} onClick={() => del.mutate([r.path])}>Delete</Button>
                       )}
-                      {r.library_state === 'upgrade' && (
+                      {r.library_state === 'upgrade' && !r.haveIt && (
                         <Button size="small" color="success" startIcon={<RefreshCw size={14} />} onClick={() => run.mutate([r])}>Replace</Button>
                       )}
                     </Stack>

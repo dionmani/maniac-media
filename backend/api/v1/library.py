@@ -124,7 +124,7 @@ async def manual_import_scan(req: schemas.ManualImportScanRequest, _: Requires(P
 @router.post("/library/manual-import")
 async def manual_import(req: schemas.ManualImportRequest, user: Requires(Permission.IMPORT)):
     result = await asyncio.to_thread(import_service.manual_import, [i.model_dump() for i in req.items], req.mode, user.actor)
-    return {"imported": result.imported, "failed": result.failed, "failed_paths": result.failed_paths}
+    return {"imported": result.imported, "failed": result.failed, "failed_paths": result.failed_paths, "failed_codes": result.failed_codes}
 
 
 @router.post("/library/manual-import/match")

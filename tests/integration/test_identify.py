@@ -43,3 +43,28 @@ def test_identify_skips_unnameable_files(client, admin_headers):
     out = client.post("/api/v1/library/manual-import/identify", headers=admin_headers, json={"paths": ["/1080p.mkv"]}).json()
     assert out[0]["query"] == "" and out[0]["candidates"] == []
     assert identify_service.MAX_CANDIDATES >= 1
+
+
+def test_import_quality_keeps_repack_from_file_name():
+    from pathlib import Path
+    from backend.services.import_service import _import_quality
+    q = _import_quality(Path("/dl/Movie.2020.REPACK.1080p.BluRay.x264-GRP.mkv"), "Bluray-1080p")
+    assert q.repack and q.quality.name == "Bluray-1080p"
+    # label from the UI wins when the file name says something else (quality came from the folder)
+    assert _import_quality(Path("/dl/WEBDL-720p-folder/file.mkv"), "WEBDL-720p").quality.name == "WEBDL-720p"
+
+
+def test_extras_folders_are_flagged():
+    from pathlib import Path
+    from backend.services.import_service import _in_extras_dir
+    assert _in_extras_dir(Path("/dl/Creed III (2023)/Featurettes/Deleted Scenes.mkv"))
+    assert not _in_extras_dir(Path("/dl/Creed.III.2023.1080p.mkv"))
+
+
+def test_library_title_search_ignores_punctuation(client, admin_headers):
+    from backend.services.identify_service import _title_rows
+    from backend.db.session import session_scope
+    r = client.post("/api/v1/movies", headers=admin_headers, json={"title": "Zork: The Great Test", "year": 1990})
+    assert r.status_code in (201, 409), r.text
+    with session_scope() as db:
+        assert any(m.title == "Zork: The Great Test" for m in _title_rows(db, "movie", "Zork The Great Test"))

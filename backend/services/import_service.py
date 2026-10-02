@@ -86,6 +86,7 @@ class ImportResult:
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     failed_paths: dict[str, str] = field(default_factory=dict)  # path -> reason, so the UI can show it per-row
+    failed_codes: dict[str, str] = field(default_factory=dict)  # path -> ImportFailureReason value
 
     @property
     def ok(self) -> bool:
@@ -107,10 +108,18 @@ def find_video_files(root: Path) -> tuple[list[Path], list[Path]]:
     return videos, partial
 
 
+_EXTRAS_DIRS = {"featurettes", "featurette", "extras", "extra", "behind the scenes", "deleted scenes", "interviews", "trailers", "shorts", "scenes"}
+
+
+def _in_extras_dir(path: Path) -> bool:
+    """Bonus material (Featurettes/, Extras/ ...) is never a main movie or episode file."""
+    return any(part.lower() in _EXTRAS_DIRS for part in path.parent.parts)
+
+
 def inspect(path: Path, min_size_mb: int) -> Candidate:
     size = path.stat().st_size if path.exists() else 0
     check = fileops.check_video_file(path, min_size_mb)
-    state = "sample" if is_sample(path.name) else check.state
+    state = "sample" if is_sample(path.name) or _in_extras_dir(path) else check.state
     return Candidate(path, size, state, check.reason, parse_quality(path.name if parse_quality(path.name).quality.weight else path.parent.name))
 
 
@@ -558,6 +567,16 @@ def manual_scan(folder: str) -> list[dict]:
     return out
 
 
+def _import_quality(src: Path, label: str | None):
+    """Quality used at import time. The UI only sends the label ("Bluray-1080p"), which drops PROPER/REPACK;
+    re-parse the file name first so the import judges the same quality the scan showed (otherwise a REPACK
+    is listed as an "upgrade" and then rejected as "not an upgrade")."""
+    from_name = parse_quality(src.name)
+    if not label or from_name.quality.name.lower() == label.lower():
+        return from_name
+    return parse_quality(label)   # the quality came from the folder name (file name has none)
+
+
 def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportResult:
     result = ImportResult()
     mode = mode or get_settings().import_mode
@@ -569,13 +588,15 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
             result.failed_paths[item["path"]] = check.reason or "Invalid file"
             continue
         try:
-            label = _run_import(src, parse_quality(item.get("quality") or src.name), item["media_type"], int(item["media_id"]),
+            label = _run_import(src, _import_quality(src, item.get("quality")), item["media_type"], int(item["media_id"]),
                                 item.get("season"), list(item.get("episodes") or []), mode, src.name, None)
             result.imported.append(label)
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
         except Exception as exc:
             result.failed.append(f"{src.name}: {exc}")
             result.failed_paths[item["path"]] = str(exc)
+            if isinstance(exc, ImportError_):
+                result.failed_codes[item["path"]] = str(exc.reason)
             IMPORTS_TOTAL.labels(item.get("media_type") or "unknown", "failed").inc()
     with session_scope() as db:
         audit(db, "import", "manual_import", actor=actor, details={"imported": len(result.imported), "failed": result.failed[:20]},

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import asdict
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from backend.db import models
-from backend.db.repositories import MovieRepository, SeriesRepository
 from backend.db.session import session_scope
 from backend.domain.parser import TitleGuess, guess_title, normalize_title
 from backend.domain.types import MediaMetadata
@@ -44,24 +44,42 @@ def _candidate(source: str, media_type: str, title: str, year: int | None, *, me
             "year": year, "poster_url": poster_url, "overview": (overview or "")[:300] or None, "score": score}
 
 
+def _title_rows(db, media_type: str, query: str) -> list:
+    """Library rows whose title contains every word of ``query`` – punctuation-blind, so the query
+    "Space Jam A New Legacy" finds "Space Jam: A New Legacy"."""
+    model = models.Movie if media_type == "movie" else models.Series
+    words = re.findall(r"[A-Za-z0-9]+", query)[:6]
+    if not words:
+        return []
+    return list(db.scalars(select(model).where(and_(*[model.title.ilike(f"%{w}%") for w in words])).limit(50)))
+
+
 def _library_search(guess: TitleGuess, media_type: str) -> list[dict]:
     with session_scope() as db:
-        if media_type == "movie":
-            rows = db.scalars(MovieRepository(db).query(search=guess.query).limit(25)).all()
-        else:
-            rows = db.scalars(SeriesRepository(db).query(search=guess.query).limit(25)).all()
+        rows = _title_rows(db, media_type, guess.query)
         found = [_candidate("library", media_type, r.title, r.year, media_id=r.id, tmdb_id=r.tmdb_id,
                             score=_score(r.title, r.year, guess.query, guess.year))
                  for r in rows]
     return sorted(found, key=lambda c: -c["score"])[:MAX_CANDIDATES]
 
 
-def _library_ids_by_tmdb(media_type: str, tmdb_ids: list[int]) -> dict[int, int]:
-    if not tmdb_ids:
-        return {}
+def _library_ids(media_type: str, results: list[MediaMetadata]) -> dict[int, int]:
+    """tmdb_id -> library id for results already in the library, by TMDb id or (for entries linked via another
+    provider) by identical title and a year within one."""
     model = models.Movie if media_type == "movie" else models.Series
+    found: dict[int, int] = {}
     with session_scope() as db:
-        return {tid: mid for tid, mid in db.execute(select(model.tmdb_id, model.id).where(model.tmdb_id.in_(tmdb_ids)))}
+        ids = [m.tmdb_id for m in results if m.tmdb_id]
+        if ids:
+            found.update({tid: mid for tid, mid in db.execute(select(model.tmdb_id, model.id).where(model.tmdb_id.in_(ids)))})
+        for m in results:
+            if not m.tmdb_id or m.tmdb_id in found:
+                continue
+            for row in _title_rows(db, media_type, m.title):
+                if normalize_title(row.title) == normalize_title(m.title) and (not m.year or not row.year or abs(row.year - m.year) <= 1):
+                    found[m.tmdb_id] = row.id
+                    break
+    return found
 
 
 async def _provider_search(guess: TitleGuess, media_type: str) -> list[dict]:
@@ -72,7 +90,7 @@ async def _provider_search(guess: TitleGuess, media_type: str) -> list[dict]:
     if not results:
         results = await metadata_service.search(guess.query, media_type, None)
     ranked = sorted(results, key=lambda m: -_score(m.title, m.year, guess.query, guess.year))[:MAX_CANDIDATES]
-    in_library = await asyncio.to_thread(_library_ids_by_tmdb, media_type, [m.tmdb_id for m in ranked if m.tmdb_id])
+    in_library = await asyncio.to_thread(_library_ids, media_type, ranked)
     return [
         _candidate("library" if m.tmdb_id in in_library else "tmdb", media_type, m.title, m.year,
                    media_id=in_library.get(m.tmdb_id), tmdb_id=m.tmdb_id, poster_url=m.poster_url, overview=m.overview,
