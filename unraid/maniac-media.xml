@@ -13,10 +13,10 @@
   <Shell>sh</Shell>
   <Overview>Maniac Media – unified movie and TV automation (Sonarr + Radarr in one). Metadata, indexers, download clients, automatic import, renaming, quality profiles, users and an encrypted, migratable database.</Overview>
   <Category>Downloaders: MediaApp:Video</Category>
-  <WebUI>http://[IP]:[PORT:8193]/</WebUI>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <Icon>https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/radarr.png</Icon>
   <ExtraParams>--security-opt no-new-privileges:true</ExtraParams>
-  <Config Name="WebUI Port" Target="8193" Default="8193" Mode="tcp" Description="Web interface and API" Type="Port" Display="always" Required="true" Mask="false">8193</Config>
+  <Config Name="WebUI Port" Target="8000" Default="8000" Mode="tcp" Description="Web interface and API" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
   <Config Name="Config" Target="/config" Default="/mnt/user/appdata/maniac-media" Mode="rw" Description="Database, encrypted secrets, logs, backups and plugins" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/maniac-media</Config>
   <Config Name="Data" Target="/data" Default="/mnt/user/data" Mode="rw" Description="Share containing media/ and downloads/. Keep both on ONE share so imports can hardlink. Map your download client to /data the same way." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data</Config>
   <Config Name="Master key" Target="MANIAC_MASTER_KEY" Default="" Mode="" Description="Encrypts stored credentials. Generate once with: openssl rand -base64 32 – and keep a copy somewhere safe." Type="Variable" Display="always" Required="true" Mask="true"></Config>
