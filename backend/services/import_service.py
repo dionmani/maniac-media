@@ -213,6 +213,25 @@ def episode_destination(series: models.Series, episodes: list[models.Episode], s
     return folder / (rel + src.suffix.lower())
 
 
+def _enqueue_inspection_after_commit(db: Session, media_file_id: int) -> None:
+    """Queue ffprobe inspection once the import commits.
+
+    ``job_queue.enqueue`` opens its own session; calling it mid-import would contend with this
+    session's write lock (SQLite: "database is locked") and could queue a job for a rolled-back file.
+    """
+    from sqlalchemy import event
+
+    from backend.workers.queue import job_queue
+
+    def _fire(_session: Session) -> None:
+        try:
+            job_queue.enqueue("inspect_file", {"media_file_id": media_file_id}, dedupe_key=f"file:{media_file_id}")
+        except Exception:  # inspection is best-effort; never fail a committed import
+            log.warning("could not queue inspection for media file %s", media_file_id, exc_info=True)
+
+    event.listen(db, "after_commit", _fire, once=True)
+
+
 # --------------------------------------------------------------------------- core import
 def _import_one(
     db: Session, tx: fileops.FileTransaction, src: Path, quality: ParsedQuality, media_type: str, media_id: int,
@@ -241,9 +260,8 @@ def _import_one(
             db, movie, dest, quality, scene_name=original_name, source="import", make_primary=True
         )
         db.flush()
-        from backend.workers.queue import job_queue
-        job_queue.enqueue("inspect_file", {"media_file_id": mf.id}, dedupe_key=f"file:{mf.id}")
-        
+        _enqueue_inspection_after_commit(db, mf.id)
+
         event = "upgraded" if upgrade else "imported"
         history(db, "movie", movie.id, movie.title, event, quality=quality.quality.name, download_id=queue_id,
                 details=f"{used} → {dest}",
@@ -295,9 +313,8 @@ def _import_one(
         db, series, episodes, dest, quality, scene_name=original_name, source="import", make_primary=True
     )
     db.flush()
-    from backend.workers.queue import job_queue
-    job_queue.enqueue("inspect_file", {"media_file_id": mf.id}, dedupe_key=f"file:{mf.id}")
-    
+    _enqueue_inspection_after_commit(db, mf.id)
+
     label = f"{series.title} S{season:02d}E{episode_numbers[0]:02d}" + (f"-E{episode_numbers[-1]:02d}" if len(episode_numbers) > 1 else "")
     event = "upgraded" if upgrade else "imported"
     history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}",

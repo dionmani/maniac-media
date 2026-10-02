@@ -18,6 +18,7 @@ from backend.core import paths
 from backend.core.events import Event, bus
 from backend.core.observability import WS_CLIENTS
 from backend.core.security import Permission
+from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.repositories import AuditRepository, JobRepository
 from backend.db.session import db_manager, session_scope
