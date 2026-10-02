@@ -394,6 +394,15 @@ async def _link(media_type: str, media_id: int, req: schemas.LinkRequest, user) 
                 raise HTTPException(404, f"{label} not found")
             clash = media_service.link_clash(db, item, meta)
             existing = schemas.LinkExisting(id=clash.id, title=clash.title, year=clash.year) if clash else None
+            if clash and movie and (req.dry_run or req.merge):
+                if req.dry_run:  # preview what "merge into the existing movie" would do
+                    plan = schemas.MergePlan(**media_service.merge_candidates(db, item, clash))
+                    return schemas.LinkResult(match=match, existing=existing, merge=plan)
+                try:
+                    media_service.merge_movie(db, item, clash, req.keep_path, user.actor)
+                except media_service.MediaError as exc:
+                    raise HTTPException(422, str(exc))
+                return schemas.LinkResult(match=match, existing=existing, merged_into=clash.id, applied=True)
             if req.dry_run or clash:
                 if clash and not req.dry_run:
                     raise HTTPException(409, f"'{clash.title} ({clash.year})' is already in the library")
@@ -404,15 +413,18 @@ async def _link(media_type: str, media_id: int, req: schemas.LinkRequest, user) 
     result = await asyncio.to_thread(persist)
     if not result.applied:
         return result
-    bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=media_id)
+    if result.merged_into is not None:
+        bus.publish(EventType.MEDIA_DELETED, media_type=media_type, media_id=media_id)
+    target_id = result.merged_into or media_id
+    bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=target_id)
     if req.rename:
         try:
-            organized = await asyncio.to_thread(renamer_service.organize, media_type, media_id, user.actor)
+            organized = await asyncio.to_thread(renamer_service.organize, media_type, target_id, user.actor)
             result.renamed, result.rename_errors = organized["renamed"], organized["errors"]
         except Exception as exc:  # the link itself already succeeded – report, don't fail it
             result.rename_errors = [str(exc)]
         if result.renamed:
-            bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=media_id)
+            bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=target_id)
     return result
 
 

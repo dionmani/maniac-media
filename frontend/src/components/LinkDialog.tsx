@@ -1,11 +1,11 @@
-import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, List, ListItemButton, ListItemText, Stack, TextField, Typography } from '@mui/material';
-import { Link2, Search } from 'lucide-react';
+import { Alert, Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, List, ListItemButton, ListItemText, Radio, RadioGroup, Stack, TextField, Typography } from '@mui/material';
+import { GitMerge, Link2, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
-import type { LinkResult } from '../api/types';
+import type { LinkResult, MergeFile, MergePlan } from '../api/types';
 import { toast } from '../store/ui';
-import { errorMessage } from '../utils/format';
+import { bytes, errorMessage } from '../utils/format';
 import { Poster } from './common';
 
 export interface LinkTarget {
@@ -32,6 +32,7 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
   const [externalId, setExternalId] = useState('');
   const [preview, setPreview] = useState<LinkResult | null>(null);
   const [rename, setRename] = useState(true);
+  const [keepPath, setKeepPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -44,6 +45,11 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
     setExternalId(''); setPreview(null); setRename(true); setError(null); setHits(null);
     setQuery(target ? searchSeed(target.label).query : '');
   }, [target]);
+
+  // preselect the file the server recommends keeping (best quality, then largest)
+  useEffect(() => {
+    setKeepPath(preview?.merge?.files.find((f) => f.recommended)?.path ?? null);
+  }, [preview]);
 
   const search = async () => {
     if (!target || !query.trim()) return;
@@ -87,12 +93,19 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
   const apply = async () => {
     setBusy(true);
     try {
-      const done = await post<LinkResult>(url, { external_id: externalId, dry_run: false, rename });
+      const done = await post<LinkResult>(url, { external_id: externalId, dry_run: false, rename, ...(merging && { merge: true, keep_path: keepPath }) });
       const name = `${done.match.title}${done.match.year ? ` (${done.match.year})` : ''}`;
-      toast(`Linked to ${name}${done.renamed ? ` – ${done.renamed} rename(s) applied` : ''}`, 'success');
-      if (done.rename_errors.length) toast(`Linked, but renaming hit a problem: ${done.rename_errors[0]}`, 'warning');
-      onLinked();
+      const renamed = done.renamed ? ` – ${done.renamed} rename(s) applied` : '';
+      const verb = done.merged_into ? 'Merged' : 'Linked';
+      toast(`${done.merged_into ? 'Merged into' : 'Linked to'} ${name}${renamed}`, 'success');
+      if (done.rename_errors.length) toast(`${verb}, but renaming hit a problem: ${done.rename_errors[0]}`, 'warning');
       onClose();
+      if (done.merged_into) {
+        // this entry no longer exists – carry on from the one it was merged into
+        navigate(`/movies/${done.merged_into}`, { replace: true });
+      } else {
+        onLinked();
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -102,6 +115,9 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
 
   const m = preview?.match;
   const existing = preview?.existing;
+  const plan = existing ? preview?.merge : null;
+  const merging = !!plan;
+  const mustPick = (plan?.files.filter((f) => f.exists).length ?? 0) > 1;
   const ids = m ? [m.imdb_id && `IMDb ${m.imdb_id}`, m.tmdb_id && `TMDB ${m.tmdb_id}`, m.tvdb_id && `TVDB ${m.tvdb_id}`].filter(Boolean).join(' · ') : '';
 
   return (
@@ -167,13 +183,15 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
             </Stack>
           )}
           {existing && (
-            <Alert severity="warning" action={
+            <Alert severity={plan ? 'info' : 'warning'} action={
               <Button color="inherit" size="small" onClick={() => { onClose(); navigate(movie ? `/movies/${existing.id}` : `/series/${existing.id}`); }}>Open it</Button>
             }>
-              {existing.title}{existing.year ? ` (${existing.year})` : ''} is already in your library. Linking this one too would create a duplicate.
+              {existing.title}{existing.year ? ` (${existing.year})` : ''} is already in your library.{' '}
+              {plan ? 'Merge this entry into it so you end up with one movie and one file.' : 'Linking this one too would create a duplicate.'}
             </Alert>
           )}
-          {m && !existing && (
+          {plan && <MergeFiles plan={plan} keepPath={keepPath} onPick={setKeepPath} mustPick={mustPick} disabled={busy} />}
+          {m && (!existing || merging) && (
             <FormControlLabel
               control={<Checkbox checked={rename} onChange={(e) => setRename(e.target.checked)} />}
               label={`Rename the folder and ${movie ? 'file' : 'episode files'} to your naming format`}
@@ -183,10 +201,63 @@ export default function LinkDialog({ target, onClose, onLinked }: { target: Link
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
-        <Button variant="contained" startIcon={<Link2 size={16} />} onClick={apply} disabled={!m || !!existing || busy}>
-          Link
+        <Button variant="contained" startIcon={merging ? <GitMerge size={16} /> : <Link2 size={16} />} onClick={apply}
+          disabled={!m || (!!existing && !merging) || (mustPick && !keepPath) || busy}>
+          {merging ? 'Merge' : 'Link'}
         </Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
+const folderOf = (p: string) => p.split(/[\\/]/).slice(0, -1).join('/');
+
+/** The video files a merge ends up with; when there's more than one, the user picks the one to keep. */
+function MergeFiles({ plan, keepPath, onPick, mustPick, disabled }: {
+  plan: MergePlan; keepPath: string | null; onPick: (path: string) => void; mustPick: boolean; disabled: boolean;
+}) {
+  const present = plan.files.filter((f) => f.exists);
+  const describe = (f: MergeFile) => (
+    <Box sx={{ minWidth: 0 }}>
+      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Typography variant="body2" fontWeight={600} sx={{ wordBreak: 'break-all' }}>{fileName(f.path)}</Typography>
+        <Chip size="small" variant="outlined" label={f.owner === 'existing' ? 'In library' : 'This entry'} />
+        {f.quality && <Chip size="small" variant="outlined" label={f.quality} />}
+        {f.recommended && mustPick && <Chip size="small" color="success" label="Best quality" />}
+      </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
+        {bytes(f.size_bytes)} · {folderOf(f.path)}
+      </Typography>
+    </Box>
+  );
+
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+      {present.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">Neither entry has a video file on disk – merging just removes this duplicate.</Typography>
+      ) : mustPick ? (
+        <>
+          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Both have a file – pick the one to keep</Typography>
+          <RadioGroup value={keepPath ?? ''} onChange={(e) => onPick(e.target.value)}>
+            {present.map((f) => (
+              <FormControlLabel key={f.path} value={f.path} disabled={disabled} control={<Radio size="small" />} label={describe(f)}
+                sx={{ alignItems: 'flex-start', mr: 0, py: 0.5, '& .MuiRadio-root': { pt: 0.25 } }} />
+            ))}
+          </RadioGroup>
+        </>
+      ) : (
+        <>
+          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>File kept</Typography>
+          {describe(present[0])}
+        </>
+      )}
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
+        {mustPick && 'The files you don’t keep go to the recycle bin. '}
+        {plan.cleanup_folder && (
+          <>Anything left in <Box component="code" sx={{ wordBreak: 'break-all' }}>{plan.cleanup_folder}</Box> goes to the recycle bin too, so a rescan can't bring the duplicate back.</>
+        )}
+      </Typography>
+    </Box>
   );
 }

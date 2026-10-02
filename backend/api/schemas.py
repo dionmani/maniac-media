@@ -391,6 +391,9 @@ class LinkRequest(BaseModel):
     external_id: str = Field(min_length=1, max_length=300)
     dry_run: bool = True  # preview the match; nothing is changed
     rename: bool = True  # after linking, rename the folder + files to the naming formats
+    # movies only: when the id is already in the library, fold this entry into that one instead of refusing
+    merge: bool = False
+    keep_path: str | None = Field(None, max_length=1024)  # which video file survives the merge (required if both have one)
 
 
 class LinkMatch(BaseModel):
@@ -411,9 +414,25 @@ class LinkExisting(BaseModel):
     year: int | None = None
 
 
+class MergeFile(BaseModel):
+    path: str
+    size_bytes: int = 0
+    quality: str | None = None
+    owner: Literal["this", "existing"]  # the entry being linked, or the one already in the library
+    exists: bool = True
+    recommended: bool = False  # best quality (then largest) – the default pick
+
+
+class MergePlan(BaseModel):
+    files: list[MergeFile] = []
+    cleanup_folder: str | None = None  # emptied into the recycle bin so a rescan can't re-create the duplicate
+
+
 class LinkResult(BaseModel):
     match: LinkMatch
     existing: LinkExisting | None = None  # already in the library – linking would duplicate it
+    merge: MergePlan | None = None  # with ``existing`` (movies): what merging into it would do
+    merged_into: int | None = None  # set when the entry was merged away; open this id instead
     applied: bool = False
     renamed: int = 0
     rename_errors: list[str] = []

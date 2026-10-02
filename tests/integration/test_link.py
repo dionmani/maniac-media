@@ -17,11 +17,12 @@ def cleanup(client, admin_headers, library):
     yield
     for kind in ("movies", "series"):
         for item in client.get(f"{API}/{kind}", params={"page_size": 500}, headers=admin_headers).json()["items"]:
-            if any(x in (item["title"] or "") for x in ("American Pie", "Goldfinger", "Breaking Bad")):
+            if any(x in (item["title"] or "") for x in ("American Pie", "Goldfinger", "Breaking Bad", "Dr No", "Dr. No")):
                 client.delete(f"{API}/{kind}/{item['id']}", headers=admin_headers)
     for root in (library["movies"], library["tv"]):
         for name in ("www.Torrenting.com - American Pie", "American Pie (1999)", "www.UIndex.org - American Pie Again",
-                     "www Torrenting com - Goldfinger", "www.UIndex.org - Breaking Bad", "Breaking Bad"):
+                     "www Torrenting com - Goldfinger", "www.UIndex.org - Breaking Bad", "Breaking Bad",
+                     "Dr. No (1962)", "www.UIndex.org - Dr No (1962) [1080p]", "www.UIndex.org - Dr No Extras"):
             shutil.rmtree(root / name, ignore_errors=True)
 
 
@@ -147,3 +148,93 @@ def test_link_series_matches_episodes_and_renames(client, admin_headers, monkeyp
     expected = new_folder / "Season 01" / "Breaking Bad - S01E01 - Pilot [HDTV-720p].mkv"
     assert eps[1]["file_path"] == str(expected) and expected.exists()
     assert (new_folder / "poster.jpg").exists() and not folder.exists()
+
+
+def _dr_no(monkeypatch):
+    from backend.services import metadata_service
+
+    async def fake_fetch(**kw):
+        return MediaMetadata(media_type="movie", provider="test", title="Dr. No", year=1962, tmdb_id=646, imdb_id="tt0055928")
+
+    monkeypatch.setattr(metadata_service, "fetch_movie", fake_fetch)
+
+
+def _movie_at(folder: Path) -> int:
+    from backend.db import models
+    from backend.db.session import session_scope
+
+    with session_scope() as db:
+        return db.query(models.Movie).filter(models.Movie.path == str(folder)).one().id
+
+
+def test_merge_duplicate_into_existing_keeps_the_picked_file(client, admin_headers, monkeypatch, library, make_video, cleanup):
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.services import scanner_service
+
+    _dr_no(monkeypatch)
+    good = library["movies"] / "Dr. No (1962)"
+    old = make_video(good / "Dr.No.1962.720p.HDTV.x264-GRP.mkv")
+    dupe_dir = library["movies"] / "www.UIndex.org - Dr No (1962) [1080p]"
+    new = make_video(dupe_dir / "Dr.No.1962.1080p.BluRay.x264-GRP.mkv", bytes.fromhex("1A45DFA3") + b"0" * 64)  # bigger
+    (new.with_suffix(".en.srt")).write_text("subs")
+    (dupe_dir / "www.UIndex.org.txt").write_text("junk")
+    scanner_service.scan_movies(incremental=False)
+    target, source = _movie_at(good), _movie_at(dupe_dir)
+    client.post(f"{API}/movies/{target}/link", json={"external_id": "tmdb:646", "dry_run": False, "rename": False}, headers=admin_headers)
+    with session_scope() as db:  # the source carries some history to be folded in
+        db.add(models.History(media_type="movie", media_id=source, title="dupe", event_type="grabbed"))
+
+    preview = client.post(f"{API}/movies/{source}/link", json={"external_id": "tmdb:646"}, headers=admin_headers).json()
+    assert preview["existing"]["id"] == target
+    files = {f["path"]: f for f in preview["merge"]["files"]}
+    assert set(files) == {str(old), str(new)} and files[str(new)]["owner"] == "this" and files[str(new)]["recommended"]
+    assert preview["merge"]["cleanup_folder"] == str(dupe_dir)
+    assert client.get(f"{API}/movies/{source}", headers=admin_headers).status_code == 200  # preview changed nothing
+
+    # two files and no pick -> refused; a path that isn't part of the merge -> refused
+    body = {"external_id": "tmdb:646", "dry_run": False, "merge": True, "rename": False}
+    assert client.post(f"{API}/movies/{source}/link", json=body, headers=admin_headers).status_code == 422
+    assert client.post(f"{API}/movies/{source}/link", json={**body, "keep_path": "/etc/passwd"}, headers=admin_headers).status_code == 422
+
+    r = client.post(f"{API}/movies/{source}/link", json={**body, "keep_path": str(new)}, headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["merged_into"] == target and r.json()["applied"] is True
+
+    assert client.get(f"{API}/movies/{source}", headers=admin_headers).status_code == 404
+    movie = client.get(f"{API}/movies/{target}", headers=admin_headers).json()
+    kept = good / new.name
+    assert movie["file_path"] == str(kept) and kept.exists() and (good / "Dr.No.1962.1080p.BluRay.x264-GRP.en.srt").exists()
+    assert [f["path"] for f in movie["files"]] == [str(kept)]
+    assert not old.exists() and not dupe_dir.exists()  # the 720p and the duplicate's folder went to the recycle bin
+    assert any(p.name == old.name for p in library["recycle"].rglob("*"))
+    with session_scope() as db:
+        assert db.query(models.History).filter(models.History.media_id == source, models.History.media_type == "movie").count() == 0
+
+    scanner_service.scan_movies(incremental=False)  # nothing left on disk to re-create the duplicate from
+    with session_scope() as db:
+        assert db.query(models.Movie).filter(models.Movie.tmdb_id == 646).count() == 1
+        assert db.query(models.Movie).filter(models.Movie.title.like("%UIndex%")).count() == 0
+
+
+def test_merge_fileless_duplicate_just_removes_it(client, admin_headers, monkeypatch, library, make_video, cleanup):
+    from backend.services import scanner_service
+
+    _dr_no(monkeypatch)
+    good = library["movies"] / "Dr. No (1962)"
+    video = make_video(good / "Dr.No.1962.1080p.BluRay.x264-GRP.mkv")
+    dupe_dir = library["movies"] / "www.UIndex.org - Dr No Extras"
+    dupe_dir.mkdir(parents=True)
+    (dupe_dir / "poster.jpg").write_bytes(b"art")
+    scanner_service.scan_movies(incremental=False)
+    target, source = _movie_at(good), _movie_at(dupe_dir)
+    client.post(f"{API}/movies/{target}/link", json={"external_id": "tmdb:646", "dry_run": False, "rename": False}, headers=admin_headers)
+
+    preview = client.post(f"{API}/movies/{source}/link", json={"external_id": "tmdb:646"}, headers=admin_headers).json()
+    assert [f["path"] for f in preview["merge"]["files"]] == [str(video)]
+    r = client.post(f"{API}/movies/{source}/link", json={"external_id": "tmdb:646", "dry_run": False, "merge": True, "rename": False},
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert client.get(f"{API}/movies/{source}", headers=admin_headers).status_code == 404
+    assert video.exists() and not dupe_dir.exists()
+    assert client.get(f"{API}/movies/{target}", headers=admin_headers).json()["file_path"] == str(video)

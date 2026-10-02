@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import delete as sa_delete, or_, select, update
@@ -10,8 +11,11 @@ from sqlalchemy.orm import Session
 from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db import models
+from backend.db.base import utcnow
 from backend.db.repositories import EpisodeRepository, MovieRepository, SeriesRepository
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, render
+from backend.domain.parser import is_sample, is_video
+from backend.domain.quality import parse_quality
 from backend.domain.types import MediaMetadata
 from backend.services import fileops, metadata_service
 from backend.services.audit import Actor, audit, history
@@ -370,6 +374,185 @@ def link_series(db: Session, series: models.Series, meta: MediaMetadata, actor: 
     return series
 
 
+# --------------------------------------------------------------------------- merge (link onto an existing entry)
+_MAX_FOLDER_ENTRIES = 2000
+
+
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _inside(child: str | Path, parent: str | Path) -> bool:
+    return _path_key(child).startswith(_path_key(parent).rstrip(os.sep) + os.sep)
+
+
+def _merge_cleanup_folder(source: models.Movie, target: models.Movie) -> Path | None:
+    """The duplicate's folder, if it's safe to empty after the merge: a real directory strictly inside the
+    movie root, and neither the target's folder nor one containing it. Left on disk, the scanner would
+    re-create the duplicate from it on the next scan."""
+    root = source.root_folder or get_settings().media_root_movies
+    if not source.path or not root or not os.path.isdir(fileops.long_path(source.path)):
+        return None
+    folder = Path(source.path)
+    if not _inside(folder, root):
+        return None
+    if target.path and (_path_key(folder) == _path_key(target.path) or _inside(target.path, folder)):
+        return None
+    return folder
+
+
+def _loose_videos(folder: Path | None, known: set[str]) -> list[Path]:
+    """Video files in the duplicate's folder the library doesn't track yet (e.g. nested too deep for the scanner)."""
+    if folder is None:
+        return []
+    found, seen = [], 0
+    for dirpath, _dirs, names in os.walk(fileops.long_path(folder)):
+        for name in names:
+            seen += 1
+            if seen > _MAX_FOLDER_ENTRIES:
+                return found
+            path = Path(dirpath) / name
+            if is_video(name) and not is_sample(name) and _path_key(path) not in known:
+                found.append(path)
+    return found
+
+
+def merge_candidates(db: Session, source: models.Movie, target: models.Movie) -> dict:
+    """Preview of merging ``source`` (the duplicate) into ``target``: every video file either one has, which of
+    them we'd suggest keeping, and the folder that gets emptied into the recycle bin."""
+    files = []
+    for owner, movie in (("existing", target), ("this", source)):
+        for mf in movie.files:
+            exists = os.path.exists(fileops.long_path(mf.path))
+            files.append({"path": mf.path, "size_bytes": mf.size_bytes or 0, "quality": mf.quality, "owner": owner, "exists": exists})
+    folder = _merge_cleanup_folder(source, target)
+    for path in _loose_videos(folder, {_path_key(f["path"]) for f in files}):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        files.append({"path": str(path), "size_bytes": size, "quality": parse_quality(path.name).quality.name, "owner": "this", "exists": True})
+    present = [f for f in files if f["exists"]]
+    if present:
+        best = max(present, key=lambda f: (parse_quality(f["quality"] or Path(f["path"]).name).quality.weight, f["size_bytes"]))
+        for f in files:
+            f["recommended"] = f is best
+    return {"files": files, "cleanup_folder": str(folder) if folder else None}
+
+
+def _recycle_sidecars(tx: fileops.FileTransaction, video: Path, recycle_root: Path) -> None:
+    extras = {e.lower() for e in get_settings().extra_file_extensions}
+    try:
+        for sib in video.parent.iterdir():
+            if sib.is_file() and sib.suffix.lower() in extras and sib.name.lower().startswith(video.stem.lower()):
+                tx.recycle(sib, recycle_root)
+    except OSError as exc:
+        log.info("Sidecar cleanup skipped: %s", exc)
+
+
+def _move_sidecars(tx: fileops.FileTransaction, old: Path, new: Path) -> None:
+    extras = {e.lower() for e in get_settings().extra_file_extensions}
+    try:
+        for sib in old.parent.iterdir():
+            if sib.is_file() and sib.suffix.lower() in extras and sib.name.lower().startswith(old.stem.lower()):
+                dest = new.with_name(new.stem + sib.name[len(old.stem):])
+                if not dest.exists():
+                    tx.place(sib, dest, "move")
+    except OSError as exc:
+        log.info("Sidecar move skipped: %s", exc)
+
+
+def merge_movie(db: Session, source: models.Movie, target: models.Movie, keep_path: str | None, actor: Actor) -> dict:
+    """Fold the duplicate ``source`` into ``target``: keep one video file (moved into the target's folder),
+    send every other file plus the duplicate's leftover folder to the recycle bin, carry history / queue /
+    blocklist rows over, and delete the duplicate entry. Filesystem changes roll back if anything fails."""
+    from backend.services import media_file_service
+    from backend.services.issue_service import OPEN, RESOLVED
+
+    if source.id == target.id:
+        raise MediaError("A movie can't be merged into itself")
+    plan = merge_candidates(db, source, target)
+    present = [f for f in plan["files"] if f["exists"]]
+    if keep_path:
+        keep = next((f for f in present if _path_key(f["path"]) == _path_key(keep_path)), None)
+        if keep is None:
+            raise MediaError("The file to keep isn't one of the files being merged")
+    elif len(present) > 1:
+        raise MediaError("Both entries have files – pick the one to keep")
+    else:
+        keep = present[0] if present else None
+
+    settings = get_settings()
+    recycle_root = Path(settings.recycle_bin)
+    tracked = {_path_key(mf.path): mf for mf in [*target.files, *source.files]}
+    keep_key = _path_key(keep["path"]) if keep else None
+    source_label = f"{source.title} ({source.year})" if source.year else source.title
+    tx = fileops.FileTransaction()
+    recycled = 0
+    try:
+        for f in present:
+            if f is not keep:
+                tx.recycle(Path(f["path"]), recycle_root)
+                _recycle_sidecars(tx, Path(f["path"]), recycle_root)
+                recycled += 1
+        for key, mf in tracked.items():
+            if key != keep_key:
+                media_file_service.detach_file(db, mf, reason="merged")
+
+        kept = None
+        if keep is not None:
+            src = Path(keep["path"])
+            mf = tracked.get(keep_key)
+            if keep["owner"] == "existing":
+                kept = src
+            else:
+                folder = Path(target.path or _movie_folder(target, target.root_folder or settings.media_root_movies))
+                kept = folder / src.name
+                if _path_key(kept) != _path_key(src):
+                    if kept.exists():
+                        raise MediaError(f"{kept} already exists")
+                    tx.place(src, kept, "move")
+                    _move_sidecars(tx, src, kept)
+            if mf is not None:
+                mf.movie = target
+                db.flush()
+                media_file_service.move_file(db, mf, kept)
+                media_file_service.set_primary(db, mf)
+            else:
+                media_file_service.attach_movie_file(db, target, kept, parse_quality(src.name), scene_name=src.name,
+                                                     source="manual", make_primary=True)
+
+        # whatever is left in the duplicate's folder (art, NFOs, junk) – or the scanner brings the duplicate back
+        cleanup = Path(plan["cleanup_folder"]) if plan["cleanup_folder"] else None
+        if cleanup is not None and os.path.isdir(fileops.long_path(cleanup)):
+            for dirpath, _dirs, names in os.walk(fileops.long_path(cleanup), topdown=False):
+                for name in names:
+                    tx.recycle(Path(dirpath) / name, recycle_root)
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
+
+        for model in (models.History, models.Blocklist, models.DownloadQueueItem):
+            db.execute(update(model).where(model.media_type == "movie", model.media_id == source.id).values(media_id=target.id))
+        db.execute(update(models.LibraryIssue)
+                   .where(models.LibraryIssue.media_type == "movie", models.LibraryIssue.media_id == source.id,
+                          models.LibraryIssue.status == OPEN)
+                   .values(status=RESOLVED, resolved=True, resolved_at=utcnow(), resolution="merged"))
+        history(db, "movie", target.id, target.title, "updated",
+                details=f"Merged '{source_label}' into this movie; kept {kept.name if kept else 'no file'}, {recycled} file(s) recycled")
+        audit(db, "media", "movie.merge", actor=actor, entity_type="movie", entity_id=target.id,
+              details={"from_id": source.id, "from": source_label, "kept": str(kept) if kept else None, "recycled": recycled,
+                       "folder_removed": str(cleanup) if cleanup else None})
+        db.delete(source)
+        db.flush()
+        media_file_service.sync_legacy(db, target)
+    except Exception:
+        tx.rollback()
+        raise
+    return {"kept": str(kept) if kept else None, "recycled": recycled}
+
+
 def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
     bus.publish(kind, media_type=media_type, media_id=media_id, **extra)
 
@@ -377,6 +560,6 @@ def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
 __all__ = [
     "MediaError", "ConflictError", "add_movie", "update_movie", "delete_movie", "add_series", "update_series",
     "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "prune_stale_seasons", "remove_episodes", "delete_series",
-    "link_clash", "link_movie", "link_series",
+    "link_clash", "link_movie", "link_series", "merge_candidates", "merge_movie",
     "apply_monitoring_preset", "publish_change", "EventType",
 ]

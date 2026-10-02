@@ -181,9 +181,29 @@ export interface LinkResult {
     episode_count: number;
   };
   existing?: { id: number; title: string; year?: number | null } | null;
+  /** with `existing` (movies only): what merging this entry into it would do */
+  merge?: MergePlan | null;
+  /** set when the entry was merged away – open this id instead */
+  merged_into?: number | null;
   applied: boolean;
   renamed: number;
   rename_errors: string[];
+}
+
+export interface MergeFile {
+  path: string;
+  size_bytes: number;
+  quality?: string | null;
+  /** 'this' = the entry being linked, 'existing' = the one already in the library */
+  owner: 'this' | 'existing';
+  exists: boolean;
+  recommended: boolean;
+}
+
+export interface MergePlan {
+  files: MergeFile[];
+  /** emptied into the recycle bin after the merge */
+  cleanup_folder?: string | null;
 }
 
 export interface Series extends SeriesSummary {
