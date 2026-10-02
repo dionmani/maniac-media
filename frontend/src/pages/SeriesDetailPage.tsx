@@ -28,13 +28,14 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Link2, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post, put } from '../api/client';
 import type { DeleteEpisodesResult, Episode, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
 import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
+import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
 import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
@@ -53,6 +54,7 @@ export default function SeriesDetailPage() {
   const [adding, setAdding] = useState<'season' | 'episode' | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [removal, setRemoval] = useState<RemovalTarget | null>(null);
+  const [link, setLink] = useState<LinkTarget | null>(null);
 
   const series = useQuery({ queryKey: ['series', id], queryFn: () => get<Series>(`/series/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -69,6 +71,12 @@ export default function SeriesDetailPage() {
   const s = series.data;
   const write = can('media:write');
   const seasons = [...s.seasons].sort((a, b) => b.season_number - a.season_number);
+
+  const openLink = () => setLink({ mediaType: 'tv', mediaId: id, label: `${s.title} (${s.year})`, path: s.path });
+  const linked = () => {
+    refresh();
+    qc.invalidateQueries({ queryKey: ['series'] });
+  };
 
   const remove = async () => {
     const ok = await confirm(`Delete ${s.title}?`,
@@ -151,6 +159,7 @@ export default function SeriesDetailPage() {
                 </Button>
               </Tooltip>
             )}
+            {write && <Button variant="outlined" startIcon={<Link2 size={16} />} onClick={openLink}>Link</Button>}
             {can('files:rename') && <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=tv&media_id=${id}`)}>Rename files</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('season')}>Add season</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('episode')}>Add episode</Button>}
@@ -160,6 +169,11 @@ export default function SeriesDetailPage() {
         }
       />
 
+      {!s.metadata_source && write && (
+        <Alert severity="info" sx={{ mb: 2 }} action={<Button color="inherit" size="small" startIcon={<Link2 size={14} />} onClick={openLink}>Link</Button>}>
+          This show isn't matched to any metadata yet. If the title above is wrong, link it to the right show with its TVDB or IMDb id.
+        </Alert>
+      )}
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, lg: 8 }}>
           <Section title="Overview" sx={{ mb: 2 }}>
@@ -196,6 +210,7 @@ export default function SeriesDetailPage() {
         </Grid>
       </Grid>
 
+      <LinkDialog target={link} onClose={() => setLink(null)} onLinked={linked} />
       <AddDialog kind={adding} seriesId={id} onClose={() => setAdding(null)} onDone={refresh} />
       <RemoveDialog seriesId={id} target={removal} onClose={() => setRemoval(null)} onDone={refresh} />
       <InteractiveSearchDialog target={search} onClose={() => setSearch(null)} />

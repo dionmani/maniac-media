@@ -1,7 +1,7 @@
 import pytest
 
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render, sanitize_segment, validate
-from backend.domain.parser import normalize_title, normalise_path_key, parse_episode, parse_folder_title, parse_movie
+from backend.domain.parser import normalize_title, normalise_path_key, parse_episode, parse_external_id, parse_folder_title, parse_movie
 from backend.domain.quality import Codec, QualityProfileSpec, get_quality, parse_quality
 
 
@@ -140,4 +140,24 @@ def test_normalise_path_key():
     # Redundant slashes and relative segments
     assert normalise_path_key(r"c:\movies\sub\..\film.mkv") == "c:/movies/film.mkv"
     assert normalise_path_key(r"c:/movies///film.mkv") == "c:/movies/film.mkv"
+
+
+@pytest.mark.parametrize(("text", "media_type", "expected"), [
+    ("tt0163651", "movie", {"imdb_id": "tt0163651"}),
+    ("  https://www.imdb.com/title/tt0163651/?ref_=fn_al_tt_1 ", "movie", {"imdb_id": "tt0163651"}),
+    ("https://www.themoviedb.org/movie/2075-american-pie", "movie", {"tmdb_id": 2075}),
+    ("https://www.themoviedb.org/tv/1396-breaking-bad", "tv", {"tmdb_id": 1396}),
+    ("https://thetvdb.com/?tab=series&id=81189", "tv", {"tvdb_id": 81189}),
+    ("https://thetvdb.com/dereferrer/series/81189", "tv", {"tvdb_id": 81189}),
+    ("tvdb:81189", "tv", {"tvdb_id": 81189}),
+    ("TMDB 2075", "movie", {"tmdb_id": 2075}),
+    ("imdb:163651", "movie", {"imdb_id": "tt0163651"}),
+    ("2075", "movie", {"tmdb_id": 2075}),  # a bare number is the id those apps show: TMDB for movies...
+    ("81189", "tv", {"tvdb_id": 81189}),  # ...TVDB for shows
+    ("American Pie", "movie", {}),
+    ("tmdb:tt12", "movie", {}),
+    ("", "tv", {}),
+])
+def test_parse_external_id(text, media_type, expected):
+    assert parse_external_id(text, media_type) == expected
 

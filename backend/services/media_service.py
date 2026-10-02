@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sqlalchemy import delete as sa_delete, select, update
+from sqlalchemy import delete as sa_delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
@@ -317,6 +317,59 @@ def delete_series(db: Session, series: models.Series, *, delete_files: bool, act
     db.delete(series)
 
 
+# --------------------------------------------------------------------------- linking (fix match)
+def link_clash(db: Session, item: models.Movie | models.Series, meta: MediaMetadata) -> models.Movie | models.Series | None:
+    """Another library entry that already owns one of ``meta``'s ids (linking would make a duplicate)."""
+    model = type(item)
+    if isinstance(item, models.Movie):
+        conds = [model.tmdb_id == meta.tmdb_id if meta.tmdb_id else None, model.imdb_id == meta.imdb_id if meta.imdb_id else None]
+    else:
+        conds = [
+            model.tvdb_id == meta.tvdb_id if meta.tvdb_id else None,
+            model.tvmaze_id == meta.tvmaze_id if meta.tvmaze_id else None,
+            model.imdb_id == meta.imdb_id if meta.imdb_id else None,
+        ]
+    conds = [c for c in conds if c is not None]
+    if not conds:
+        return None
+    return db.scalar(select(model).where(or_(*conds), model.id != item.id).limit(1))
+
+
+def link_movie(db: Session, movie: models.Movie, meta: MediaMetadata, actor: Actor) -> models.Movie:
+    """Re-point a (usually mis-parsed, scanner-created) movie at the title the user identified; files stay put."""
+    if link_clash(db, movie, meta):
+        raise ConflictError("Another movie in the library already has this id")
+    old = f"{movie.title} ({movie.year})"
+    # the scanner's guesses are what got this wrong – the user's pick replaces them, not merges with them
+    movie.tmdb_id = None
+    movie.imdb_id = None
+    metadata_service.apply_movie(db, movie, meta, overwrite_title=True)
+    movie.tmdb_id = meta.tmdb_id
+    history(db, "movie", movie.id, movie.title, "updated", details=f"Linked '{old}' to {movie.title} ({movie.year}) via {meta.provider}")
+    audit(db, "media", "movie.link", actor=actor, entity_type="movie", entity_id=movie.id,
+          details={"from": old, "title": movie.title, "year": movie.year, "imdb_id": movie.imdb_id, "tmdb_id": movie.tmdb_id})
+    return movie
+
+
+def link_series(db: Session, series: models.Series, meta: MediaMetadata, actor: Actor) -> models.Series:
+    """Series counterpart of :func:`link_movie`; episodes on disk are matched to the new episode list by number."""
+    if link_clash(db, series, meta):
+        raise ConflictError("Another series in the library already has this id")
+    old = f"{series.title} ({series.year})"
+    series.tvdb_id = series.tvmaze_id = series.tmdb_id = None
+    series.imdb_id = None
+    if meta.title:
+        series.title = meta.title
+    stats = metadata_service.apply_series(db, series, meta)
+    # file-less episodes left over from a previous (wrong) match don't belong to this show
+    prune_stale_seasons(db, series, meta, apply=True, actor=actor)
+    history(db, "tv", series.id, series.title, "updated",
+            details=f"Linked '{old}' to {series.title} ({series.year}) via {meta.provider}; {stats['added']} episode(s) added")
+    audit(db, "media", "series.link", actor=actor, entity_type="series", entity_id=series.id,
+          details={"from": old, "title": series.title, "year": series.year, "tvdb_id": series.tvdb_id, "imdb_id": series.imdb_id})
+    return series
+
+
 def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
     bus.publish(kind, media_type=media_type, media_id=media_id, **extra)
 
@@ -324,5 +377,6 @@ def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
 __all__ = [
     "MediaError", "ConflictError", "add_movie", "update_movie", "delete_movie", "add_series", "update_series",
     "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "prune_stale_seasons", "remove_episodes", "delete_series",
+    "link_clash", "link_movie", "link_series",
     "apply_monitoring_preset", "publish_change", "EventType",
 ]

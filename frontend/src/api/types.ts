@@ -168,6 +168,24 @@ export interface PruneStaleResult {
   applied: boolean;
 }
 
+export interface LinkResult {
+  match: {
+    provider: string;
+    title: string;
+    year?: number | null;
+    overview?: string | null;
+    poster_url?: string | null;
+    imdb_id?: string | null;
+    tmdb_id?: number | null;
+    tvdb_id?: number | null;
+    episode_count: number;
+  };
+  existing?: { id: number; title: string; year?: number | null } | null;
+  applied: boolean;
+  renamed: number;
+  rename_errors: string[];
+}
+
 export interface Series extends SeriesSummary {
   quality_profile_id?: number | null;
   root_folder?: string | null;

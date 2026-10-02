@@ -1,12 +1,13 @@
-import { Box, Button, Chip, FormControlLabel, Grid, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableRow, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, FormControlLabel, Grid, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableRow, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileEdit, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, FileEdit, Link2, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post } from '../api/client';
 import type { HistoryItem, Movie, Page, QualityProfile } from '../api/types';
 import { ErrorAlert, Loading, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
+import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
 import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
@@ -20,6 +21,7 @@ export default function MovieDetailPage() {
   const { confirm, dialog } = useConfirm();
   const [search, setSearch] = useState<SearchTarget | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
+  const [link, setLink] = useState<LinkTarget | null>(null);
 
   const movie = useQuery({ queryKey: ['movie', id], queryFn: () => get<Movie>(`/movies/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -39,6 +41,13 @@ export default function MovieDetailPage() {
   if (movie.isLoading) return <Loading />;
   if (!movie.data) return <ErrorAlert error={movie.error} />;
   const m = movie.data;
+
+  const openLink = () => setLink({ mediaType: 'movie', mediaId: id, label: `${m.title} (${m.year})`, path: m.file_path ?? m.path });
+  const linked = () => {
+    qc.invalidateQueries({ queryKey: ['movie', id] });
+    qc.invalidateQueries({ queryKey: ['movies'] });
+    qc.invalidateQueries({ queryKey: ['history', 'movie', id] });
+  };
 
   const remove = async () => {
     const ok = await confirm(`Delete ${m.title}?`,
@@ -83,6 +92,9 @@ export default function MovieDetailPage() {
             {can('media:write') && (
               <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => action.mutate({ path: `/movies/${id}/refresh` })}>Refresh metadata</Button>
             )}
+            {can('media:write') && (
+              <Button variant="outlined" startIcon={<Link2 size={16} />} onClick={openLink}>Link</Button>
+            )}
             {can('files:rename') && m.has_file && (
               <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=movie&media_id=${id}`)}>Rename</Button>
             )}
@@ -91,6 +103,11 @@ export default function MovieDetailPage() {
         }
       />
 
+      {!m.metadata_source && can('media:write') && (
+        <Alert severity="info" sx={{ mb: 2 }} action={<Button color="inherit" size="small" startIcon={<Link2 size={14} />} onClick={openLink}>Link</Button>}>
+          This movie isn't matched to any metadata yet. If the title above is wrong, link it to the right movie with its IMDb or TMDB id.
+        </Alert>
+      )}
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, lg: 8 }}>
           <Section title="Overview" sx={{ mb: 2 }}>
@@ -193,6 +210,7 @@ export default function MovieDetailPage() {
         </Grid>
       </Grid>
       <InteractiveSearchDialog target={search} onClose={() => setSearch(null)} />
+      <LinkDialog target={link} onClose={() => setLink(null)} onLinked={linked} />
       {dialog}
     </>
   );

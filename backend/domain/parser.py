@@ -177,6 +177,36 @@ def parse_folder_title(folder_name: str) -> tuple[str, int | None, str | None]:
     return clean_title(re.sub(r"[\[{(].*$", "", folder_name)) or folder_name, None, imdb.group(1) if imdb else None
 
 
+_TMDB_URL = re.compile(r"themoviedb\.org/(movie|tv)/(\d+)", re.I)
+_TVDB_URL = re.compile(r"thetvdb\.com/.*?(?:[?&]id=|/series/|/dereferrer/series/)(\d+)\b", re.I)
+_PREFIXED = re.compile(r"^(imdb|tmdb|tvdb)[\s:=#-]*(tt\d+|\d+)$", re.I)
+
+
+def parse_external_id(text: str, media_type: str) -> dict[str, int | str]:
+    """What the user typed into "Link to…" -> provider ids, e.g. {'imdb_id': 'tt0163651'}.
+
+    Accepts IMDb ids/URLs, TMDB/TVDB URLs, 'tmdb:123'/'tvdb:123', or a bare number – which means
+    TMDB for movies and TVDB for series (the id those apps show). Empty dict when nothing matched.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {}
+    if m := _IMDB.search(text):
+        return {"imdb_id": m.group(1)}
+    if m := _TMDB_URL.search(text):
+        return {"tmdb_id": int(m.group(2))}
+    if m := _TVDB_URL.search(text):
+        return {"tvdb_id": int(m.group(1))}
+    if m := _PREFIXED.match(text):
+        source, value = m.group(1).lower(), m.group(2)
+        if source == "imdb":
+            return {"imdb_id": value if value.startswith("tt") else f"tt{value.zfill(7)}"}
+        return {} if value.startswith("tt") else {f"{source}_id": int(value)}
+    if text.isdigit():
+        return {"tmdb_id" if media_type == "movie" else "tvdb_id": int(text)}
+    return {}
+
+
 def normalise_path_key(path: str) -> str:
     """Canonical key for path deduplication and path_hash:
     normcase + normpath + casefold, normalized to forward slashes.

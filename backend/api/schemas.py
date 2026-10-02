@@ -386,6 +386,39 @@ class PruneStaleResult(BaseModel):
     applied: bool
 
 
+class LinkRequest(BaseModel):
+    """"Link to…": point a library entry at the title an IMDb/TMDB/TVDB id (or URL) identifies."""
+    external_id: str = Field(min_length=1, max_length=300)
+    dry_run: bool = True  # preview the match; nothing is changed
+    rename: bool = True  # after linking, rename the folder + files to the naming formats
+
+
+class LinkMatch(BaseModel):
+    provider: str
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    poster_url: str | None = None
+    imdb_id: str | None = None
+    tmdb_id: int | None = None
+    tvdb_id: int | None = None
+    episode_count: int = 0
+
+
+class LinkExisting(BaseModel):
+    id: int
+    title: str
+    year: int | None = None
+
+
+class LinkResult(BaseModel):
+    match: LinkMatch
+    existing: LinkExisting | None = None  # already in the library – linking would duplicate it
+    applied: bool = False
+    renamed: int = 0
+    rename_errors: list[str] = []
+
+
 class DeleteFileInfo(BaseModel):
     path: str
     exists: bool

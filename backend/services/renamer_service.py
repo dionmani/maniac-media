@@ -172,6 +172,11 @@ def execute(items: list[dict], *, dry_run: bool, include_folders: bool, actor: A
                         tx.ops.append(fileops._Op("moved", old_dir, new_dir))
                         current = new_dir / current.name
                         m.path = str(new_dir)
+                        # duplicates/extras in the folder moved with it
+                        for other in list(m.files):
+                            rel = _under(other.path, old_dir)
+                            if rel is not None and other.path != proposal["current_path"]:
+                                media_file_service.move_file(db, other, new_dir / rel)
                     if current != target:
                         tx.place(current, target, "move")
                         _rename_sidecars(tx, current, target)
@@ -216,3 +221,62 @@ def _rename_sidecars(tx: fileops.FileTransaction, old: Path, new: Path) -> None:
                     tx.place(sib, target, "move")
     except OSError as exc:
         log.info("Sidecar rename skipped: %s", exc)
+
+
+def _under(path: str, folder: Path) -> Path | None:
+    """``path`` relative to ``folder`` (case-insensitively on Windows), or None if it lives elsewhere."""
+    p, f = os.path.normcase(os.path.normpath(path)), os.path.normcase(os.path.normpath(str(folder)))
+    return Path(path[len(f) + 1:]) if p.startswith(f + os.sep) else None
+
+
+def rename_series_folder(series_id: int, actor: Actor) -> dict:
+    """Rename one series' folder to the series folder format in a single directory rename.
+
+    Season folders, artwork and NFOs travel with it; every tracked file under it is re-pointed.
+    """
+    with session_scope() as db:
+        series = db.get(models.Series, series_id)
+        if series is None or not series.path or not os.path.isdir(fileops.long_path(series.path)):
+            return {"renamed": 0, "errors": []}
+        old_dir = Path(series.path)
+        root = Path(series.root_folder) if series.root_folder else old_dir.parent
+        try:
+            new_dir = root / render(get_settings().series_folder_format,
+                                    {"title": series.title, "year": series.year, "tvdbid": series.tvdb_id, "imdbid": series.imdb_id}, EPISODE_TOKENS)
+        except TemplateError as exc:
+            return {"renamed": 0, "errors": [str(exc)]}
+        if str(new_dir) == str(old_dir):
+            return {"renamed": 0, "errors": []}
+        # a case-only rename on Windows "exists" already – that's the same folder, not a clash
+        if new_dir.exists() and os.path.normcase(str(new_dir)) != os.path.normcase(str(old_dir)):
+            return {"renamed": 0, "errors": [f"Folder {new_dir} already exists"]}
+        os.rename(fileops.long_path(old_dir), fileops.long_path(new_dir))
+        try:
+            series.path = str(new_dir)
+            for mf in list(series.files):
+                rel = _under(mf.path, old_dir)
+                if rel is not None:
+                    media_file_service.move_file(db, mf, new_dir / rel)
+            # legacy rows without a media_files entry
+            for ep in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id, models.Episode.file_path.is_not(None))):
+                rel = _under(ep.file_path, old_dir)
+                if rel is not None:
+                    ep.file_path = str(new_dir / rel)
+            history(db, "tv", series.id, series.title, "renamed", details=f"Folder '{old_dir.name}' → '{new_dir.name}'")
+            audit(db, "rename", "series.folder", actor=actor, entity_type="series", entity_id=series.id,
+                  details={"from": str(old_dir), "to": str(new_dir)})
+            db.flush()
+        except Exception:
+            os.rename(fileops.long_path(new_dir), fileops.long_path(old_dir))
+            raise
+    return {"renamed": 1, "errors": []}
+
+
+def organize(media_type: str, media_id: int, actor: Actor) -> dict:
+    """Rename one movie/series (folder included) to the configured naming formats."""
+    if media_type == "tv":
+        folder = rename_series_folder(media_id, actor)
+        result = execute(preview("tv", include_folders=False, media_id=media_id)["items"], dry_run=False, include_folders=False, actor=actor)
+        return {"renamed": folder["renamed"] + result["renamed"], "errors": folder["errors"] + result["errors"]}
+    result = execute(preview("movie", include_folders=True, media_id=media_id)["items"], dry_run=False, include_folders=True, actor=actor)
+    return {"renamed": result["renamed"], "errors": result["errors"]}

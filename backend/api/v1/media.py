@@ -14,8 +14,9 @@ from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.repositories import MediaFileRepository, MovieRepository, SeriesRepository
 from backend.db.session import session_scope
+from backend.domain.parser import parse_external_id
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service
+from backend.services import media_service, metadata_service, renamer_service
 from backend.workers.queue import job_queue
 
 router = APIRouter()
@@ -335,6 +336,74 @@ async def prune_stale(series_id: int, user: Requires(Permission.MEDIA_WRITE), dr
 def refresh_series(series_id: int, user: Requires(Permission.MEDIA_WRITE)):
     job = job_queue.enqueue("metadata_refresh", {"media_type": "tv", "ids": [series_id]}, dedupe_key=f"series:{series_id}")
     return {"job_id": job}
+
+
+# ================================================================== link ("fix match")
+@router.post("/movies/{movie_id}/link", response_model=schemas.LinkResult, tags=["movies"])
+async def link_movie(movie_id: int, req: schemas.LinkRequest, user: Requires(Permission.MEDIA_WRITE)):
+    """Point a movie at the title an IMDb/TMDB id identifies. ``dry_run`` (default) only previews the match."""
+    return await _link("movie", movie_id, req, user)
+
+
+@router.post("/series/{series_id}/link", response_model=schemas.LinkResult, tags=["series"])
+async def link_series(series_id: int, req: schemas.LinkRequest, user: Requires(Permission.MEDIA_WRITE)):
+    """Point a series at the show a TVDB/IMDb/TMDB id identifies. ``dry_run`` (default) only previews the match."""
+    return await _link("tv", series_id, req, user)
+
+
+async def _link(media_type: str, media_id: int, req: schemas.LinkRequest, user) -> schemas.LinkResult:
+    movie = media_type == "movie"
+    model, label = (models.Movie, "Movie") if movie else (models.Series, "Series")
+    ids = parse_external_id(req.external_id, media_type)
+    if movie and "tvdb_id" in ids:
+        raise HTTPException(422, "TVDB ids are for TV shows – link a movie with its IMDb (tt…) or TMDB id")
+    if not ids:
+        raise HTTPException(422, "Enter an IMDb id (e.g. tt0163651), a " + ("TMDB" if movie else "TVDB") + " id, or a link to the title's page")
+
+    def exists():
+        with session_scope() as db:
+            if db.get(model, media_id) is None:
+                raise HTTPException(404, f"{label} not found")
+
+    await asyncio.to_thread(exists)
+    meta = await (metadata_service.fetch_movie(**ids) if movie else metadata_service.fetch_series(**ids))
+    if meta is None:
+        raise HTTPException(404, f"No metadata provider recognised '{req.external_id.strip()}' as a {'movie' if movie else 'TV show'}")
+    for key, value in ids.items():  # keep the id the user gave even if the provider didn't echo it back
+        if not getattr(meta, key):
+            setattr(meta, key, value)
+    match = schemas.LinkMatch(
+        provider=meta.provider, title=meta.title, year=meta.year, overview=meta.overview, poster_url=meta.poster_url,
+        imdb_id=meta.imdb_id, tmdb_id=meta.tmdb_id, tvdb_id=meta.tvdb_id, episode_count=len(meta.episodes),
+    )
+
+    def persist() -> schemas.LinkResult:
+        with session_scope() as db:
+            item = db.get(model, media_id)
+            if item is None:
+                raise HTTPException(404, f"{label} not found")
+            clash = media_service.link_clash(db, item, meta)
+            existing = schemas.LinkExisting(id=clash.id, title=clash.title, year=clash.year) if clash else None
+            if req.dry_run or clash:
+                if clash and not req.dry_run:
+                    raise HTTPException(409, f"'{clash.title} ({clash.year})' is already in the library")
+                return schemas.LinkResult(match=match, existing=existing)
+            (media_service.link_movie if movie else media_service.link_series)(db, item, meta, user.actor)
+            return schemas.LinkResult(match=match, applied=True)
+
+    result = await asyncio.to_thread(persist)
+    if not result.applied:
+        return result
+    bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=media_id)
+    if req.rename:
+        try:
+            organized = await asyncio.to_thread(renamer_service.organize, media_type, media_id, user.actor)
+            result.renamed, result.rename_errors = organized["renamed"], organized["errors"]
+        except Exception as exc:  # the link itself already succeeded – report, don't fail it
+            result.rename_errors = [str(exc)]
+        if result.renamed:
+            bus.publish(EventType.MEDIA_UPDATED, media_type=media_type, media_id=media_id)
+    return result
 
 
 # ================================================================== artwork
