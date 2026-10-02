@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Generic, Sequence, TypeVar
 
@@ -151,22 +152,31 @@ class SeriesRepository(Repository[models.Series]):
         )
 
     def episode_stats(self, series_ids: Sequence[int]) -> dict[int, dict[str, int]]:
-        """Aggregate counts in one query instead of loading 15k episode rows."""
+        """Aggregate counts in one query instead of loading 15k episode rows.
+
+        An episode that hasn't aired yet (air_date in the future) can't be missing, so it is
+        excluded from ``missing_count`` and from ``aired_episode_count``. Undated episodes are
+        treated as aired, matching the wanted/search queries.
+        """
         if not series_ids:
             return {}
+        today = date.today().isoformat()
+        aired = or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today)
         rows = self.db.execute(
             select(
                 models.Episode.series_id,
                 func.count(models.Episode.id),
                 func.sum(case((models.Episode.has_file.is_(True), 1), else_=0)),
-                func.sum(case((and_(models.Episode.monitored.is_(True), models.Episode.has_file.is_(False)), 1), else_=0)),
+                func.sum(case((and_(models.Episode.monitored.is_(True), models.Episode.has_file.is_(False), aired), 1), else_=0)),
                 func.sum(func.coalesce(models.Episode.file_size_bytes, 0)),
+                func.sum(case((or_(aired, models.Episode.has_file.is_(True)), 1), else_=0)),
             )
             .where(models.Episode.series_id.in_(series_ids))
             .group_by(models.Episode.series_id)
         ).all()
         return {
-            r[0]: {"episode_count": r[1] or 0, "episode_file_count": int(r[2] or 0), "missing_count": int(r[3] or 0), "size_on_disk": int(r[4] or 0)}
+            r[0]: {"episode_count": r[1] or 0, "episode_file_count": int(r[2] or 0), "missing_count": int(r[3] or 0),
+                   "size_on_disk": int(r[4] or 0), "aired_episode_count": int(r[5] or 0)}
             for r in rows
         }
 

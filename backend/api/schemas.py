@@ -295,6 +295,7 @@ class SeriesSummary(_ArtMixin):
     genres: str | None = None
     episode_count: int = 0
     episode_file_count: int = 0
+    aired_episode_count: int = 0
     missing_count: int = 0
     size_on_disk: int = 0
     added_date: datetime | None = None

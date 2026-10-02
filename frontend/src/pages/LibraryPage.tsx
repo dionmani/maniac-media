@@ -178,8 +178,8 @@ export default function LibraryPage() {
                 <TableCell>
                   {isSeries(i) ? (
                     <Stack direction="row" spacing={1} alignItems="center">
-                      <LinearProgress variant="determinate" value={i.episode_count ? (i.episode_file_count / i.episode_count) * 100 : 0} sx={{ width: 90 }} />
-                      <Typography variant="caption">{i.episode_file_count}/{i.episode_count}</Typography>
+                      <LinearProgress variant="determinate" value={i.aired_episode_count ? (i.episode_file_count / i.aired_episode_count) * 100 : 0} sx={{ width: 90 }} />
+                      <Typography variant="caption">{i.episode_file_count}/{i.aired_episode_count}</Typography>
                     </Stack>
                   ) : bytes(i.file_size_bytes)}
                 </TableCell>
@@ -204,9 +204,9 @@ export default function LibraryPage() {
 
 function PosterCard({ item, onClick }: { item: Item; onClick: () => void }) {
   const series = isSeries(item);
-  const progress = series ? (item.episode_count ? (item.episode_file_count / item.episode_count) * 100 : 0) : item.has_file ? 100 : 0;
+  const progress = series ? (item.aired_episode_count ? (item.episode_file_count / item.aired_episode_count) * 100 : 0) : item.has_file ? 100 : 0;
   const badge = series
-    ? { label: `${item.episode_file_count}/${item.episode_count}`, color: progress >= 100 ? palette.green : progress > 0 ? palette.amber : palette.red }
+    ? { label: `${item.episode_file_count}/${item.aired_episode_count}`, color: progress >= 100 ? palette.green : progress > 0 ? palette.amber : palette.red }
     : item.has_file ? { label: item.quality ?? 'On disk', color: palette.green } : { label: 'Missing', color: palette.red };
   return (
     <Card sx={{ transition: 'all .2s', '&:hover': { transform: 'translateY(-4px)', borderColor: palette.purple, boxShadow: `0 0 24px ${palette.purple}26` } }}>

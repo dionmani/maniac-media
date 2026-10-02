@@ -145,6 +145,7 @@ export interface SeriesSummary {
   genres?: string | null;
   episode_count: number;
   episode_file_count: number;
+  aired_episode_count: number;
   missing_count: number;
   size_on_disk: number;
   added_date?: string | null;

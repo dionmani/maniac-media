@@ -125,7 +125,7 @@ export default function SeriesDetailPage() {
         overline={['TV Series', s.network, s.certification, s.runtime_minutes ? `${s.runtime_minutes} min` : null, s.status].filter(Boolean).join(' · ')}
         chips={
           <>
-            <Chip size="small" color={s.episode_file_count >= s.episode_count ? 'success' : 'warning'} label={`${s.episode_file_count} / ${s.episode_count} episodes`} />
+            <Chip size="small" color={s.episode_file_count >= s.aired_episode_count ? 'success' : 'warning'} label={`${s.episode_file_count} / ${s.aired_episode_count} episodes`} />
             {s.size_on_disk > 0 && <Chip size="small" label={bytes(s.size_on_disk)} variant="outlined" />}
             {s.rating ? <Chip size="small" label={`★ ${s.rating.toFixed(1)}`} /> : null}
             {genreChips(s.genres)}
