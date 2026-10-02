@@ -17,7 +17,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { FolderInput, FolderSearch, RefreshCw, Trash2 } from 'lucide-react';
+import { FolderInput, FolderSearch, RefreshCw, Trash2, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
@@ -87,6 +87,74 @@ function ManualImport() {
     if (deepLinkFolder) scan.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const smartMatch = useMutation({
+    mutationFn: async () => {
+      const selectedIndices = rows.map((r, i) => r.selected ? i : -1).filter(i => i !== -1);
+      const newRows = [...rows];
+      
+      for (const i of selectedIndices) {
+        const r = newRows[i];
+        let query = r.path.split(/[/\\]/).pop() || r.path;
+        query = query.replace(/\.[^/.]+$/, '');
+        query = query.replace(/\b(1080p|720p|2160p|4k|x264|x265|hevc|web-dl|bluray|remux)\b/gi, '');
+        query = query.replace(/\b(19\d{2}|20\d{2})\b/g, '');
+        query = query.replace(/[([].*?[)\]]/g, '');
+        query = query.replace(/\bS\d{2}E\d{2}\b/gi, '');
+        query = query.replace(/\bS\d{2}\b/gi, '');
+        query = query.replace(/\bE\d{2}\b/gi, '');
+        query = query.replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
+
+        if (!query) continue;
+
+        try {
+          const localMovies = await get<Page<MovieSummary>>('/movies', { search: query, page_size: 1 });
+          if (localMovies.items.length > 0) {
+            newRows[i] = { ...r, media_type: 'movie', media_id: localMovies.items[0].id, title: localMovies.items[0].title };
+            continue;
+          }
+
+          const localTv = await get<Page<SeriesSummary>>('/series', { search: query, page_size: 1 });
+          if (localTv.items.length > 0) {
+            newRows[i] = { ...r, media_type: 'tv', media_id: localTv.items[0].id, title: localTv.items[0].title };
+            continue;
+          }
+
+          const tmdbMovies = await get<any[]>('/movies/lookup', { query });
+          if (tmdbMovies.length > 0) {
+            const match = tmdbMovies[0];
+            try {
+              const added = await post<any>('/movies', { title: match.title, year: match.year, tmdb_id: match.tmdb_id });
+              newRows[i] = { ...r, media_type: 'movie', media_id: added.id, title: added.title };
+            } catch (e: any) {
+              console.warn("Failed to add movie", e);
+            }
+            continue;
+          }
+
+          const tmdbTv = await get<any[]>('/series/lookup', { query });
+          if (tmdbTv.length > 0) {
+            const match = tmdbTv[0];
+            try {
+              // Note: POST /series might return a full object or just id depending on the backend, but based on code it returns SeriesOut
+              const added = await post<any>('/series', { title: match.title, year: match.year, tmdb_id: match.tmdb_id });
+              newRows[i] = { ...r, media_type: 'tv', media_id: added.id || added, title: match.title };
+            } catch (e: any) {
+              console.warn("Failed to add series", e);
+            }
+            continue;
+          }
+        } catch (e) {
+          console.error("Smart match error for", r.path, e);
+        }
+      }
+      return newRows;
+    },
+    onSuccess: (newRows) => {
+      setRows(newRows);
+      toast('Smart match completed', 'success');
+    }
+  });
+
   const run = useMutation({
     mutationFn: (explicit?: Row[]) => post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', {
       mode, items: (explicit ?? rows.filter((r) => r.selected && isImportable(r)))
@@ -126,6 +194,7 @@ function ManualImport() {
             {['move', 'copy', 'hardlink', 'symlink'].map((m) => <MenuItem key={m} value={m}>{m}</MenuItem>)}
           </TextField>
           <Button variant="outlined" startIcon={<FolderSearch size={16} />} onClick={() => scan.mutate()} disabled={!folder || scan.isPending}>Scan</Button>
+          <Button variant="contained" color="secondary" startIcon={<Sparkles size={16} />} onClick={() => smartMatch.mutate()} disabled={!rows.some(r => r.selected) || smartMatch.isPending}>Smart Match</Button>
           <Button variant="contained" disabled={!importSelected || run.isPending} onClick={() => run.mutate(undefined)}>Import {importSelected || ''}</Button>
           <Button variant="outlined" color="error" disabled={!deleteSelected || del.isPending}
             onClick={() => del.mutate(rows.filter((r) => r.selected && isDeletable(r)).map((r) => r.path))}>Delete {deleteSelected || ''}</Button>

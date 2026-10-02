@@ -37,6 +37,11 @@ def list_movies(
     return page_response(page, [schemas.MovieSummary.model_validate(m) for m in page.items])
 
 
+@router.get("/movies/lookup", tags=["movies"])
+async def lookup_movies(_: Requires(Permission.MEDIA_READ), query: str, year: int | None = None):
+    return await metadata_service.search(query, "movie", year)
+
+
 @router.get("/movies/{movie_id}", response_model=schemas.MovieOut, tags=["movies"])
 def get_movie(movie_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
     movie = db.get(models.Movie, movie_id)
@@ -135,6 +140,11 @@ def list_series(
             setattr(out, k, v)
         items.append(out)
     return page_response(page, items)
+
+
+@router.get("/series/lookup", tags=["series"])
+async def lookup_series(_: Requires(Permission.MEDIA_READ), query: str, year: int | None = None):
+    return await metadata_service.search(query, "tv", year)
 
 
 @router.get("/series/{series_id}", response_model=schemas.SeriesOut, tags=["series"])
