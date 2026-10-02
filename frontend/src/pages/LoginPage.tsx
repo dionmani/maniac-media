@@ -1,6 +1,6 @@
 import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { ShieldCheck, Zap } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { get, post } from '../api/client';
 import type { User } from '../api/types';
@@ -40,10 +40,8 @@ export default function LoginPage() {
       background: `radial-gradient(circle at 20% 20%, ${palette.purple}22, transparent 40%), radial-gradient(circle at 80% 80%, ${palette.cyan}1a, transparent 40%)` }}>
       <Paper component="form" onSubmit={submit} sx={{ p: 4, width: '100%', maxWidth: 420 }}>
         <Stack alignItems="center" spacing={1} sx={{ mb: 3 }}>
-          <Box sx={{ width: 56, height: 56, borderRadius: 3, display: 'grid', placeItems: 'center', color: '#fff',
-            background: `linear-gradient(135deg, ${palette.purple}, ${palette.cyan})` }}>
-            <Zap size={30} />
-          </Box>
+          <Box component="img" src="/logo.png" alt="Maniac Media" sx={{ width: 96, height: 96,
+            filter: `drop-shadow(0 0 12px ${palette.purple}66)` }} />
           <Typography variant="h5">Maniac Media</Typography>
           <Typography color="text.secondary" variant="body2" textAlign="center">
             {setup ? 'Welcome! Create the administrator account to finish setup.' : 'Sign in to continue'}

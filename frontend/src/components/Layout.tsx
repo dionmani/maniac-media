@@ -34,7 +34,6 @@ import {
   Settings,
   ShieldCheck,
   Tv,
-  Zap,
 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
@@ -47,7 +46,6 @@ const WIDTH = 248;
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, perm: 'media:read' },
-  { to: '/library', label: 'Library', icon: Film, perm: 'media:read', modeIcon: true },
   { to: '/add', label: 'Add New', icon: PlusCircle, perm: 'media:write' },
   { to: '/wanted', label: 'Wanted', icon: Search, perm: 'media:read' },
   { to: '/issues', label: 'Issues', icon: AlertTriangle, perm: 'media:read' },
@@ -72,10 +70,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   const drawer = (
     <Stack sx={{ height: '100%', p: 2 }}>
       <Stack direction="row" spacing={1.5} alignItems="center" sx={{ px: 1, mb: 3 }}>
-        <Box sx={{ width: 40, height: 40, borderRadius: 2.5, display: 'grid', placeItems: 'center', color: '#fff',
-          background: `linear-gradient(135deg, ${palette.purple}, ${palette.cyan})`, boxShadow: `0 0 16px ${palette.purple}66` }}>
-          <Zap size={22} />
-        </Box>
+        <Box component="img" src="/logo.png" alt="Maniac Media" sx={{ width: 44, height: 44, flexShrink: 0,
+          filter: `drop-shadow(0 0 8px ${palette.purple}66)` }} />
         <Box>
           <Typography sx={{ fontFamily: "'Outfit'", fontWeight: 900, fontSize: '1.2rem', letterSpacing: -0.5,
             background: `linear-gradient(to right, #fff, ${palette.purple})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
@@ -87,18 +83,19 @@ export default function Layout({ children }: { children: ReactNode }) {
         </Box>
       </Stack>
 
-      <ToggleButtonGroup exclusive fullWidth size="small" value={mode} onChange={(_, v) => v && setMode(v)} sx={{ mb: 2 }}>
-        <ToggleButton value="movie" sx={{ gap: 1 }}>
-          <Film size={16} /> Movies
-        </ToggleButton>
-        <ToggleButton value="tv" sx={{ gap: 1 }}>
-          <Tv size={16} /> TV Shows
-        </ToggleButton>
+      {/* The mode toggle doubles as the Library link: clicking either side switches mode and opens that library. */}
+      <ToggleButtonGroup exclusive fullWidth size="small" value={mode} sx={{ mb: 2 }}>
+        {(['movie', 'tv'] as const).map((m) => (
+          <ToggleButton key={m} value={m} sx={{ gap: 1 }}
+            onClick={() => { setMode(m); setOpen(false); if (can('media:read')) navigate('/library'); }}>
+            {m === 'movie' ? <><Film size={16} /> Movies</> : <><Tv size={16} /> TV Shows</>}
+          </ToggleButton>
+        ))}
       </ToggleButtonGroup>
 
       <List sx={{ flex: 1 }} dense>
         {NAV.filter((n) => can(n.perm)).map((n) => {
-          const Icon = n.modeIcon ? (mode === 'movie' ? Film : Tv) : n.icon;
+          const Icon = n.icon;
           const active = n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to);
           return (
             <ListItemButton key={n.to} component={NavLink} to={n.to} onClick={() => setOpen(false)} selected={active}
@@ -107,7 +104,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               <ListItemIcon sx={{ minWidth: 36, color: active ? palette.purple : 'text.secondary' }}>
                 <Icon size={19} />
               </ListItemIcon>
-              <ListItemText primary={n.modeIcon ? (mode === 'movie' ? 'Movies' : 'TV Shows') : n.label} primaryTypographyProps={{ fontWeight: 500 }} />
+              <ListItemText primary={n.label} primaryTypographyProps={{ fontWeight: 500 }} />
             </ListItemButton>
           );
         })}

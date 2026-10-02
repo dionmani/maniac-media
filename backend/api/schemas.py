@@ -332,6 +332,14 @@ class SeriesUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=512)
 
 
+class BulkEditRequest(BaseModel):
+    """Mass edit from the library poster/table view; only the fields that are sent are changed."""
+    ids: list[int] = Field(min_length=1, max_length=10000)
+    monitored: bool | None = None
+    quality_profile_id: int | None = None
+    monitor_new_seasons: bool | None = None  # series only
+
+
 class MonitorRequest(BaseModel):
     monitored: bool
 

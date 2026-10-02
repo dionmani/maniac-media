@@ -97,18 +97,24 @@ def refresh_movie(movie_id: int, user: Requires(Permission.MEDIA_WRITE)):
 
 
 @router.post("/movies/bulk", tags=["movies"])
-def bulk_movies(req: dict, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+def bulk_movies(req: schemas.BulkEditRequest, db: DB, user: Requires(Permission.MEDIA_WRITE)):
     """Bulk edit: {"ids": [...], "monitored": bool?, "quality_profile_id": int?}."""
-    ids = [int(i) for i in req.get("ids", [])][:10000]
-    changes = {k: req[k] for k in ("monitored", "quality_profile_id") if k in req}
-    if not ids or not changes:
-        raise HTTPException(422, "Provide ids and at least one change")
+    changes = _bulk_changes(req, db, ("monitored", "quality_profile_id"))
     count = 0
-    for movie in db.query(models.Movie).filter(models.Movie.id.in_(ids)):
+    for movie in db.query(models.Movie).filter(models.Movie.id.in_(req.ids)):
         media_service.update_movie(db, movie, changes, user.actor)
         count += 1
     db.commit()
     return {"updated": count}
+
+
+def _bulk_changes(req: schemas.BulkEditRequest, db, fields: tuple[str, ...]) -> dict:
+    changes = {k: getattr(req, k) for k in fields if getattr(req, k) is not None}
+    if not changes:
+        raise HTTPException(422, "Provide at least one change")
+    if "quality_profile_id" in changes and db.get(models.QualityProfile, changes["quality_profile_id"]) is None:
+        raise HTTPException(422, "Unknown quality profile")
+    return changes
 
 
 # ================================================================== series
@@ -170,6 +176,18 @@ async def add_series(req: schemas.AddMediaRequest, user: Requires(Permission.MED
             return get_series(series_id, db, None)
 
     return await asyncio.to_thread(load)
+
+
+@router.post("/series/bulk", tags=["series"])
+def bulk_series(req: schemas.BulkEditRequest, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+    """Bulk edit: {"ids": [...], "monitored"?, "quality_profile_id"?, "monitor_new_seasons"?}."""
+    changes = _bulk_changes(req, db, ("monitored", "quality_profile_id", "monitor_new_seasons"))
+    count = 0
+    for series in db.query(models.Series).filter(models.Series.id.in_(req.ids)):
+        media_service.update_series(db, series, changes, user.actor)
+        count += 1
+    db.commit()
+    return {"updated": count}
 
 
 @router.patch("/series/{series_id}", response_model=schemas.SeriesSummary, tags=["series"])

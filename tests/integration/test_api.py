@@ -207,6 +207,18 @@ def test_series_delete_episode_and_season(client, admin_headers, monkeypatch, tm
     assert client.delete(f"{API}/series/{sid}/seasons/9", headers=admin_headers).status_code == 404
 
 
+def test_bulk_edit_series(client, admin_headers):
+    ids = [client.post(f"{API}/series", json={"title": t}, headers=admin_headers).json()["id"] for t in ("Bulk One", "Bulk Two")]
+    r = client.post(f"{API}/series/bulk", json={"ids": ids, "quality_profile_id": 2, "monitored": False}, headers=admin_headers)
+    assert r.status_code == 200 and r.json() == {"updated": 2}
+    for sid in ids:
+        s = client.get(f"{API}/series/{sid}", headers=admin_headers).json()
+        assert s["quality_profile_id"] == 2 and s["monitored"] is False
+    assert client.post(f"{API}/series/bulk", json={"ids": ids}, headers=admin_headers).status_code == 422  # nothing to change
+    assert client.post(f"{API}/series/bulk", json={"ids": ids, "quality_profile_id": 9999}, headers=admin_headers).status_code == 422
+    assert client.post(f"{API}/series/bulk", json={"ids": [], "monitored": True}, headers=admin_headers).status_code == 422
+
+
 def test_naming_validation(client, admin_headers):
     assert client.put(f"{API}/settings", json={"movie_format": "{Title.__class__}"}, headers=admin_headers).status_code == 422
     preview = client.post(f"{API}/settings/naming/preview", json={"template": "{Title} ({Year})", "kind": "movie"}, headers=admin_headers).json()

@@ -121,6 +121,15 @@ def test_mode_switch_changes_library(server, page):
     page.wait_for_selector("text=series in your library")
 
 
+def test_mode_toggle_opens_library(server, page):
+    _login(page, server)
+    page.goto(server + "/wanted")
+    page.wait_for_selector("text=Wanted")
+    page.get_by_role("button", name="Movies").first.click()
+    page.wait_for_url("**/library")
+    page.wait_for_selector("text=movies in your library")
+
+
 def test_naming_preview_rejects_unknown_tokens(server, page):
     _login(page, server)
     page.goto(server + "/settings?tab=naming")
