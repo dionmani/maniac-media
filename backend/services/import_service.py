@@ -375,7 +375,7 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
         q = db.get(models.DownloadQueueItem, queue_id)
         if q is None:
             raise ImportError_("Queue item not found")
-        if q.status not in ("completed", "import_failed", "importing"):
+        if q.status not in ("completed", "import_failed") and not (force and q.status == "importing"):
             result.skipped.append(f"Queue item is {q.status}")
             return result
         q.status = "importing"

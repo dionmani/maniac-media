@@ -48,6 +48,11 @@ def test_full_download_and_import_pipeline(database, library):
     if status == "completed":  # a live worker pool may already have auto-imported it
         outcome = import_service.import_queue_item(queue_id)
         if not outcome.imported:  # lost the race: the worker imported between our status read and this call
+            for _ in range(20):
+                with session_scope() as db:
+                    if db.get(models.DownloadQueueItem, queue_id).status == "imported":
+                        break
+                time.sleep(0.5)
             with session_scope() as db:
                 assert db.get(models.DownloadQueueItem, queue_id).status == "imported", outcome
         else:

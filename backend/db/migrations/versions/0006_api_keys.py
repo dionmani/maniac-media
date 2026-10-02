@@ -29,7 +29,7 @@ def upgrade() -> None:
             sa.Column("prefix", sa.String(length=16), nullable=False),
             sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
             sa.Column("permissions", sa.JSON(), nullable=True),
-            sa.Column("allow_query_param", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+            sa.Column("allow_query_param", sa.Boolean(), nullable=False, server_default=sa.false()),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("expires_at", sa.DateTime(), nullable=True),
             sa.Column("last_used_at", sa.DateTime(), nullable=True),
