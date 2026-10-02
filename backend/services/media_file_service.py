@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.db import models
@@ -37,6 +38,21 @@ def _compute_relative_path(path_str: str, root_folder: str | None, fallback_fold
         except ValueError:
             pass
     return Path(path_str).name
+
+
+def _insert_or_get(db: Session, mf: models.MediaFile) -> models.MediaFile:
+    """Insert ``mf``; if a concurrent session (scanner/watcher) already inserted the same
+    path_hash, discard ours and return the winning row so the caller can update it."""
+    try:
+        with db.begin_nested():
+            db.add(mf)
+            db.flush()
+        return mf
+    except IntegrityError:
+        existing = db.scalar(select(models.MediaFile).where(models.MediaFile.path_hash == mf.path_hash))
+        if existing is None:
+            raise
+        return existing
 
 
 def attach_movie_file(
@@ -93,8 +109,15 @@ def attach_movie_file(
             added_at=utcnow(),
             updated_at=utcnow(),
         )
-        db.add(mf)
-        db.flush()
+        winner = _insert_or_get(db, mf)
+        if winner is not mf:
+            mf = winner
+            mf.movie_id = movie.id
+            mf.series_id = None
+            mf.path = path_str
+            mf.size_bytes = size_bytes
+            mf.mtime = mtime
+            mf.updated_at = utcnow()
     else:
         mf.movie_id = movie.id
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
@@ -193,8 +216,14 @@ def attach_episode_file(
             added_at=utcnow(),
             updated_at=utcnow(),
         )
-        db.add(mf)
-        db.flush()
+        winner = _insert_or_get(db, mf)
+        if winner is not mf:
+            mf = winner
+            mf.series_id = series.id
+            mf.path = path_str
+            mf.size_bytes = size_bytes
+            mf.mtime = mtime
+            mf.updated_at = utcnow()
     else:
         mf.series_id = series.id
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
