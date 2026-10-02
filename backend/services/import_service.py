@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
@@ -371,14 +371,22 @@ _CANDIDATE_STATE_REASONS: dict[str, ImportFailureReason] = {
 def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
     settings = get_settings()
     result = ImportResult()
+    allowed_statuses = ["completed", "import_failed"] + (["importing"] if force else [])
     with session_scope() as db:
         q = db.get(models.DownloadQueueItem, queue_id)
         if q is None:
             raise ImportError_("Queue item not found")
-        if q.status not in ("completed", "import_failed") and not (force and q.status == "importing"):
+        # Atomic claim: the WHERE guard and the write happen in one statement, so a concurrent
+        # caller (e.g. the worker pool racing a manual retry) that loses the race sees rowcount
+        # 0 and skips instead of both proceeding to import the same file.
+        claim = db.execute(
+            update(models.DownloadQueueItem)
+            .where(models.DownloadQueueItem.id == queue_id, models.DownloadQueueItem.status.in_(allowed_statuses))
+            .values(status="importing")
+        )
+        if claim.rowcount == 0:
             result.skipped.append(f"Queue item is {q.status}")
             return result
-        q.status = "importing"
         info = (q.download_path, q.media_type, q.media_id, q.season_num, q.episode_numbers or ([q.ep_num] if q.ep_num else []), q.protocol, q.release_title)
     bus.publish(EventType.QUEUE_CHANGED)
     download_path, media_type, media_id, season, episodes, protocol, release_title = info
