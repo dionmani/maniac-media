@@ -26,7 +26,7 @@ import {
 } from '@mui/material';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bookmark, BookmarkX, Film, LayoutGrid, List, ListChecks, Pencil, Plus, RefreshCw, Search, Tv, X } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { MovieSummary, Page, QualityProfile, SeriesSummary } from '../api/types';
@@ -128,54 +128,73 @@ export default function LibraryPage() {
   const anchorOf = useMemo(() => new Map([...anchors].map(([l, id]) => [id, l])), [anchors]);
   const showJump = anchors.size > 1;
 
-  return (
-    <>
-      <PageHeader
-        title={mode === 'movie' ? 'Movies' : 'TV Shows'}
-        icon={<Icon color={mode === 'movie' ? palette.purple : palette.cyan} />}
-        subtitle={query.data ? `${items.length.toLocaleString()} ${mode === 'movie' ? 'movies' : 'series'} in your library` : undefined}
-        actions={
-          <>
-            {can('library:scan') && (
-              <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => scan.mutate()} disabled={scan.isPending}>
-                Scan folder
-              </Button>
-            )}
-            {can('media:write') && (
-              <Button variant={selecting ? 'contained' : 'outlined'} color="inherit" startIcon={<ListChecks size={16} />} onClick={() => (selecting ? stopSelecting() : setSelecting(true))}>
-                {selecting ? 'Done' : 'Select'}
-              </Button>
-            )}
-            {can('media:write') && (
-              <Button variant="contained" color={mode === 'movie' ? 'primary' : 'secondary'} startIcon={<Plus size={16} />} onClick={() => navigate('/add')}>
-                Add {mode === 'movie' ? 'movie' : 'series'}
-              </Button>
-            )}
-          </>
-        }
-      />
+  // Track the sticky header's height so jump targets land just below it and the jump bar sits beneath it.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeaderHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} sx={{ mb: 3 }} alignItems={{ md: 'center' }}>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
-          {FILTERS[mode].map((f) => (
-            <Chip key={f.value} label={f.label} onClick={() => setFilter(f.value)} color={filter === f.value ? 'secondary' : 'default'}
-              variant={filter === f.value ? 'filled' : 'outlined'} />
-          ))}
+  return (
+    <Box style={{ '--lib-header-h': `${headerHeight}px` } as CSSProperties}>
+      {/* Header + filters stay pinned (desktop) while the library scrolls underneath. On phones the
+          filter bar wraps into a tall column, so it scrolls away normally there. */}
+      <Box ref={headerRef} sx={{
+        position: { xs: 'static', md: 'sticky' }, top: 0, zIndex: 7, bgcolor: 'background.default',
+        mx: { xs: -2, md: -4 }, px: { xs: 2, md: 4 }, mt: { xs: -8, md: -4 }, pt: { xs: 8, md: 4 }, pb: 2, mb: 3,
+        borderBottom: 1, borderColor: 'divider',
+      }}>
+        <PageHeader
+          title={mode === 'movie' ? 'Movies' : 'TV Shows'}
+          icon={<Icon color={mode === 'movie' ? palette.purple : palette.cyan} />}
+          subtitle={query.data ? `${items.length.toLocaleString()} ${mode === 'movie' ? 'movies' : 'series'} in your library` : undefined}
+          actions={
+            <>
+              {can('library:scan') && (
+                <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => scan.mutate()} disabled={scan.isPending}>
+                  Scan folder
+                </Button>
+              )}
+              {can('media:write') && (
+                <Button variant={selecting ? 'contained' : 'outlined'} color="inherit" startIcon={<ListChecks size={16} />} onClick={() => (selecting ? stopSelecting() : setSelecting(true))}>
+                  {selecting ? 'Done' : 'Select'}
+                </Button>
+              )}
+              {can('media:write') && (
+                <Button variant="contained" color={mode === 'movie' ? 'primary' : 'secondary'} startIcon={<Plus size={16} />} onClick={() => navigate('/add')}>
+                  Add {mode === 'movie' ? 'movie' : 'series'}
+                </Button>
+              )}
+            </>
+          }
+        />
+
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+            {FILTERS[mode].map((f) => (
+              <Chip key={f.value} label={f.label} onClick={() => setFilter(f.value)} color={filter === f.value ? 'secondary' : 'default'}
+                variant={filter === f.value ? 'filled' : 'outlined'} />
+            ))}
+          </Stack>
+          <TextField select size="small" label="Sort" value={sort} onChange={(e) => setSort(e.target.value)} sx={{ minWidth: 140 }}>
+            {SORTS[mode].map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
+          </TextField>
+          <ToggleButtonGroup size="small" exclusive value={order} onChange={(_, v) => v && setOrder(v)}>
+            <ToggleButton value="asc">Asc</ToggleButton>
+            <ToggleButton value="desc">Desc</ToggleButton>
+          </ToggleButtonGroup>
+          <TextField size="small" placeholder="Filter by title…" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: 240 }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment> }} />
+          <ToggleButtonGroup size="small" exclusive value={libraryView} onChange={(_, v) => v && setLibraryView(v)}>
+            <ToggleButton value="posters"><Tooltip title="Posters"><LayoutGrid size={16} /></Tooltip></ToggleButton>
+            <ToggleButton value="table"><Tooltip title="Table"><List size={16} /></Tooltip></ToggleButton>
+          </ToggleButtonGroup>
         </Stack>
-        <TextField select size="small" label="Sort" value={sort} onChange={(e) => setSort(e.target.value)} sx={{ minWidth: 140 }}>
-          {SORTS[mode].map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
-        </TextField>
-        <ToggleButtonGroup size="small" exclusive value={order} onChange={(_, v) => v && setOrder(v)}>
-          <ToggleButton value="asc">Asc</ToggleButton>
-          <ToggleButton value="desc">Desc</ToggleButton>
-        </ToggleButtonGroup>
-        <TextField size="small" placeholder="Filter by title…" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: 240 }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment> }} />
-        <ToggleButtonGroup size="small" exclusive value={libraryView} onChange={(_, v) => v && setLibraryView(v)}>
-          <ToggleButton value="posters"><Tooltip title="Posters"><LayoutGrid size={16} /></Tooltip></ToggleButton>
-          <ToggleButton value="table"><Tooltip title="Table"><List size={16} /></Tooltip></ToggleButton>
-        </ToggleButtonGroup>
-      </Stack>
+      </Box>
 
       <ErrorAlert error={query.error} />
       <Box sx={{ pr: showJump ? { xs: 3, md: 4 } : 0 }}>
@@ -223,7 +242,7 @@ export default function LibraryPage() {
         </Stack>
       )}
       <BulkEditDialog open={editing} mode={mode} ids={[...selected]} onClose={() => setEditing(false)} onDone={stopSelecting} />
-    </>
+    </Box>
   );
 }
 
@@ -248,14 +267,20 @@ function jumpLetter(i: Item): string {
   return c >= 'A' && c <= 'Z' ? c : '#';
 }
 
+// Phones: clear the floating menu button. Desktop: clear the sticky header.
+const SCROLL_MARGIN = { xs: 72, md: 'calc(var(--lib-header-h) + 16px)' };
+
 const anchorId = (letter: string) => `library-jump-${letter === '#' ? 'num' : letter}`;
 
 function JumpBar({ available }: { available: Map<string, number> }) {
   const jump = (letter: string) => document.getElementById(anchorId(letter))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   return (
     <Stack component="nav" aria-label="Jump to letter" sx={{
-      position: 'fixed', right: { xs: 2, md: 8 }, top: '50%', transform: 'translateY(-50%)', zIndex: 6, py: 0.75, px: 0.25,
-      borderRadius: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', boxShadow: 4, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto',
+      position: 'fixed', right: { xs: 2, md: 8 }, transform: 'translateY(-50%)', zIndex: 6, py: 0.75, px: 0.25,
+      // Centred in the space below the sticky header on desktop; centred in the viewport on phones.
+      top: { xs: '50%', md: 'calc((100vh + var(--lib-header-h)) / 2)' },
+      maxHeight: { xs: 'calc(100vh - 32px)', md: 'calc(100vh - var(--lib-header-h) - 32px)' },
+      borderRadius: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', boxShadow: 4, overflowY: 'auto',
     }}>
       {LETTERS.map((l) => {
         const enabled = available.has(l);
@@ -278,7 +303,7 @@ type CardProps = { item: Item; onOpen: (i: Item) => void; selecting: boolean; se
 // Memoized so toggling one checkbox in a large library doesn't re-render every row/card.
 const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, selected, anchor }: CardProps) {
   return (
-    <TableRow id={anchor ? anchorId(anchor) : undefined} hover selected={selected} onClick={() => onOpen(i)} sx={{ cursor: 'pointer', scrollMarginTop: 72 }}>
+    <TableRow id={anchor ? anchorId(anchor) : undefined} hover selected={selected} onClick={() => onOpen(i)} sx={{ cursor: 'pointer', scrollMarginTop: SCROLL_MARGIN }}>
       <TableCell sx={{ width: 32 }}>
         {selecting ? <Checkbox size="small" checked={selected} />
           : i.monitored ? <Bookmark size={15} color={palette.cyan} /> : <BookmarkX size={15} color={palette.dim} />}
@@ -366,7 +391,7 @@ const PosterCard = memo(function PosterCard({ item, onOpen, selecting, selected,
     : item.has_file ? { label: item.quality ?? 'On disk', color: palette.green } : { label: 'Missing', color: palette.red };
   return (
     // content-visibility lets the browser skip layout/paint for off-screen cards when the whole library is rendered.
-    <Card id={anchor ? anchorId(anchor) : undefined} sx={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px', scrollMarginTop: 72, transition: 'all .2s', ...(selected && { borderColor: palette.cyan, boxShadow: `0 0 0 2px ${palette.cyan}` }), '&:hover': { transform: 'translateY(-4px)', borderColor: palette.purple, boxShadow: `0 0 24px ${palette.purple}26` } }}>
+    <Card id={anchor ? anchorId(anchor) : undefined} sx={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px', scrollMarginTop: SCROLL_MARGIN, transition: 'all .2s', ...(selected && { borderColor: palette.cyan, boxShadow: `0 0 0 2px ${palette.cyan}` }), '&:hover': { transform: 'translateY(-4px)', borderColor: palette.purple, boxShadow: `0 0 24px ${palette.purple}26` } }}>
       <CardActionArea onClick={() => onOpen(item)}>
         <Box sx={{ position: 'relative', aspectRatio: '2 / 3', bgcolor: '#181a2e', '& > *': { width: '100% !important', height: '100% !important', borderRadius: '0 !important' } }}>
           <Poster src={item.poster_path} title={item.title} height={240} />
