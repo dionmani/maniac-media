@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import delete as sa_delete, select, update
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
@@ -239,6 +239,65 @@ def prune_stale_seasons(db: Session, series: models.Series, meta: MediaMetadata,
     return result
 
 
+def remove_episodes(db: Session, series: models.Series, episodes: list[models.Episode], *, delete_files: bool,
+                    apply: bool, actor: Actor, drop_season: int | None = None) -> dict:
+    """Preview (apply=False) or remove episodes from the library, optionally recycling their files.
+
+    A file also linked to episodes outside this removal (multi-episode file) is never recycled.
+    ``drop_season`` additionally deletes that (now empty) season row.
+    """
+    ids = {e.id for e in episodes}
+    files: dict[int, models.MediaFile] = {}
+    for ep in episodes:
+        for mf in ep.files:
+            files[mf.id] = mf
+    infos = []
+    for mf in files.values():
+        shared = any(e.id not in ids for e in mf.episodes)
+        infos.append((mf, shared, Path(mf.path).exists()))
+    result = {
+        "episodes": len(episodes),
+        "files": [{"path": mf.path, "exists": exists, "shared": shared} for mf, shared, exists in infos],
+        "files_recycled": 0,
+        "applied": False,
+    }
+    if not apply:
+        return result
+    recycle_root = Path(get_settings().recycle_bin)
+    recycled = 0
+    doomed = []
+    for mf, shared, exists in infos:
+        if shared:
+            continue
+        if delete_files and exists:
+            fileops.recycle(Path(mf.path), recycle_root)
+            recycled += 1
+        doomed.append(mf.id)
+    # drop the link rows in one statement so the ORM doesn't also try to delete them via both relationships
+    db.execute(sa_delete(models.EpisodeFile).where(models.EpisodeFile.episode_id.in_(ids)))
+    if doomed:
+        db.execute(sa_delete(models.MediaFile).where(models.MediaFile.id.in_(doomed)))
+    db.expire_all()
+    for ep in episodes:
+        db.delete(ep)
+    db.flush()
+    if drop_season is not None:
+        season = db.scalar(select(models.Season).where(models.Season.series_id == series.id, models.Season.season_number == drop_season))
+        if season is not None:
+            db.refresh(season)
+            db.delete(season)
+            db.flush()
+    real = db.scalars(select(models.Season.season_number).where(models.Season.series_id == series.id, models.Season.season_number > 0)).all()
+    series.total_seasons = max(real) if real else (series.total_seasons or 1)
+    what = f"season {drop_season}" if drop_season is not None else "episode"
+    history(db, "tv", series.id, series.title, "deleted", details=f"Removed {len(episodes)} {what} episode(s); {recycled} file(s) recycled")
+    audit(db, "delete", "series.remove_episodes", actor=actor, entity_type="series", entity_id=series.id,
+          details={"episodes": len(episodes), "season": drop_season, "delete_files": delete_files, "recycled": recycled}, severity="warning")
+    result["files_recycled"] = recycled
+    result["applied"] = True
+    return result
+
+
 def delete_series(db: Session, series: models.Series, *, delete_files: bool, actor: Actor) -> None:
     recycled = 0
     if delete_files:
@@ -264,6 +323,6 @@ def publish_change(kind: str, media_type: str, media_id: int, **extra) -> None:
 
 __all__ = [
     "MediaError", "ConflictError", "add_movie", "update_movie", "delete_movie", "add_series", "update_series",
-    "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "prune_stale_seasons", "delete_series",
+    "set_season_monitored", "set_episodes_monitored", "add_season", "add_episode", "prune_stale_seasons", "remove_episodes", "delete_series",
     "apply_monitoring_preset", "publish_change", "EventType",
 ]

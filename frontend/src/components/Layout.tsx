@@ -25,6 +25,7 @@ import {
   FileText,
   Film,
   FolderInput,
+  HelpCircle,
   LayoutDashboard,
   LogOut,
   Menu as MenuIcon,
@@ -56,6 +57,7 @@ const NAV = [
   { to: '/renamer', label: 'Renamer', icon: FileText, perm: 'files:rename' },
   { to: '/settings', label: 'Settings', icon: Settings, perm: 'settings:read' },
   { to: '/system', label: 'System', icon: ShieldCheck, perm: 'system:read' },
+  { to: '/help', label: 'Help & Q&A', icon: HelpCircle, perm: 'media:read' },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

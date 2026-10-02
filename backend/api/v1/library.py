@@ -21,6 +21,11 @@ router = APIRouter(tags=["library"])
 
 @router.post("/library/scan")
 def scan(req: schemas.ScanRequest, user: Requires(Permission.LIBRARY_SCAN)):
+    if req.media_id is not None:
+        if req.scope == "all":
+            raise HTTPException(422, "media_id needs scope 'movies' or 'tv'")
+        job = job_queue.enqueue("library_scan", req.model_dump(), dedupe_key=f"scan:{req.scope}:{req.media_id}")
+        return {"job_id": job, "message": "Rescan queued"}
     if not req.incremental:
         scanner_service.reset_scan_state("movie" if req.scope == "movies" else "tv" if req.scope == "tv" else None)
     job = job_queue.enqueue("library_scan", req.model_dump(), dedupe_key=f"scan:{req.scope}")

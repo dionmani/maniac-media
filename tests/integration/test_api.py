@@ -159,6 +159,54 @@ def test_series_prune_stale_seasons(client, admin_headers, monkeypatch):
     assert client.post(f"{API}/series/{sid}/prune-stale", params={"dry_run": False}, headers=admin_headers).status_code == 502
 
 
+def test_series_delete_episode_and_season(client, admin_headers, monkeypatch, tmp_path):
+    from sqlalchemy import select
+
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.domain.quality import parse_quality
+    from backend.services import media_file_service, metadata_service
+
+    async def fake_series(**kw):
+        return MediaMetadata(media_type="tv", provider="test", title="Futurama", year=1999, tvmaze_id=538, season_count=2,
+                             episodes=[EpisodeMetadata(s, e, f"Ep {s}x{e}") for s in (1, 2) for e in (1, 2, 3)])
+
+    monkeypatch.setattr(metadata_service, "fetch_series", fake_series)
+    sid = client.post(f"{API}/series", json={"title": "Futurama", "tvmaze_id": 538}, headers=admin_headers).json()["id"]
+    single, double = tmp_path / "S01E01.mkv", tmp_path / "S02E01E02.mkv"
+    single.write_bytes(b"x")
+    double.write_bytes(b"y")
+    with session_scope() as db:
+        series = db.get(models.Series, sid)
+        eps = {(e.season_number, e.episode_number): e for e in db.scalars(select(models.Episode).where(models.Episode.series_id == sid))}
+        media_file_service.attach_episode_file(db, series, [eps[1, 1]], single, parse_quality(single.name))
+        media_file_service.attach_episode_file(db, series, [eps[2, 1], eps[2, 2]], double, parse_quality(double.name))
+        ids = {k: v.id for k, v in eps.items()}
+
+    # preview is the default and changes nothing
+    r = client.delete(f"{API}/series/{sid}/episodes/{ids[1, 1]}", params={"delete_files": True}, headers=admin_headers).json()
+    assert r["applied"] is False and r["files"] == [{"path": str(single), "exists": True, "shared": False}]
+    assert single.exists()
+
+    # apply: the single-episode file is recycled and the episode row is gone
+    r = client.delete(f"{API}/series/{sid}/episodes/{ids[1, 1]}", params={"delete_files": True, "dry_run": False}, headers=admin_headers).json()
+    assert r["applied"] is True and r["files_recycled"] == 1
+    assert not single.exists()
+    detail = client.get(f"{API}/series/{sid}", headers=admin_headers).json()
+    assert detail["episode_count"] == 5
+
+    # one episode of a multi-episode file: the shared file is flagged and left on disk
+    r = client.delete(f"{API}/series/{sid}/episodes/{ids[2, 1]}", params={"delete_files": True, "dry_run": False}, headers=admin_headers).json()
+    assert r["files"][0]["shared"] is True and r["files_recycled"] == 0 and double.exists()
+
+    # whole season, files kept on disk
+    r = client.delete(f"{API}/series/{sid}/seasons/2", params={"dry_run": False}, headers=admin_headers).json()
+    assert r["applied"] is True and r["files_recycled"] == 0 and double.exists()
+    detail = client.get(f"{API}/series/{sid}", headers=admin_headers).json()
+    assert [s["season_number"] for s in detail["seasons"]] == [1]
+    assert client.delete(f"{API}/series/{sid}/seasons/9", headers=admin_headers).status_code == 404
+
+
 def test_naming_validation(client, admin_headers):
     assert client.put(f"{API}/settings", json={"movie_format": "{Title.__class__}"}, headers=admin_headers).status_code == 422
     preview = client.post(f"{API}/settings/naming/preview", json={"template": "{Title} ({Year})", "kind": "movie"}, headers=admin_headers).json()

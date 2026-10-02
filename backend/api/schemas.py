@@ -360,6 +360,19 @@ class PruneStaleResult(BaseModel):
     applied: bool
 
 
+class DeleteFileInfo(BaseModel):
+    path: str
+    exists: bool
+    shared: bool = False  # also linked to episodes outside the delete – never recycled
+
+
+class DeleteEpisodesResult(BaseModel):
+    episodes: int
+    files: list[DeleteFileInfo]
+    files_recycled: int = 0
+    applied: bool
+
+
 class AddEpisodeRequest(BaseModel):
     season_number: int = Field(ge=0, le=500)
     episode_number: int = Field(ge=0, le=5000)
@@ -492,6 +505,7 @@ class ManualImportDeleteRequest(BaseModel):
 class ScanRequest(BaseModel):
     scope: Literal["movies", "tv", "all"] = "all"
     incremental: bool = True
+    media_id: int | None = None  # restrict the pass to one movie / series (needs a single-type scope)
 
 
 class IssueActionRequest(BaseModel):

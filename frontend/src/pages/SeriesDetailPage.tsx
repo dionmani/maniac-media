@@ -2,8 +2,10 @@ import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
@@ -26,11 +28,11 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post, put } from '../api/client';
-import type { Episode, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
+import type { DeleteEpisodesResult, Episode, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
 import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
@@ -50,6 +52,7 @@ export default function SeriesDetailPage() {
   const [search, setSearch] = useState<SearchTarget | null>(null);
   const [adding, setAdding] = useState<'season' | 'episode' | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
+  const [removal, setRemoval] = useState<RemovalTarget | null>(null);
 
   const series = useQuery({ queryKey: ['series', id], queryFn: () => get<Series>(`/series/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -140,6 +143,14 @@ export default function SeriesDetailPage() {
               </Button>
             )}
             {write && <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => run.mutate(() => post(`/series/${id}/refresh`).then(() => ({ message: 'Metadata refresh queued' })))}>Refresh metadata</Button>}
+            {can('library:scan') && (
+              <Tooltip title="Re-check this show's files on disk – picks up files you added or deleted by hand">
+                <Button variant="outlined" startIcon={<FolderSync size={16} />}
+                  onClick={() => run.mutate(() => post('/library/scan', { scope: 'tv', incremental: true, media_id: id }).then(() => ({ message: 'Rescan queued – refresh in a moment' })))}>
+                  Rescan files
+                </Button>
+              </Tooltip>
+            )}
             {can('files:rename') && <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=tv&media_id=${id}`)}>Rename files</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('season')}>Add season</Button>}
             {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('episode')}>Add episode</Button>}
@@ -156,7 +167,7 @@ export default function SeriesDetailPage() {
           </Section>
           {seasons.map((season) => (
             <SeasonPanel key={season.id} season={season} series={s} write={write} canSearch={can('search:execute')}
-              onChanged={refresh} onSearch={setSearch} defaultExpanded={season.season_number === seasons.find((x) => x.season_number > 0)?.season_number} />
+              canDelete={can('media:delete')} onRemove={setRemoval} onChanged={refresh} onSearch={setSearch} defaultExpanded={season.season_number === seasons.find((x) => x.season_number > 0)?.season_number} />
           ))}
           <Section title="Cast" sx={{ mt: 2 }}><CastList cast={s.cast_members} /></Section>
         </Grid>
@@ -186,14 +197,18 @@ export default function SeriesDetailPage() {
       </Grid>
 
       <AddDialog kind={adding} seriesId={id} onClose={() => setAdding(null)} onDone={refresh} />
+      <RemoveDialog seriesId={id} target={removal} onClose={() => setRemoval(null)} onDone={refresh} />
       <InteractiveSearchDialog target={search} onClose={() => setSearch(null)} />
       {dialog}
     </>
   );
 }
 
-function SeasonPanel({ season, series, write, canSearch, onChanged, onSearch, defaultExpanded }: {
-  season: Season; series: Series; write: boolean; canSearch: boolean; onChanged: () => void; onSearch: (t: SearchTarget) => void; defaultExpanded: boolean;
+type RemovalTarget = { kind: 'episode'; episode: Episode } | { kind: 'season'; season: number };
+
+function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, onChanged, onSearch, defaultExpanded }: {
+  season: Season; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void;
+  onChanged: () => void; onSearch: (t: SearchTarget) => void; defaultExpanded: boolean;
 }) {
   const episodes = [...season.episodes].sort((a, b) => b.episode_number - a.episode_number);
   const have = episodes.filter((e) => e.has_file).length;
@@ -235,6 +250,13 @@ function SeasonPanel({ season, series, write, canSearch, onChanged, onSearch, de
               </IconButton>
             </Tooltip>
           )}
+          {canDelete && (
+            <Tooltip title="Delete this season…">
+              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onRemove({ kind: 'season', season: season.season_number }); }}>
+                <Trash2 size={16} color={palette.red} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </AccordionSummary>
       <AccordionDetails sx={{ p: 0 }}>
@@ -251,7 +273,7 @@ function SeasonPanel({ season, series, write, canSearch, onChanged, onSearch, de
           </TableHead>
           <TableBody>
             {episodes.map((ep) => (
-              <EpisodeRow key={ep.id} ep={ep} series={series} write={write} canSearch={canSearch} call={call} onSearch={onSearch} />
+              <EpisodeRow key={ep.id} ep={ep} series={series} write={write} canSearch={canSearch} canDelete={canDelete} onRemove={onRemove} call={call} onSearch={onSearch} />
             ))}
           </TableBody>
         </Table>
@@ -260,8 +282,8 @@ function SeasonPanel({ season, series, write, canSearch, onChanged, onSearch, de
   );
 }
 
-function EpisodeRow({ ep, series, write, canSearch, call, onSearch }: {
-  ep: Episode; series: Series; write: boolean; canSearch: boolean; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
+function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, onSearch }: {
+  ep: Episode; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
 }) {
   const aired = !ep.air_date || ep.air_date <= today;
   const primaryFile = ep.files?.find((f) => f.is_primary) ?? ep.files?.[0];
@@ -313,8 +335,93 @@ function EpisodeRow({ ep, series, write, canSearch, call, onSearch }: {
             </Tooltip>
           </>
         )}
+        {canDelete && (
+          <Tooltip title="Delete episode…">
+            <IconButton size="small" onClick={() => onRemove({ kind: 'episode', episode: ep })}>
+              <Trash2 size={14} color={palette.red} />
+            </IconButton>
+          </Tooltip>
+        )}
       </TableCell>
     </TableRow>
+  );
+}
+
+/** Two-step delete of an episode or season: preview what it touches, then require an explicit acknowledgement before any file moves. */
+function RemoveDialog({ seriesId, target, onClose, onDone }: { seriesId: number; target: RemovalTarget | null; onClose: () => void; onDone: () => void }) {
+  const [preview, setPreview] = useState<DeleteEpisodesResult | null>(null);
+  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [ack, setAck] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const url = target?.kind === 'episode' ? `/series/${seriesId}/episodes/${target.episode.id}` : target ? `/series/${seriesId}/seasons/${target.season}` : '';
+  const label = target?.kind === 'episode' ? `${episodeCode(target.episode.season_number, target.episode.episode_number)} – ${target.episode.title}`
+    : target ? (target.season === 0 ? 'Specials' : `Season ${target.season}`) : '';
+
+  useEffect(() => {
+    setPreview(null); setDeleteFiles(false); setAck(false);
+    if (!target) return;
+    del<DeleteEpisodesResult>(url).then(setPreview).catch((e) => { toast(errorMessage(e), 'error'); onClose(); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+
+  const removable = preview?.files.filter((f) => !f.shared && f.exists) ?? [];
+  const shared = preview?.files.filter((f) => f.shared) ?? [];
+  const needsAck = deleteFiles && removable.length > 0;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const done = await del<DeleteEpisodesResult>(url, { delete_files: deleteFiles, dry_run: false });
+      toast(`Removed ${done.episodes} episode(s)${done.files_recycled ? `; ${done.files_recycled} file(s) moved to the recycle bin` : ''}`, 'success');
+      onDone();
+      onClose();
+    } catch (e) {
+      toast(errorMessage(e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!target} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Delete {label}?</DialogTitle>
+      <DialogContent>
+        {!preview ? <Loading /> : (
+          <Stack spacing={1.5}>
+            <Typography variant="body2" color="text.secondary">
+              This removes {preview.episodes} episode(s) from the library. A metadata refresh may add them back if the provider still lists them.
+            </Typography>
+            {removable.length > 0 && (
+              <>
+                <FormControlLabel label="Also move the file(s) on the server to the recycle bin"
+                  control={<Checkbox checked={deleteFiles} onChange={(e) => { setDeleteFiles(e.target.checked); setAck(false); }} />} />
+                <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                  {removable.map((f) => <li key={f.path}><Box component="code" sx={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{f.path}</Box></li>)}
+                </Box>
+                {!deleteFiles && <Typography variant="body2" color="text.secondary">Without this the file(s) stay on disk, and a later scan may re-add them.</Typography>}
+              </>
+            )}
+            {shared.length > 0 && (
+              <Alert severity="info">
+                {shared.length} file(s) also hold other episodes that are staying, so they will not be touched.
+              </Alert>
+            )}
+            {needsAck && (
+              <Alert severity="warning" icon={<Trash2 size={18} />}>
+                <FormControlLabel label={`I understand ${removable.length} file(s) on the server will be moved out of the library to the recycle bin.`}
+                  control={<Checkbox checked={ack} onChange={(e) => setAck(e.target.checked)} />} />
+              </Alert>
+            )}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button variant="contained" color="error" onClick={submit} disabled={!preview || busy || (needsAck && !ack)}>
+          {needsAck ? 'Delete episode(s) and file(s)' : 'Delete episode(s)'}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 

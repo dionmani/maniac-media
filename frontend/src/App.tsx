@@ -19,6 +19,7 @@ const Import = lazy(() => import('./pages/ImportPage'));
 const Renamer = lazy(() => import('./pages/RenamerPage'));
 const Settings = lazy(() => import('./pages/SettingsPage'));
 const System = lazy(() => import('./pages/SystemPage'));
+const Help = lazy(() => import('./pages/HelpPage'));
 
 function Authenticated() {
   useLiveEvents();
@@ -39,6 +40,7 @@ function Authenticated() {
           <Route path="/renamer" element={<Renamer />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/system" element={<System />} />
+          <Route path="/help" element={<Help />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

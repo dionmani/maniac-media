@@ -151,6 +151,13 @@ export interface SeriesSummary {
   added_date?: string | null;
 }
 
+export interface DeleteEpisodesResult {
+  episodes: number;
+  files: { path: string; exists: boolean; shared: boolean }[];
+  files_recycled: number;
+  applied: boolean;
+}
+
 export interface PruneStaleResult {
   provider: string;
   episodes: number;

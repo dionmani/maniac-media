@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import select
 
 from backend.api import schemas
 from backend.api.deps import DB, Paging, Requires, page_response
@@ -236,6 +237,39 @@ def add_episode(series_id: int, req: schemas.AddEpisodeRequest, db: DB, user: Re
         raise HTTPException(409, str(exc))
     db.commit()
     return ep
+
+
+@router.delete("/series/{series_id}/episodes/{episode_id}", response_model=schemas.DeleteEpisodesResult, tags=["series"])
+def delete_episode(series_id: int, episode_id: int, db: DB, user: Requires(Permission.MEDIA_DELETE),
+                   delete_files: bool = False, dry_run: bool = True):
+    """Remove one episode (and optionally move its file to the recycle bin). Defaults to a preview."""
+    series = db.get(models.Series, series_id)
+    ep = db.get(models.Episode, episode_id)
+    if series is None or ep is None or ep.series_id != series_id:
+        raise HTTPException(404, "Episode not found")
+    result = media_service.remove_episodes(db, series, [ep], delete_files=delete_files, apply=not dry_run, actor=user.actor)
+    db.commit()
+    if result["applied"]:
+        bus.publish(EventType.MEDIA_UPDATED, media_type="tv", media_id=series_id)
+    return schemas.DeleteEpisodesResult(**result)
+
+
+@router.delete("/series/{series_id}/seasons/{season_number}", response_model=schemas.DeleteEpisodesResult, tags=["series"])
+def delete_season(series_id: int, season_number: int, db: DB, user: Requires(Permission.MEDIA_DELETE),
+                  delete_files: bool = False, dry_run: bool = True):
+    """Remove a whole season (and optionally move its files to the recycle bin). Defaults to a preview."""
+    series = db.get(models.Series, series_id)
+    if series is None:
+        raise HTTPException(404, "Series not found")
+    eps = list(db.scalars(select(models.Episode).where(models.Episode.series_id == series_id, models.Episode.season_number == season_number)))
+    season = db.scalar(select(models.Season).where(models.Season.series_id == series_id, models.Season.season_number == season_number))
+    if season is None and not eps:
+        raise HTTPException(404, "Season not found")
+    result = media_service.remove_episodes(db, series, eps, delete_files=delete_files, apply=not dry_run, actor=user.actor, drop_season=season_number)
+    db.commit()
+    if result["applied"]:
+        bus.publish(EventType.MEDIA_UPDATED, media_type="tv", media_id=series_id)
+    return schemas.DeleteEpisodesResult(**result)
 
 
 @router.delete("/series/{series_id}", response_model=schemas.Message, tags=["series"])
