@@ -163,6 +163,102 @@ def _finish(title_part: str, season, episodes, full_season, air_date, stem) -> P
     )
 
 
+# ---------------------------------------------------------------- title guessing (manual import "smart match")
+# Anything from the first of these tokens onward is release noise, not title. Deliberately excludes words that are
+# also common in real titles ("Web", "The French Connection", "Cam", "Complete").
+_JUNK = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"\d{3,4}[pi]|[48]k|uhd|"                                                   # resolution
+    r"blu-?ray|bdrip|brrip|bdremux|remux|web-?dl|web-?rip|webhd|hdtv|pdtv|dvd-?rip|dvd-?scr|dvd[59r]|hd-?rip|hdcam|telesync|"  # source
+    r"[xh]\.?26[45]|hevc|avc|xvid|divx|av1|vp9|10-?bit|8-?bit|"                  # codec
+    r"dts(?:-?hd)?(?:-?ma)?|dd[p+]?\d(?:\.\d)?|truehd|atmos|aac\d?(?:\.\d)?|e?-?ac-?3|flac|"   # audio
+    r"hdr10\+?|hdr|dolby[ ._-]?vision|sdr|hlg|"                                  # dynamic range
+    r"proper|repack|rerip|extended|unrated|uncut|remastered|theatrical|directors?[ ._-]?cut|imax|"
+    r"multi|dual|dubbed|vostfr|truefrench|amzn|dsnp|hmax|atvp|pcok"              # edition / language / streaming tags
+    r")(?![A-Za-z0-9])",
+    re.I,
+)
+_YEAR_IN_TITLE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?![\dpPiIxX])")
+_BRACKET_YEAR = re.compile(r"[\[(]((?:19|20)\d{2})[\])]")
+_LEADING_TAG = re.compile(r"^(?:\s*[\[(][^\])]*[\])]\s*|\s*www\.\S+?\.[a-z]{2,4}\s*[-–]\s*)+", re.I)
+_SEASON_DIR = re.compile(r"^(?:season[ ._-]*\d+|s\d{1,2}|series[ ._-]*\d+|specials?)$", re.I)
+_EXTRAS_DIR = re.compile(r"^(?:extras?|featurettes?|subs?|subtitles?|sample)$", re.I)
+_GENERIC_NAME = re.compile(r"^(?:movie|video|film|sample|file|vid|cd ?\d|disc ?\d|part ?\d|\d{1,2})$", re.I)
+
+
+@dataclass
+class TitleGuess:
+    query: str
+    year: int | None = None
+    kind: str = "unknown"            # "tv" when the name carries an episode/season marker or sits in a Season folder
+    season: int | None = None
+    episodes: list[int] = field(default_factory=list)
+    imdb_id: str | None = None
+    from_folder: bool = False        # the file name had no usable title; it came from a parent folder
+
+
+def _strip_noise(raw: str) -> tuple[str, int | None]:
+    """'The.Matrix.1999.1080p.BluRay.x264-GRP' -> ('The Matrix', 1999)."""
+    text = _LEADING_TAG.sub("", raw.replace("_", " "))   # 1:1 replacement keeps indexes valid
+    cut = len(text)
+    for rx in (_JUNK, re.compile(r"[\[(]"), *_EP_PATTERNS, _SEASON_PACK):
+        m = rx.search(text)
+        if m:
+            cut = min(cut, m.start())
+    head = text[:cut]
+    year = None
+    if m := _BRACKET_YEAR.search(text):          # "Blade Runner 2049 (2017)": the bracketed year is the release year
+        year = int(m.group(1))
+    else:
+        # last year before the noise that isn't the very first token ("2012 2009", "Blade Runner 2049 2017")
+        in_head = [y for y in _YEAR_IN_TITLE.finditer(head) if y.start() > 0]
+        after = [y for y in _YEAR_IN_TITLE.finditer(text, cut) if y.start() > 0]   # "Movie 1080p 2019"
+        if in_head:
+            year, head = int(in_head[-1].group(1)), head[: in_head[-1].start()]
+        elif after:
+            year = int(after[-1].group(1))
+    return clean_title(head).strip(" -–.,"), year
+
+
+def _meaningful(title: str) -> bool:
+    return len(re.sub(r"[^A-Za-z0-9]", "", title)) >= 2 and not _GENERIC_NAME.match(title.strip())
+
+
+def guess_title(path: str) -> TitleGuess:
+    """Best-effort search query (title + year + episode hints) for a media file path.
+
+    Looks at the file name first; when that has no usable title (``S01E02.mkv``, ``movie.mkv``) it walks up the
+    parent folders, skipping ``Season 01`` style directories. A year in the parent folder ("The Matrix (1999)")
+    fills in a year the file name lacks.
+    """
+    p = PurePath(path.replace("\\", "/"))
+    parents = [x.name for x in list(p.parents)[:3] if x.name and not x.name.endswith(":")]
+    imdb = _IMDB.search(path)
+    stem = _stem(p.name)
+    title, year = _strip_noise(stem)
+    guess = TitleGuess(query=title, year=year, imdb_id=imdb.group(1) if imdb else None)
+    if ep := parse_episode(stem):
+        guess.kind, guess.season, guess.episodes = "tv", ep.season, ep.episodes
+    if not _meaningful(title):
+        guess.query = ""
+        for name in parents:
+            if _SEASON_DIR.match(name) or _EXTRAS_DIR.match(name):
+                continue
+            t, y = _strip_noise(name)
+            if _meaningful(t):
+                guess.query, guess.year, guess.from_folder = t, year or y, True
+                break
+    elif year is None:
+        for name in parents[:2]:
+            t, y = _strip_noise(name)
+            if y and normalize_title(t) == normalize_title(title):
+                guess.year = y
+                break
+    if guess.kind == "unknown" and any(_SEASON_DIR.match(n) for n in parents[:2]):
+        guess.kind = "tv"
+    return guess
+
+
 def parse_folder_title(folder_name: str) -> tuple[str, int | None, str | None]:
     """'Avatar (2009) {imdb-tt0499549}' -> ('Avatar', 2009, 'tt0499549')."""
     imdb = _IMDB.search(folder_name)

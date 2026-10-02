@@ -33,10 +33,22 @@ interface Candidate {
   library_state: 'new' | 'upgrade' | 'duplicate' | null; existing_quality: string | null; existing_size: number | null;
 }
 
-type Row = Candidate & { selected: boolean };
+interface Suggestion {
+  source: 'library' | 'tmdb'; media_type: 'movie' | 'tv'; media_id: number | null; tmdb_id: number | null;
+  title: string; year: number | null; overview: string | null; score: number;
+}
+interface Identified { path: string; query: string; year: number | null; kind: string; season: number | null; episodes: number[]; candidates: Suggestion[] }
+/** A TMDb hit that isn't in the library yet; it is added when the import runs. */
+interface PendingAdd { title: string; year: number | null; tmdb_id: number }
+
+type Row = Candidate & { selected: boolean; query?: string; suggestions?: Suggestion[]; pending?: PendingAdd | null };
+
+const suggestionKey = (s: Suggestion) => `${s.media_type}:${s.media_id ?? `t${s.tmdb_id}`}`;
+const suggestionLabel = (s: Suggestion) => `${s.title}${s.year ? ` (${s.year})` : ''}`;
+const rowKey = (r: Row) => `${r.media_type}:${r.media_id ?? `t${r.pending?.tmdb_id}`}`;
 
 function isImportable(r: Row): boolean {
-  return r.state === 'ok' && !!r.media_id && r.library_state !== 'duplicate';
+  return r.state === 'ok' && (!!r.media_id || !!r.pending) && r.library_state !== 'duplicate';
 }
 
 function isDeletable(r: Row): boolean {
@@ -87,79 +99,65 @@ function ManualImport() {
     if (deepLinkFolder) scan.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const matchApi = (r: Pick<Row, 'path' | 'media_type' | 'media_id' | 'season' | 'episodes'>) =>
+    post<Candidate>('/library/manual-import/match', { path: r.path, media_type: r.media_type, media_id: r.media_id, season: r.season, episodes: r.episodes });
+  /** Point a row at a suggestion; TMDb-only ones are queued for adding when the import runs. */
+  const applyPatch = (r: Row, sug: Suggestion): Row => ({
+    ...r, media_type: sug.media_type, media_id: sug.media_id, title: suggestionLabel(sug),
+    pending: sug.media_id ? null : { title: sug.title, year: sug.year, tmdb_id: sug.tmdb_id! },
+    library_state: null, existing_quality: null, existing_size: null,
+  });
   const smartMatch = useMutation({
     mutationFn: async () => {
-      const selectedIndices = rows.map((r, i) => r.selected ? i : -1).filter(i => i !== -1);
-      const newRows = [...rows];
-      
-      for (const i of selectedIndices) {
-        const r = newRows[i];
-        let query = r.path.split(/[/\\]/).pop() || r.path;
-        query = query.replace(/\.[^/.]+$/, '');
-        query = query.replace(/\b(1080p|720p|2160p|4k|x264|x265|hevc|web-dl|bluray|remux)\b/gi, '');
-        query = query.replace(/\b(19\d{2}|20\d{2})\b/g, '');
-        query = query.replace(/[([].*?[)\]]/g, '');
-        query = query.replace(/\bS\d{2}E\d{2}\b/gi, '');
-        query = query.replace(/\bS\d{2}\b/gi, '');
-        query = query.replace(/\bE\d{2}\b/gi, '');
-        query = query.replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
-
-        if (!query) continue;
-
-        try {
-          const localMovies = await get<Page<MovieSummary>>('/movies', { search: query, page_size: 1 });
-          if (localMovies.items.length > 0) {
-            newRows[i] = { ...r, media_type: 'movie', media_id: localMovies.items[0].id, title: localMovies.items[0].title };
-            continue;
-          }
-
-          const localTv = await get<Page<SeriesSummary>>('/series', { search: query, page_size: 1 });
-          if (localTv.items.length > 0) {
-            newRows[i] = { ...r, media_type: 'tv', media_id: localTv.items[0].id, title: localTv.items[0].title };
-            continue;
-          }
-
-          const tmdbMovies = await get<any[]>('/movies/lookup', { query });
-          if (tmdbMovies.length > 0) {
-            const match = tmdbMovies[0];
-            try {
-              const added = await post<any>('/movies', { title: match.title, year: match.year, tmdb_id: match.tmdb_id });
-              newRows[i] = { ...r, media_type: 'movie', media_id: added.id, title: added.title };
-            } catch (e: any) {
-              console.warn("Failed to add movie", e);
-            }
-            continue;
-          }
-
-          const tmdbTv = await get<any[]>('/series/lookup', { query });
-          if (tmdbTv.length > 0) {
-            const match = tmdbTv[0];
-            try {
-              // Note: POST /series might return a full object or just id depending on the backend, but based on code it returns SeriesOut
-              const added = await post<any>('/series', { title: match.title, year: match.year, tmdb_id: match.tmdb_id });
-              newRows[i] = { ...r, media_type: 'tv', media_id: added.id || added, title: match.title };
-            } catch (e: any) {
-              console.warn("Failed to add series", e);
-            }
-            continue;
-          }
-        } catch (e) {
-          console.error("Smart match error for", r.path, e);
+      const picked = rows.filter((r) => r.selected);
+      const found = await post<Identified[]>('/library/manual-import/identify', { paths: picked.map((r) => r.path) });
+      const byPath = new Map(found.map((f) => [f.path, f]));
+      const next = await Promise.all(rows.map(async (r) => {
+        const f = r.selected ? byPath.get(r.path) : undefined;
+        if (!f) return r;
+        let row: Row = { ...r, query: f.query, suggestions: f.candidates };
+        const top = f.candidates[0];
+        if (!top) return row;
+        row = applyPatch(row, top);
+        if (top.media_type === 'tv') {
+          row = { ...row, season: row.season ?? f.season, episodes: row.episodes.length ? row.episodes : f.episodes };
         }
-      }
-      return newRows;
+        if (top.media_id) {
+          try { row = { ...row, ...(await matchApi(row)) }; } catch { /* keep the unannotated row; the Match button retries */ }
+        }
+        return row;
+      }));
+      return { next, matched: next.filter((r) => r.selected && (r.media_id || r.pending)).length, total: picked.length };
     },
-    onSuccess: (newRows) => {
-      setRows(newRows);
-      toast('Smart match completed', 'success');
-    }
+    onSuccess: ({ next, matched, total }) => {
+      setRows(next);
+      toast(`Matched ${matched} of ${total} file(s)`, matched === total ? 'success' : 'warning');
+    },
+    onError: (e) => toast(errorMessage(e), 'error'),
   });
 
   const run = useMutation({
-    mutationFn: (explicit?: Row[]) => post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', {
-      mode, items: (explicit ?? rows.filter((r) => r.selected && isImportable(r)))
-        .map((r) => ({ path: r.path, media_type: r.media_type, media_id: r.media_id, season: r.season, episodes: r.episodes, quality: r.quality })),
-    }),
+    mutationFn: async (explicit?: Row[]) => {
+      const list = explicit ?? rows.filter((r) => r.selected && isImportable(r));
+      const created = new Map<string, Promise<number>>();   // one add per TMDb id, shared by every episode of a series
+      const addFailed: Record<string, string> = {};
+      const items = [];
+      for (const r of list) {
+        let id = r.media_id;
+        if (!id && r.pending) {
+          const key = `${r.media_type}:${r.pending.tmdb_id}`;
+          if (!created.has(key)) {
+            created.set(key, post<{ id: number }>(r.media_type === 'movie' ? '/movies' : '/series', r.pending).then((m) => m.id));
+          }
+          try { id = await created.get(key)!; } catch (e) { addFailed[r.path] = `Could not add "${r.pending.title}" to the library: ${errorMessage(e)}`; continue; }
+        }
+        items.push({ path: r.path, media_type: r.media_type, media_id: id, season: r.season, episodes: r.episodes, quality: r.quality });
+      }
+      const res = items.length
+        ? await post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', { mode, items })
+        : { imported: [], failed: [], failed_paths: {} };
+      return { ...res, failed: [...res.failed, ...Object.keys(addFailed)], failed_paths: { ...res.failed_paths, ...addFailed } };
+    },
     onSuccess: (r) => {
       toast(`Imported ${r.imported.length} file(s)${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length ? 'warning' : 'success');
       setFailReasons((fr) => ({ ...fr, ...r.failed_paths }));
@@ -168,7 +166,7 @@ function ManualImport() {
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const match = useMutation({
-    mutationFn: (r: Row) => post<Candidate>('/library/manual-import/match', { path: r.path, media_type: r.media_type, media_id: r.media_id, season: r.season, episodes: r.episodes }),
+    mutationFn: (r: Row) => matchApi(r),
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const del = useMutation({
@@ -183,6 +181,7 @@ function ManualImport() {
   const update = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)));
   const importSelected = rows.filter((r) => r.selected && isImportable(r)).length;
   const deleteSelected = rows.filter((r) => r.selected && isDeletable(r)).length;
+  const allSelected = rows.length > 0 && rows.every((r) => r.selected);
   const corruptCount = rows.filter((r) => r.state === 'corrupt').length;
 
   return (
@@ -194,7 +193,7 @@ function ManualImport() {
             {['move', 'copy', 'hardlink', 'symlink'].map((m) => <MenuItem key={m} value={m}>{m}</MenuItem>)}
           </TextField>
           <Button variant="outlined" startIcon={<FolderSearch size={16} />} onClick={() => scan.mutate()} disabled={!folder || scan.isPending}>Scan</Button>
-          <Button variant="contained" color="secondary" startIcon={<Sparkles size={16} />} onClick={() => smartMatch.mutate()} disabled={!rows.some(r => r.selected) || smartMatch.isPending}>Smart Match</Button>
+          <Button variant="contained" color="secondary" startIcon={<Sparkles size={16} />} onClick={() => smartMatch.mutate()} disabled={!rows.some((r) => r.selected) || smartMatch.isPending}>Smart Match{rows.some((r) => r.selected) ? ` (${rows.filter((r) => r.selected).length})` : ''}</Button>
           <Button variant="contained" disabled={!importSelected || run.isPending} onClick={() => run.mutate(undefined)}>Import {importSelected || ''}</Button>
           <Button variant="outlined" color="error" disabled={!deleteSelected || del.isPending}
             onClick={() => del.mutate(rows.filter((r) => r.selected && isDeletable(r)).map((r) => r.path))}>Delete {deleteSelected || ''}</Button>
@@ -208,7 +207,10 @@ function ManualImport() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell padding="checkbox" /><TableCell>File</TableCell><TableCell>State</TableCell><TableCell>Quality</TableCell>
+              <TableCell padding="checkbox">
+                <Checkbox checked={allSelected} indeterminate={rows.some((r) => r.selected) && !allSelected}
+                  onChange={(e) => setRows((rs) => rs.map((r) => ({ ...r, selected: e.target.checked })))} />
+              </TableCell><TableCell>File</TableCell><TableCell>State</TableCell><TableCell>Quality</TableCell>
               <TableCell sx={{ minWidth: 280 }}>Match</TableCell><TableCell>Episode(s)</TableCell><TableCell>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -219,7 +221,7 @@ function ManualImport() {
               return (
                 <TableRow key={r.path}>
                   <TableCell padding="checkbox">
-                    <Checkbox checked={r.selected} disabled={!isImportable(r) && !isDeletable(r)} onChange={(e) => update(i, { selected: e.target.checked })} />
+                    <Checkbox checked={r.selected} onChange={(e) => update(i, { selected: e.target.checked })} />
                   </TableCell>
                   <TableCell sx={{ maxWidth: 380 }}>
                     <Typography variant="caption" sx={{ fontFamily: "'JetBrains Mono', monospace", wordBreak: 'break-all' }}>{r.path}</Typography>
@@ -240,7 +242,27 @@ function ManualImport() {
                   </TableCell>
                   <TableCell><QualityChip quality={r.quality} /></TableCell>
                   <TableCell>
-                    <MatchPicker row={r} onChange={(p) => update(i, { ...p, selected: r.state === 'ok', library_state: null, existing_quality: null, existing_size: null })} />
+                    {r.suggestions && (
+                      r.suggestions.length ? (
+                        <TextField select size="small" fullWidth sx={{ mb: 1 }} label={`Suggestions for "${r.query}"`}
+                          value={r.suggestions.some((x) => suggestionKey(x) === rowKey(r)) ? rowKey(r) : ''}
+                          onChange={async (e) => {
+                            const sug = r.suggestions!.find((x) => suggestionKey(x) === e.target.value);
+                            if (!sug) return;
+                            let row = applyPatch(r, sug);
+                            if (sug.media_id) { try { row = { ...row, ...(await matchApi(row)) }; } catch { /* annotate on demand */ } }
+                            update(i, row);
+                          }}>
+                          {r.suggestions.map((sug) => (
+                            <MenuItem key={suggestionKey(sug)} value={suggestionKey(sug)}>
+                              {suggestionLabel(sug)} · {sug.media_type === 'movie' ? 'Movie' : 'TV'} · {sug.source === 'library' ? 'in library' : 'TMDb'}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                      ) : <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 1 }}>No match found for "{r.query}" — search manually below</Typography>
+                    )}
+                    <MatchPicker row={r} onChange={(p) => update(i, { ...p, pending: null, library_state: null, existing_quality: null, existing_size: null })} />
+                    {r.pending && <Chip size="small" color="info" variant="outlined" sx={{ mt: 0.5 }} label="From TMDb — added to library on import" />}
                   </TableCell>
                   <TableCell>
                     {r.media_type === 'tv' && (

@@ -1,7 +1,7 @@
 import pytest
 
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render, sanitize_segment, validate
-from backend.domain.parser import normalize_title, normalise_path_key, parse_episode, parse_external_id, parse_folder_title, parse_movie
+from backend.domain.parser import guess_title, normalize_title, normalise_path_key, parse_episode, parse_external_id, parse_folder_title, parse_movie
 from backend.domain.quality import Codec, QualityProfileSpec, get_quality, parse_quality
 
 
@@ -161,3 +161,28 @@ def test_normalise_path_key():
 def test_parse_external_id(text, media_type, expected):
     assert parse_external_id(text, media_type) == expected
 
+
+
+@pytest.mark.parametrize("name,title,year,kind", [
+    ("The.Matrix.1999.1080p.BluRay.x264-GRP.mkv", "The Matrix", 1999, "unknown"),
+    ("Blade.Runner.2049.2017.2160p.UHD.BluRay.REMUX.HDR.HEVC.Atmos-FGT.mkv", "Blade Runner 2049", 2017, "unknown"),
+    ("2012.2009.1080p.BluRay.mkv", "2012", 2009, "unknown"),
+    ("1917.2019.1080p.WEB-DL.DDP5.1.H.264-CMRG.mkv", "1917", 2019, "unknown"),
+    ("Avatar (2009) [1080p].mkv", "Avatar", 2009, "unknown"),
+    ("Movie.Name.1080p.2019.WEB.mkv", "Movie Name", 2019, "unknown"),
+    ("The.French.Connection.1971.720p.mkv", "The French Connection", 1971, "unknown"),
+    ("Dune Part Two 2024 2160p WEB-DL DDP5.1 Atmos DV HDR H.265-FLUX.mkv", "Dune Part Two", 2024, "unknown"),
+    ("[www.site.org] - Mr.Robot.S01E01.720p.mkv", "Mr Robot", None, "tv"),
+    ("Breaking.Bad.S02E03.720p.HDTV.x264-CTU.mkv", "Breaking Bad", None, "tv"),
+])
+def test_guess_title(name, title, year, kind):
+    g = guess_title(name)
+    assert (g.query, g.year, g.kind) == (title, year, kind)
+
+
+def test_guess_title_falls_back_to_folders():
+    g = guess_title(r"D:\dl\Some Show\Season 02\S02E05.mkv")
+    assert (g.query, g.kind, g.season, g.episodes, g.from_folder) == ("Some Show", "tv", 2, [5], True)
+    g = guess_title(r"D:\dl\The Matrix (1999)\movie.mkv")
+    assert (g.query, g.year) == ("The Matrix", 1999)
+    assert guess_title(r"D:\dl\Heat (1995)\Heat.1080p.BluRay.mkv").year == 1995   # year borrowed from the folder

@@ -13,7 +13,7 @@ from backend.core.security import Permission
 from backend.db import models
 from backend.db.repositories import Repository
 from backend.domain.issues import REGISTRY
-from backend.services import import_service, issue_service, renamer_service, scanner_service
+from backend.services import identify_service, import_service, issue_service, renamer_service, scanner_service
 from backend.workers.queue import job_queue
 
 router = APIRouter(tags=["library"])
@@ -133,6 +133,12 @@ async def manual_import_match(req: schemas.ManualImportItem, _: Requires(Permiss
         return await asyncio.to_thread(import_service.annotate_match, req.path, req.media_type, req.media_id, req.season, req.episodes)
     except import_service.ImportError_ as exc:
         raise HTTPException(404, str(exc))
+
+
+@router.post("/library/manual-import/identify")
+async def manual_import_identify(req: schemas.ManualImportIdentifyRequest, _: Requires(Permission.IMPORT)):
+    """Smart match: normalise each file name and return ranked library / TMDb candidates (read-only)."""
+    return await identify_service.identify(req.paths)
 
 
 @router.post("/library/manual-import/delete")

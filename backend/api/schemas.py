@@ -557,6 +557,10 @@ class ManualImportRequest(BaseModel):
     mode: Literal["move", "copy", "hardlink", "symlink"] | None = None
 
 
+class ManualImportIdentifyRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=500)
+
+
 class ManualImportDeleteRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=500)
 
