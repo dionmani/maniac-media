@@ -97,6 +97,9 @@ def attach_movie_file(
         db.flush()
     else:
         mf.movie_id = movie.id
+        if mf.size_bytes != size_bytes or mf.mtime != mtime:
+            mf.inspected_at = None
+            
         mf.path = path_str
         mf.relative_path = rel_path
         mf.size_bytes = size_bytes
@@ -194,6 +197,9 @@ def attach_episode_file(
         db.flush()
     else:
         mf.series_id = series.id
+        if mf.size_bytes != size_bytes or mf.mtime != mtime:
+            mf.inspected_at = None
+            
         mf.path = path_str
         mf.relative_path = rel_path
         mf.size_bytes = size_bytes

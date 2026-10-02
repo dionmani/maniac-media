@@ -84,6 +84,15 @@ class AppSettings(BaseModel):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
     metrics_require_auth: bool = False
 
+    # --- inspection
+    ffprobe_path: str | None = None
+    inspection_enabled: bool = True
+    inspection_concurrency: int = 2
+    preferred_audio_languages: list[str] = Field(default_factory=list)
+    runtime_tolerance_episode_pct: int = 25
+    runtime_tolerance_movie_pct: int = 15
+    inspect_before_import: bool = False
+
     # --- housekeeping
     job_retention_days: int = 7
     history_retention_days: int = 365

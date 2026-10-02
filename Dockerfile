@@ -24,7 +24,10 @@ RUN python -m venv /venv \
     && /venv/bin/pip install -r /tmp/requirements.txt \
     && /venv/bin/pip install "psycopg[binary]" PyMySQL pyodbc
 
-# ---------- stage 3: runtime ----------
+# ---------- stage 3: ffprobe binary ----------
+FROM mwader/static-ffmpeg:7.0.2 AS ffmpeg
+
+# ---------- stage 4: runtime ----------
 FROM python:3.13-slim
 
 ARG VERSION=dev
@@ -60,6 +63,7 @@ ENV PATH=/venv/bin:$PATH \
     MANIAC_VERSION=${VERSION}
 
 WORKDIR /app
+COPY --from=ffmpeg /ffprobe /usr/local/bin/
 COPY --from=deps /venv /venv
 COPY backend/ backend/
 COPY run.py alembic.ini ./

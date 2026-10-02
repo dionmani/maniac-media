@@ -237,9 +237,13 @@ def _import_one(
             media_file_service.detach_file(db, existing_mf, reason="upgraded")
         used = tx.place(src, dest, mode)
         _move_sidecars(tx, src, dest, mode)
-        media_file_service.attach_movie_file(
+        mf = media_file_service.attach_movie_file(
             db, movie, dest, quality, scene_name=original_name, source="import", make_primary=True
         )
+        db.flush()
+        from backend.workers.queue import job_queue
+        job_queue.enqueue("inspect_file", {"media_file_id": mf.id}, dedupe_key=f"file:{mf.id}")
+        
         event = "upgraded" if upgrade else "imported"
         history(db, "movie", movie.id, movie.title, event, quality=quality.quality.name, download_id=queue_id,
                 details=f"{used} → {dest}",
@@ -287,9 +291,13 @@ def _import_one(
     _clear_destination(tx, dest, None, recycle_root)
     used = tx.place(src, dest, mode)
     _move_sidecars(tx, src, dest, mode)
-    media_file_service.attach_episode_file(
+    mf = media_file_service.attach_episode_file(
         db, series, episodes, dest, quality, scene_name=original_name, source="import", make_primary=True
     )
+    db.flush()
+    from backend.workers.queue import job_queue
+    job_queue.enqueue("inspect_file", {"media_file_id": mf.id}, dedupe_key=f"file:{mf.id}")
+    
     label = f"{series.title} S{season:02d}E{episode_numbers[0]:02d}" + (f"-E{episode_numbers[-1]:02d}" if len(episode_numbers) > 1 else "")
     event = "upgraded" if upgrade else "imported"
     history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}",

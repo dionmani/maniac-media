@@ -36,6 +36,7 @@ class EventType:
     HEALTH_RESTORED = "health.restored"
     QUEUE_CHANGED = "queue.changed"
     DATABASE_MIGRATION = "database.migration"
+    MEDIA_INSPECTED = "media.inspected"
 
 
 @dataclass

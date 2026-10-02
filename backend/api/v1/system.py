@@ -33,6 +33,15 @@ STARTED_AT = datetime.now()
 
 @router.get("/system/status")
 def status(_: Requires(Permission.SYSTEM_READ)):
+    settings = get_settings()
+    ffprobe_info = {"found": False, "path": None, "version": None}
+    if settings.inspection_enabled:
+        from backend.services.inspection_service import ffprobe_path
+        path = ffprobe_path()
+        if path:
+            ffprobe_info["found"] = True
+            ffprobe_info["path"] = path
+
     return {
         "app_name": "Maniac Media",
         "version": __version__,
@@ -43,6 +52,7 @@ def status(_: Requires(Permission.SYSTEM_READ)):
         "started_at": STARTED_AT.isoformat(),
         "uptime_seconds": int((datetime.now() - STARTED_AT).total_seconds()),
         "download_watcher": {"active": watcher.active, "path": watcher.path},
+        "ffprobe": ffprobe_info,
     }
 
 

@@ -36,6 +36,11 @@ MOVIE_TOKENS = {
     "releasegroup": "Release group",
     "edition": "Edition (Director's Cut...)",
     "originalname": "Original release name",
+    "mediainfo_videocodec": "e.g. x264",
+    "mediainfo_audiocodec": "e.g. EAC3",
+    "mediainfo_audiochannels": "e.g. 5.1",
+    "mediainfo_hdr": "e.g. HDR10",
+    "mediainfo_resolution": "e.g. 1080p",
 }
 EPISODE_TOKENS = {
     "title": "Series title",
@@ -52,6 +57,11 @@ EPISODE_TOKENS = {
     "imdbid": "IMDb id",
     "releasegroup": "Release group",
     "originalname": "Original release name",
+    "mediainfo_videocodec": "e.g. x264",
+    "mediainfo_audiocodec": "e.g. EAC3",
+    "mediainfo_audiochannels": "e.g. 5.1",
+    "mediainfo_hdr": "e.g. HDR10",
+    "mediainfo_resolution": "e.g. 1080p",
 }
 ALIASES = {"movietitle": "title", "seriestitle": "title", "episodename": "episodetitle", "group": "releasegroup"}
 

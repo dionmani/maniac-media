@@ -163,3 +163,9 @@ async def rename(req: schemas.RenameRequest, user: Requires(Permission.RENAME)):
         job = job_queue.enqueue("rename", {"items": items, "include_folders": req.include_folders, "user_id": user.id, "username": user.username})
         return {"job_id": job, "queued": len(items)}
     return await asyncio.to_thread(renamer_service.execute, items, dry_run=False, include_folders=req.include_folders, actor=user.actor)
+
+
+@router.post("/library/inspect")
+def inspect_library(user: Requires(Permission.LIBRARY_SCAN)):
+    job = job_queue.enqueue("media_inspection", {}, dedupe_key="backlog")
+    return {"job_id": job}

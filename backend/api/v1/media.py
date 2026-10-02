@@ -413,3 +413,9 @@ def get_media_file(media_file_id: int, db: DB, _: Requires(Permission.MEDIA_READ
     if file is None:
         raise HTTPException(404, "Media file not found")
     return file
+
+
+@router.post("/media-files/{media_file_id}/inspect", tags=["media-files"])
+def inspect_media_file(media_file_id: int, user: Requires(Permission.MEDIA_WRITE)):
+    job = job_queue.enqueue("inspect_file", {"media_file_id": media_file_id, "force": True}, dedupe_key=f"file:{media_file_id}")
+    return {"job_id": job}

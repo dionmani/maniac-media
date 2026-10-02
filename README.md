@@ -13,6 +13,7 @@ pip install -r requirements.txt          # Python 3.12+
 cd frontend && npm ci && npm run build && cd ..
 python run.py                            # http://127.0.0.1:8000
 ```
+Note: Ensure `ffprobe` is installed (part of `ffmpeg`) for file inspection and quality checks.
 
 On first launch the database (`data/app.db`) is created, migrated and seeded. Open the UI and
 create the administrator account. Then:

@@ -139,6 +139,21 @@ class MediaFileOut(BaseModel):
     edition: str | None = None
     is_primary: bool
     added_at: datetime | None = None
+    inspected_at: datetime | None = None
+    inspection_error: str | None = None
+    container: str | None = None
+    duration_seconds: float | None = None
+    overall_bitrate: int | None = None
+    video_codec: str | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+    video_resolution: str | None = None
+    video_bit_depth: int | None = None
+    hdr_format: str | None = None
+    audio_codec: str | None = None
+    audio_channels: int | None = None
+    audio_languages: list[str] | None = None
+    subtitle_languages: list[str] | None = None
 
 
 class EpisodeLinkOut(BaseModel):
@@ -168,6 +183,7 @@ class MediaFileDetailOut(MediaFileOut):
     movie: MovieLinkOut | None = None
     series: SeriesLinkOut | None = None
     episodes: list[EpisodeLinkOut] = []
+    mediainfo: dict[str, Any] | None = None
 
 
 class MovieOut(_ArtMixin):

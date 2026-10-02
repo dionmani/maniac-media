@@ -137,6 +137,26 @@ async def cleanup(ctx: JobContext):
     return await asyncio.to_thread(run)
 
 
+@job_queue.register("inspect_file", "Media Inspection (File)", priority=6, exclusive=False, max_attempts=2)
+async def inspect_file(ctx: JobContext):
+    from backend.services.inspection_service import inspect_file as _inspect_file
+    media_file_id = int(ctx.payload["media_file_id"])
+    force = bool(ctx.payload.get("force", False))
+    outcome = await _inspect_file(db_manager.session, media_file_id, force=force)
+    return {"status": outcome.status, "error": outcome.error}
+
+
+@job_queue.register("media_inspection", "Media Inspection (Backlog)", priority=7)
+async def media_inspection(ctx: JobContext):
+    from backend.services.inspection_service import inspect_backlog
+    stats = await inspect_backlog(db_manager.session, limit=200, progress=ctx.progress)
+    if stats.get("status") == "more_pending":
+        await asyncio.to_thread(
+            job_queue.enqueue, "media_inspection", {}, trigger="event", dedupe_key="backlog", delay_seconds=10
+        )
+    return stats
+
+
 # name -> (default interval minutes, enabled by default)
 SCHEDULED_DEFAULTS: dict[str, tuple[int, bool]] = {
     "download_monitor": (1, True),
@@ -145,6 +165,7 @@ SCHEDULED_DEFAULTS: dict[str, tuple[int, bool]] = {
     "health_check": (15, True),
     "metadata_refresh": (12 * 60, True),
     "library_scan": (6 * 60, True),
+    "media_inspection": (6 * 60, True),
     "missing_search": (24 * 60, False),
     "cleanup": (24 * 60, True),
 }
