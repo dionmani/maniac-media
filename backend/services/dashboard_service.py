@@ -44,6 +44,11 @@ def stats(db: Session) -> dict:
     episode_bytes = repo.total_bytes("tv")
     active = count(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status.in_(("queued", "downloading", "paused"))))
     failed_imports = count(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed"))
+    failed_by_reason = dict(db.execute(
+        select(models.DownloadQueueItem.failure_reason, func.count(models.DownloadQueueItem.id))
+        .where(models.DownloadQueueItem.status == "import_failed", models.DownloadQueueItem.failure_reason.is_not(None))
+        .group_by(models.DownloadQueueItem.failure_reason)
+    ).all())
     failed_recent = count(
         select(func.count(models.History.id)).where(
             models.History.event_type.in_(("import_failed", "download_failed")), models.History.timestamp >= utcnow() - timedelta(days=7)
@@ -71,6 +76,7 @@ def stats(db: Session) -> dict:
         "downloads": {"active": active},
         "failed_imports": failed_imports,
         "failed_last_7_days": failed_recent,
+        "failed_top_reasons": [{"reason": k, "count": v} for k, v in sorted(failed_by_reason.items(), key=lambda kv: -kv[1])[:3]],
         "storage": {"library_bytes": movie_bytes + episode_bytes, "movies_bytes": movie_bytes, "tv_bytes": episode_bytes, "disks": disks},
         "issues": issues,
         "upcoming": [

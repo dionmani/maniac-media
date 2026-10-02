@@ -58,8 +58,11 @@ def _message(event: Event) -> NotificationMessage | None:
     if kind == "download_completed":
         return NotificationMessage(kind, "Download completed", p.get("release") or p.get("title", ""), severity="info")
     if kind == "download_failed":
+        details = {"Reason": str(p.get("reason", ""))[:500]}
+        if p.get("fix_available"):
+            details["Fix available"] = "Yes – see Activity → Failures"
         return NotificationMessage(kind, "Download failed" if event.type == EventType.DOWNLOAD_FAILED else "Import failed",
-                                   p.get("title") or f"Queue item {p.get('queue_id')}", {"Reason": str(p.get("reason", ""))[:500]}, severity="error")
+                                   p.get("title") or f"Queue item {p.get('queue_id')}", details, severity="error")
     if kind == "grabbed":
         return NotificationMessage(kind, "Release grabbed", p.get("title", ""), {"Quality": p.get("quality", "")}, severity="info")
     if kind == "health_issue":

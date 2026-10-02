@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import select
 
 from backend.api import schemas
@@ -11,10 +11,12 @@ from backend.api.deps import DB, Paging, Requires, page_response
 from backend.core.security import Permission
 from backend.db import models
 from backend.db.repositories import EpisodeRepository, HistoryRepository, MovieRepository, QueueRepository, Repository
-from backend.services import download_service, metadata_service, search_service
+from backend.domain.diagnosis import CHANGES_SETTINGS_FIX_KINDS, FixKind, ImportFailureReason
+from backend.services import download_service, import_diagnosis, metadata_service, search_service
 from backend.workers.queue import job_queue
 
 router = APIRouter()
+_OPTIONAL_IMPORT_BODY = Body(None)
 
 
 # ------------------------------------------------------------------ metadata lookup
@@ -85,15 +87,66 @@ async def retry_queue_item(queue_id: int, user: Requires(Permission.QUEUE_WRITE)
 
 
 @router.post("/queue/{queue_id}/import", tags=["queue"])
-def retry_import(queue_id: int, db: DB, user: Requires(Permission.IMPORT)):
+async def retry_import(queue_id: int, db: DB, user: Requires(Permission.IMPORT), body: schemas.ImportRequest | None = _OPTIONAL_IMPORT_BODY):
     q = db.get(models.DownloadQueueItem, queue_id)
     if q is None:
         raise HTTPException(404, "Queue item not found")
     if q.status not in ("completed", "import_failed"):
         raise HTTPException(409, f"Item is {q.status}; only completed downloads can be imported")
+
+    if body and body.fix:
+        try:
+            kind = FixKind(body.fix.kind)
+        except ValueError:
+            raise HTTPException(400, f"Unknown fix kind: {body.fix.kind}")
+        if kind in CHANGES_SETTINGS_FIX_KINDS and Permission.SETTINGS_WRITE not in user.permissions:
+            raise HTTPException(403, f"Missing permission: {Permission.SETTINGS_WRITE.value}")
+        try:
+            result = await import_diagnosis.apply_fix(queue_id, kind, body.fix.params, user.actor, bulk=False)
+        except import_diagnosis.FixError as exc:
+            raise HTTPException(400, str(exc))
+        return result
+
+    force = bool(body and body.strategy == "force")
     q.status = "completed"
     db.commit()
-    return {"job_id": job_queue.enqueue("import_download", {"queue_id": queue_id}, dedupe_key=str(queue_id))}
+    return {"job_id": job_queue.enqueue("import_download", {"queue_id": queue_id, "force": force}, dedupe_key=str(queue_id))}
+
+
+@router.post("/queue/{queue_id}/diagnose", tags=["queue"])
+def diagnose_import(queue_id: int, db: DB, _: Requires(Permission.QUEUE_READ)):
+    q = db.get(models.DownloadQueueItem, queue_id)
+    if q is None:
+        raise HTTPException(404, "Queue item not found")
+    if not q.failure_reason:
+        raise HTTPException(409, "This item has no recorded import failure to diagnose")
+    analysis = import_diagnosis.diagnose(db, q, ImportFailureReason(q.failure_reason), (q.failure_analysis or {}).get("evidence"), q.error_message or "")
+    q.failure_reason, q.failure_signature, q.failure_analysis = analysis.reason.value, analysis.signature, analysis.to_dict()
+    db.commit()
+    return analysis.to_dict()
+
+
+@router.post("/queue/fixes", tags=["queue"])
+async def bulk_fix(req: schemas.QueueFixRequest, db: DB, user: Requires(Permission.IMPORT)):
+    try:
+        kind = FixKind(req.kind)
+    except ValueError:
+        raise HTTPException(400, f"Unknown fix kind: {req.kind}")
+    if kind in CHANGES_SETTINGS_FIX_KINDS and Permission.SETTINGS_WRITE not in user.permissions:
+        raise HTTPException(403, f"Missing permission: {Permission.SETTINGS_WRITE.value}")
+    sample = db.scalar(select(models.DownloadQueueItem.id).where(
+        models.DownloadQueueItem.status == "import_failed", models.DownloadQueueItem.failure_signature == req.signature))
+    if sample is None:
+        raise HTTPException(404, "No failed items match this signature")
+    try:
+        return await import_diagnosis.apply_fix(sample, kind, req.params, user.actor, bulk=True)
+    except import_diagnosis.FixError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/activity/failures/summary", tags=["queue"])
+def failures_summary(db: DB, _: Requires(Permission.QUEUE_READ), days: int = Query(7, ge=1, le=90)):
+    return import_diagnosis.summary(db, days)
 
 
 @router.post("/queue/refresh", tags=["queue"])

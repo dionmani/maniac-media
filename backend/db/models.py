@@ -325,6 +325,10 @@ class DownloadQueueItem(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int | None] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    # v3 – import failure diagnosis (see backend/domain/diagnosis.py)
+    failure_reason: Mapped[str | None] = mapped_column(String(32), index=True)
+    failure_signature: Mapped[str | None] = mapped_column(String(128), index=True)
+    failure_analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class History(Base):

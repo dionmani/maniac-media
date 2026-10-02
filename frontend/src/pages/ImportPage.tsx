@@ -19,6 +19,7 @@ import {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { FolderInput, FolderSearch, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { MovieSummary, Page, SeriesSummary } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, QualityChip, Section, StatusChip } from '../components/common';
@@ -57,16 +58,19 @@ export default function ImportPage() {
 }
 
 function ManualImport() {
+  const [params] = useSearchParams();
+  const deepLinkFolder = params.get('folder');
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ download_folder: string; import_mode: string }>('/settings') });
-  const [folder, setFolder] = useState('');
+  const [folder, setFolder] = useState(deepLinkFolder ?? '');
   const [rows, setRows] = useState<Row[]>([]);
   const [mode, setMode] = useState('');
   useEffect(() => {
-    if (settings.data && !folder) {
-      setFolder(settings.data.download_folder);
+    if (settings.data && !mode) {
       setMode(settings.data.import_mode);
+      if (!deepLinkFolder && !folder) setFolder(settings.data.download_folder);
     }
-  }, [settings.data, folder]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.data]);
 
   const [failReasons, setFailReasons] = useState<Record<string, string>>({});
   const scan = useMutation({
@@ -78,6 +82,11 @@ function ManualImport() {
     },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
+  useEffect(() => {
+    // arrived via a MANUAL_IMPORT fix deep link ("open in manual import") – scan right away
+    if (deepLinkFolder) scan.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const run = useMutation({
     mutationFn: (explicit?: Row[]) => post<{ imported: string[]; failed: string[]; failed_paths: Record<string, string> }>('/library/manual-import', {
       mode, items: (explicit ?? rows.filter((r) => r.selected && isImportable(r)))

@@ -7,6 +7,7 @@ folder and the database are left exactly as they were.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -16,15 +17,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
-from backend.core.observability import IMPORTS_TOTAL
+from backend.core.observability import IMPORT_FAILURES_TOTAL, IMPORTS_TOTAL
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
+from backend.domain.diagnosis import ImportFailureReason, classify_oserror
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import is_partial, is_sample, is_video, normalize_title, parse_episode, parse_folder_title, parse_movie
 from backend.domain.quality import ParsedQuality, parse_quality
-from backend.services import fileops, media_file_service
+from backend.services import fileops, import_diagnosis, media_file_service
 from backend.services.audit import SYSTEM, Actor, audit, history
 from backend.services.quality_service import spec_for
 
@@ -32,7 +34,10 @@ log = logging.getLogger("maniac.import")
 
 
 class ImportError_(RuntimeError):
-    pass
+    def __init__(self, message: str, *, reason: ImportFailureReason = ImportFailureReason.UNKNOWN, evidence: dict | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.evidence = evidence or {}
 
 
 @dataclass
@@ -212,6 +217,7 @@ def episode_destination(series: models.Series, episodes: list[models.Episode], s
 def _import_one(
     db: Session, tx: fileops.FileTransaction, src: Path, quality: ParsedQuality, media_type: str, media_id: int,
     season: int | None, episode_numbers: list[int], mode: str, original_name: str, queue_id: int | None,
+    force: bool = False,
 ) -> str:
     settings = get_settings()
     recycle_root = Path(settings.recycle_bin)
@@ -219,11 +225,11 @@ def _import_one(
     if media_type == "movie":
         movie = db.get(models.Movie, media_id)
         if movie is None:
-            raise ImportError_("Movie no longer exists in the library")
+            raise ImportError_("Movie no longer exists in the library", reason=ImportFailureReason.MEDIA_DELETED, evidence={"media_id": media_id})
         profile = spec_for(db, movie.quality_profile_id)
         existing = Path(movie.file_path) if movie.has_file and movie.file_path else None
         current_q = parse_quality(movie.quality or movie.file_path or "") if existing else None
-        upgrade = _check_existing(existing, src, current_q, quality, profile)
+        upgrade = _check_existing(existing, src, current_q, quality, profile, force)
         existing_mf = MediaFileRepository(db).by_path(existing) if existing else None
         dest = movie_destination(movie, src, quality, original_name)
         _clear_destination(tx, dest, existing, recycle_root)
@@ -236,15 +242,17 @@ def _import_one(
         )
         event = "upgraded" if upgrade else "imported"
         history(db, "movie", movie.id, movie.title, event, quality=quality.quality.name, download_id=queue_id,
-                details=f"{used} → {dest}", data={"source": str(src), "previous_quality": current_q.quality.name if current_q else None})
+                details=f"{used} → {dest}",
+                data={"source": str(src), "previous_quality": current_q.quality.name if current_q else None, **({"forced": True} if force else {})})
         audit(db, "import", f"movie.{event}", entity_type="movie", entity_id=movie.id, details={"file": str(dest), "mode": used})
         return f"{movie.title} ({movie.year})"
 
     series = db.get(models.Series, media_id)
     if series is None:
-        raise ImportError_("Series no longer exists in the library")
+        raise ImportError_("Series no longer exists in the library", reason=ImportFailureReason.MEDIA_DELETED, evidence={"media_id": media_id})
     if season is None or not episode_numbers:
-        raise ImportError_(f"Could not determine season/episode for {src.name}")
+        raise ImportError_(f"Could not determine season/episode for {src.name}", reason=ImportFailureReason.UNPARSEABLE_EPISODE,
+                           evidence={"file": src.name})
     episodes = list(db.scalars(select(models.Episode).where(
         models.Episode.series_id == series.id, models.Episode.season_number == season,
         models.Episode.episode_number.in_(episode_numbers)).order_by(models.Episode.episode_number)))
@@ -268,7 +276,7 @@ def _import_one(
     current_q = None
     if all(e.has_file for e in episodes):
         current_q = min((parse_quality(e.quality or e.file_path or "") for e in episodes), key=lambda q: q.quality.weight)
-    upgrade = _check_existing(existing, src, current_q, quality, profile) if current_q else False
+    upgrade = _check_existing(existing, src, current_q, quality, profile, force) if (current_q or force) else False
     dest = episode_destination(series, episodes, src, quality, original_name)
     for old in existing_paths:
         if old != dest and old.exists():
@@ -284,26 +292,36 @@ def _import_one(
     )
     label = f"{series.title} S{season:02d}E{episode_numbers[0]:02d}" + (f"-E{episode_numbers[-1]:02d}" if len(episode_numbers) > 1 else "")
     event = "upgraded" if upgrade else "imported"
-    history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}", data={"source": str(src)})
+    history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}",
+            data={"source": str(src), **({"forced": True} if force else {})})
     audit(db, "import", f"episode.{event}", entity_type="series", entity_id=series.id, details={"file": str(dest), "episodes": episode_numbers})
     return label
 
 
-def _check_existing(existing: Path | None, src: Path, current_q, new_q, profile) -> bool:
-    """Duplicate / upgrade / conflict resolution. Returns True if this is an upgrade."""
+def _check_existing(existing: Path | None, src: Path, current_q, new_q, profile, force: bool = False) -> bool:
+    """Duplicate / upgrade / conflict resolution. Returns True if this is an upgrade.
+
+    ``force`` (from the FORCE_IMPORT fix) skips the allowed/upgrade checks but never the
+    identical-file duplicate check, which would make no sense to override.
+    """
     if existing is None or not existing.exists():
-        if not profile.is_allowed(new_q.quality):
-            raise ImportError_(f"{new_q.quality.name} is not allowed by profile '{profile.name}'")
+        if not force and not profile.is_allowed(new_q.quality):
+            raise ImportError_(f"{new_q.quality.name} is not allowed by profile '{profile.name}'", reason=ImportFailureReason.QUALITY_NOT_ALLOWED,
+                               evidence={"quality": new_q.quality.name, "profile": profile.name, "allowed": list(profile.allowed)})
         return False
     try:
         if existing.samefile(src):
-            raise ImportError_("Duplicate: file is already the library file")
+            raise ImportError_("Duplicate: file is already the library file", reason=ImportFailureReason.DUPLICATE,
+                               evidence={"existing": str(existing)})
     except OSError:
         pass
-    if existing.stat().st_size == src.stat().st_size and existing.name == src.name:
-        raise ImportError_("Duplicate: identical file already in library")
-    if not profile.is_upgrade(current_q, new_q):
-        raise ImportError_(f"Not an upgrade: existing {current_q.quality.name if current_q else 'file'} is equal or better")
+    if not force and existing.stat().st_size == src.stat().st_size and existing.name == src.name:
+        raise ImportError_("Duplicate: identical file already in library", reason=ImportFailureReason.DUPLICATE,
+                           evidence={"existing": str(existing), "size": existing.stat().st_size})
+    if not force and not profile.is_upgrade(current_q, new_q):
+        raise ImportError_(f"Not an upgrade: existing {current_q.quality.name if current_q else 'file'} is equal or better",
+                           reason=ImportFailureReason.NOT_AN_UPGRADE,
+                           evidence={"existing_quality": current_q.quality.name if current_q else None, "new_quality": new_q.quality.name})
     return True
 
 
@@ -339,7 +357,18 @@ def _mode_for(protocol: str | None) -> str:
     return mode
 
 
-def import_queue_item(queue_id: int) -> ImportResult:
+# Per-video failures recorded as plain strings in ``result.failed`` (not raised, so several
+# videos in one download can each be reported) map onto a reason for diagnosis purposes.
+_CANDIDATE_STATE_REASONS: dict[str, ImportFailureReason] = {
+    "corrupt": ImportFailureReason.CORRUPT_FILE,
+    "too_small": ImportFailureReason.TOO_SMALL,
+    "sample": ImportFailureReason.SAMPLE_ONLY,
+    "not_video": ImportFailureReason.UNSUPPORTED_FORMAT,
+    "missing": ImportFailureReason.PATH_NOT_FOUND,
+}
+
+
+def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
     settings = get_settings()
     result = ImportResult()
     with session_scope() as db:
@@ -355,9 +384,12 @@ def import_queue_item(queue_id: int) -> ImportResult:
     download_path, media_type, media_id, season, episodes, protocol, release_title = info
 
     failure = None
+    fail_reason = ImportFailureReason.UNKNOWN
+    fail_evidence: dict = {}
     try:
         if not download_path or not Path(download_path).exists():
-            raise ImportError_(f"Download path not found: {download_path}")
+            raise ImportError_(f"Download path not found: {download_path}", reason=ImportFailureReason.PATH_NOT_FOUND,
+                               evidence={"download_path": download_path})
         videos, partial = find_video_files(Path(download_path))
         if partial and not videos:
             with session_scope() as db:
@@ -365,12 +397,15 @@ def import_queue_item(queue_id: int) -> ImportResult:
             result.skipped.append("Download still has partial files; will retry")
             return result
         if not videos:
-            raise ImportError_("No video files found in download")
+            raise ImportError_("No video files found in download", reason=ImportFailureReason.NO_VIDEO_FILES,
+                               evidence={"download_path": download_path})
         mode = _mode_for(protocol)
         for video in videos:
             candidate = inspect(video, settings.min_import_size_mb)
             if candidate.state != "ok":
                 result.failed.append(f"{video.name}: {candidate.reason or candidate.state}")
+                fail_reason = _CANDIDATE_STATE_REASONS.get(candidate.state, ImportFailureReason.NO_VIDEO_FILES)
+                fail_evidence = {"file": video.name, "state": candidate.state, "detail": candidate.reason}
                 continue
             file_season, file_eps = season, episodes
             if media_type == "tv":
@@ -379,49 +414,94 @@ def import_queue_item(queue_id: int) -> ImportResult:
                     file_season, file_eps = parsed.season if parsed.season is not None else season, parsed.episodes
                 elif len(videos) > 1 or not episodes:
                     result.failed.append(f"{video.name}: cannot determine episode")
+                    fail_reason, fail_evidence = ImportFailureReason.UNPARSEABLE_EPISODE, {"file": video.name, "release_title": release_title}
                     continue
             quality = candidate.quality if candidate.quality.quality.weight else parse_quality(release_title)
-            label = _run_import(video, quality, media_type, media_id, file_season, list(file_eps or []), mode, release_title, queue_id)
+            label = _run_import(video, quality, media_type, media_id, file_season, list(file_eps or []), mode, release_title, queue_id, force)
             result.imported.append(label)
     except ImportError_ as exc:
         failure = str(exc)
+        fail_reason, fail_evidence = exc.reason, exc.evidence
     except Exception as exc:
         log.exception("Import of queue item %s crashed", queue_id)
         failure = f"Unexpected error: {exc}"
+        fail_reason, fail_evidence = ImportFailureReason.UNKNOWN, {"exception": type(exc).__name__}
 
     if failure or (result.failed and not result.imported):
         failure = failure or "; ".join(result.failed)
+    analysis = None
+    if failure:
+        with session_scope() as db:
+            q = db.get(models.DownloadQueueItem, queue_id)
+            if q is not None:
+                analysis = import_diagnosis.diagnose(db, q, fail_reason, fail_evidence, failure)
+    retry_count_before = 0
     with session_scope() as db:
         q = db.get(models.DownloadQueueItem, queue_id)
         if q is not None:
             if failure:
                 q.status = "import_failed"
                 q.error_message = failure
-                history(db, q.media_type, q.media_id, q.release_title, "import_failed", quality=q.quality, download_id=q.id, details=failure)
+                q.failure_reason = analysis.reason.value if analysis else fail_reason.value
+                q.failure_signature = analysis.signature if analysis else fail_reason.value
+                q.failure_analysis = analysis.to_dict() if analysis else None
+                retry_count_before = q.retry_count or 0
+                history(db, q.media_type, q.media_id, q.release_title, "import_failed", quality=q.quality, download_id=q.id, details=failure,
+                        data={"analysis": analysis.to_dict()} if analysis else None)
             else:
                 q.status = "imported"
                 q.error_message = "; ".join(result.failed) or None
+                q.failure_reason = None
+                q.failure_signature = None
+                q.failure_analysis = None
     if failure:
         IMPORTS_TOTAL.labels(media_type, "failed").inc()
-        bus.publish(EventType.IMPORT_FAILED, queue_id=queue_id, title=release_title, reason=failure, media_type=media_type, media_id=media_id)
+        IMPORT_FAILURES_TOTAL.labels(analysis.reason.value if analysis else fail_reason.value).inc()
+        bus.publish(EventType.IMPORT_FAILED, queue_id=queue_id, title=release_title, reason=(analysis.summary if analysis else failure),
+                    media_type=media_type, media_id=media_id, reason_code=(analysis.reason.value if analysis else fail_reason.value),
+                    fix_available=bool(analysis and analysis.fixes))
     else:
         IMPORTS_TOTAL.labels(media_type, "imported").inc()
         bus.publish(EventType.IMPORT_COMPLETED, queue_id=queue_id, title=release_title, items=result.imported, media_type=media_type, media_id=media_id)
     bus.publish(EventType.QUEUE_CHANGED)
+
+    # Auto-fix strategy: only fixes the probe marked safe_auto run without a click, and only up to
+    # a small retry cap per item – anything that changes settings or overrides a quality decision
+    # always needs a click (handled through the API, never here).
+    if failure and analysis and settings.auto_fix_imports and retry_count_before < 3:
+        auto_fix = next((f for f in analysis.fixes if f.safe_auto), None)
+        if auto_fix is not None:
+            with session_scope() as db:
+                q = db.get(models.DownloadQueueItem, queue_id)
+                if q is not None:
+                    q.retry_count = retry_count_before + 1
+            try:
+                asyncio.run(import_diagnosis.apply_fix(queue_id, auto_fix.kind, auto_fix.params, SYSTEM, bulk=False))
+            except Exception:
+                log.exception("Auto-fix %s failed for queue item %s", auto_fix.kind, queue_id)
+
     if failure:
         result.failed = [failure]
     return result
 
 
-def _run_import(src: Path, quality, media_type, media_id, season, episodes, mode, original, queue_id) -> str:
+def _run_import(src: Path, quality, media_type, media_id, season, episodes, mode, original, queue_id, force: bool = False) -> str:
     tx = fileops.FileTransaction()
     try:
         with session_scope() as db:  # commit happens on exit; failure below rolls files back too
-            label = _import_one(db, tx, src, quality, media_type, media_id, season, episodes, mode, original, queue_id)
+            label = _import_one(db, tx, src, quality, media_type, media_id, season, episodes, mode, original, queue_id, force)
         return label
     except TemplateError as exc:
         tx.rollback()
-        raise ImportError_(f"Naming template error: {exc}") from exc
+        raise ImportError_(f"Naming template error: {exc}", reason=ImportFailureReason.NAMING_TEMPLATE_ERROR, evidence={"error": str(exc)}) from exc
+    except ImportError_:
+        tx.rollback()
+        raise
+    except OSError as exc:
+        tx.rollback()
+        reason = classify_oserror(exc.errno, getattr(exc, "winerror", None))
+        raise ImportError_(f"Filesystem error: {exc.strerror or exc}", reason=reason,
+                           evidence={"errno": exc.errno, "path": str(exc.filename or src)}) from exc
     except Exception:
         tx.rollback()
         raise

@@ -5,13 +5,14 @@ import os
 import shutil
 from dataclasses import asdict, dataclass
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from backend.core.events import EventType, bus
 from backend.core.secrets import master_key
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.session import db_manager, session_scope
+from backend.domain.diagnosis import ImportFailureReason
 from backend.plugins import registry
 
 LOW_DISK_BYTES = 10 * 1024**3
@@ -70,9 +71,32 @@ def run_checks() -> list[HealthCheck]:
         for c in clients:
             if c.health_status == "error":
                 checks.append(HealthCheck(f"download_client:{c.id}", "error", f"Download client '{c.name}': {c.health_message}"))
-        failed = db.scalar(select(models.DownloadQueueItem.id).where(models.DownloadQueueItem.status == "import_failed").limit(1))
-        if failed:
-            checks.append(HealthCheck("imports", "warning", "One or more downloads failed to import – see Activity"))
+        reason_counts = dict(db.execute(
+            select(models.DownloadQueueItem.failure_reason, func.count(models.DownloadQueueItem.id))
+            .where(models.DownloadQueueItem.status == "import_failed").group_by(models.DownloadQueueItem.failure_reason)
+        ).all())
+        if reason_counts:
+            mapping_signatures = dict(db.execute(
+                select(models.DownloadQueueItem.failure_signature, func.count(models.DownloadQueueItem.id))
+                .where(models.DownloadQueueItem.status == "import_failed",
+                      models.DownloadQueueItem.failure_reason == ImportFailureReason.REMOTE_PATH_MAPPING.value)
+                .group_by(models.DownloadQueueItem.failure_signature)
+            ).all())
+            for signature, count in mapping_signatures.items():
+                client_name = None
+                if signature and signature.startswith("remote_path_mapping:client="):
+                    try:
+                        client_id = int(signature.split(":")[1].split("=")[1])
+                        client_row = db.get(models.DownloadClient, client_id)
+                        client_name = client_row.name if client_row else None
+                    except (IndexError, ValueError):
+                        pass
+                checks.append(HealthCheck(f"imports:{signature}", "warning",
+                                          f"{count} import(s) failing with a remote path mapping problem on client "
+                                          f"'{client_name or '?'}' – see Activity → Failures"))
+            other = sum(v for k, v in reason_counts.items() if k != ImportFailureReason.REMOTE_PATH_MAPPING.value)
+            if other:
+                checks.append(HealthCheck("imports", "warning", f"{other} download(s) failed to import – see Activity → Failures"))
 
     import importlib.util
 

@@ -407,6 +407,9 @@ class QueueItemOut(BaseModel):
     download_client_id: int | None = None
     added_at: datetime | None = None
     completed_at: datetime | None = None
+    failure_reason: str | None = None
+    failure_signature: str | None = None
+    failure_analysis: dict[str, Any] | None = None
 
 
 class HistoryOut(BaseModel):
@@ -420,6 +423,23 @@ class HistoryOut(BaseModel):
     details: str | None = None
     timestamp: datetime | None = None
     download_id: int | None = None
+    data: dict[str, Any] | None = None
+
+
+class ImportFixRequest(BaseModel):
+    kind: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ImportRequest(BaseModel):
+    strategy: Literal["default", "auto_fix", "force"] = "default"
+    fix: ImportFixRequest | None = None
+
+
+class QueueFixRequest(BaseModel):
+    signature: str = Field(min_length=1, max_length=128)
+    kind: str
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class BlocklistOut(BaseModel):

@@ -6,6 +6,7 @@ import { get } from '../api/client';
 import type { Dashboard } from '../api/types';
 import { ErrorAlert, Loading, PageHeader, Poster, Section, StatCard, StatusChip } from '../components/common';
 import { palette } from '../theme';
+import { CATEGORY_COLORS, reasonCategory, reasonLabel } from '../utils/diagnosis';
 import { bytes, episodeCode, relative } from '../utils/format';
 
 const ISSUE_LABELS: Record<string, string> = {
@@ -50,6 +51,21 @@ export default function DashboardPage() {
             icon={<AlertTriangle size={20} />} hint={`${data.failed_last_7_days} failures in 7 days`} />
         </Grid>
       </Grid>
+
+      {data.failed_imports > 0 && (
+        <Section
+          title="Failed imports by reason"
+          actions={<Chip size="small" component={Link} to="/activity?tab=failures" clickable label="Open Failures tab" />}
+          sx={{ mb: 3 }}
+        >
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {data.failed_top_reasons.map((r) => (
+              <Chip key={r.reason} label={`${reasonLabel(r.reason)}: ${r.count}`}
+                sx={{ bgcolor: `${CATEGORY_COLORS[reasonCategory(r.reason)]}26`, color: CATEGORY_COLORS[reasonCategory(r.reason)], border: 'none' }} />
+            ))}
+          </Stack>
+        </Section>
+      )}
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, lg: 7 }}>

@@ -54,6 +54,7 @@ class AppSettings(BaseModel):
     import_untracked_downloads: bool = False  # also import files dropped in the folder by hand
     recycle_bin_days: int = 30
     follow_symlinks: bool = False
+    auto_fix_imports: bool = True  # apply safe (non-settings-changing) import failure fixes automatically
     extra_file_extensions: list[str] = Field(default_factory=lambda: [".srt", ".ass", ".sub", ".idx", ".nfo"])
 
     # --- automation

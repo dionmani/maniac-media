@@ -218,6 +218,39 @@ export interface Release {
   download_url_token: string;
 }
 
+export interface FixSuggestion {
+  kind: string;
+  label: string;
+  params: Record<string, unknown>;
+  safe_auto: boolean;
+  changes_settings: boolean;
+  bulk_applicable: boolean;
+}
+
+export interface ImportFailureAnalysis {
+  reason: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  fixes: FixSuggestion[];
+  signature: string;
+  confidence: number;
+  analysed_at: string;
+}
+
+export interface FailureSignatureGroup {
+  signature: string;
+  reason: string;
+  count: number;
+  examples: string[];
+  fix: FixSuggestion | null;
+}
+
+export interface FailuresSummary {
+  total: number;
+  by_reason: { reason: string; count: number }[];
+  top_signatures: FailureSignatureGroup[];
+}
+
 export interface QueueItem {
   id: number;
   title: string;
@@ -240,6 +273,9 @@ export interface QueueItem {
   error_message?: string | null;
   retry_count?: number | null;
   added_at?: string | null;
+  failure_reason?: string | null;
+  failure_signature?: string | null;
+  failure_analysis?: ImportFailureAnalysis | null;
 }
 
 export interface HistoryItem {
@@ -251,6 +287,7 @@ export interface HistoryItem {
   quality?: string | null;
   details?: string | null;
   timestamp?: string | null;
+  data?: { analysis?: ImportFailureAnalysis } & Record<string, unknown> | null;
 }
 
 export interface QualityProfile {
@@ -298,6 +335,7 @@ export interface Dashboard {
   downloads: { active: number };
   failed_imports: number;
   failed_last_7_days: number;
+  failed_top_reasons: { reason: string; count: number }[];
   storage: { library_bytes: number; movies_bytes: number; tv_bytes: number; disks: { path: string; total: number; used: number; free: number }[] };
   issues: Record<string, number>;
   upcoming: { episode_id: number; series_id: number; series: string; season: number; episode: number; title: string; air_date: string; poster?: string }[];

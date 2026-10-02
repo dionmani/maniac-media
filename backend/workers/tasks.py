@@ -49,7 +49,8 @@ async def download_folder_scan(ctx: JobContext):
 @job_queue.register("import_download", "Import Download", priority=2, exclusive=False)
 async def import_download(ctx: JobContext):
     queue_id = int(ctx.payload["queue_id"])
-    result = await asyncio.to_thread(import_service.import_queue_item, queue_id)
+    force = bool(ctx.payload.get("force", False))
+    result = await asyncio.to_thread(import_service.import_queue_item, queue_id, force)
     if result.imported:
         await download_service.remove_completed_from_client(queue_id)
     return {"imported": result.imported, "skipped": result.skipped, "failed": result.failed}
