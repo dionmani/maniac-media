@@ -99,34 +99,43 @@ async def _provider_search(guess: TitleGuess, media_type: str) -> list[dict]:
     ]
 
 
-async def _identify_one(path: str, sem: asyncio.Semaphore) -> dict:
-    guess = guess_title(path)
-    out = {**asdict(guess), "path": path, "candidates": []}
-    if not guess.query:
-        return out
+async def _lookup(guess: TitleGuess) -> list[dict]:
     order = ["tv", "movie"] if guess.kind == "tv" else ["movie", "tv"]
-    try:
-        for media_type in order:           # library first, for both kinds, so a known title never costs an API call
-            if found := await asyncio.to_thread(_library_search, guess, media_type):
-                if found[0]["score"] >= 100:   # exact title match – no need to look further
-                    out["candidates"] = found
-                    return out
-        async with sem:
-            for media_type in order:
-                if found := await _provider_search(guess, media_type):
-                    out["candidates"] = found
-                    return out
-        # nothing remote; fall back to whatever partial library hits there were
-        for media_type in order:
-            if found := await asyncio.to_thread(_library_search, guess, media_type):
-                out["candidates"] = found
-                return out
-    except Exception as exc:  # one bad file must not fail the whole batch
-        log.warning("Identify failed for %s: %s", path, exc)
-        out["error"] = str(exc)
-    return out
+    library: dict[str, list[dict]] = {}
+    for media_type in order:           # library first, for both kinds, so a known title never costs an API call
+        library[media_type] = await asyncio.to_thread(_library_search, guess, media_type)
+        if library[media_type] and library[media_type][0]["score"] >= 100:   # exact title match – no need to look further
+            return library[media_type]
+    for media_type in order:
+        if found := await _provider_search(guess, media_type):
+            return found
+    # nothing remote; fall back to whatever partial library hits there were
+    return next((library[m] for m in order if library[m]), [])
 
 
 async def identify(paths: list[str]) -> list[dict]:
+    """Identify every path; files that normalise to the same title (all episodes of a season, say) share
+    one lookup, and at most ``_CONCURRENCY`` lookups run at once."""
     sem = asyncio.Semaphore(_CONCURRENCY)
-    return await asyncio.gather(*(_identify_one(p, sem) for p in paths))
+    lookups: dict[tuple, asyncio.Future] = {}
+
+    async def bounded(guess: TitleGuess) -> list[dict]:
+        async with sem:
+            return await _lookup(guess)
+
+    async def one(path: str) -> dict:
+        guess = guess_title(path)
+        out = {**asdict(guess), "path": path, "candidates": []}
+        if not guess.query:
+            return out
+        key = (guess.query.lower(), guess.year, guess.kind)
+        if key not in lookups:
+            lookups[key] = asyncio.ensure_future(bounded(guess))
+        try:
+            out["candidates"] = [dict(c) for c in await lookups[key]]
+        except Exception as exc:  # one bad title must not fail the whole batch
+            log.warning("Identify failed for %s: %s", path, exc)
+            out["error"] = str(exc)
+        return out
+
+    return await asyncio.gather(*(one(p) for p in paths))

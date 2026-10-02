@@ -94,3 +94,26 @@ def test_single_file_job(stub_ffprobe, movie_files):
     assert result == {"status": "inspected", "error": None}
     with session_scope() as db:
         assert db.get(models.MediaFile, movie_files["ok"]).video_codec == "h264"
+
+
+def test_backlog_does_not_requeue_forever_when_a_changed_file_fails(stub_ffprobe, movie_files, monkeypatch):
+    """A previously inspected file that changed but can no longer be probed must leave the backlog."""
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.services import inspection_service
+    from backend.workers import tasks
+    from backend.workers.queue import job_queue
+
+    requeued = []
+    monkeypatch.setattr(job_queue, "enqueue", lambda name, *a, **kw: requeued.append(name))
+    asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": True})))
+    with session_scope() as db:
+        db.get(models.MediaFile, movie_files["ok"]).size_bytes += 1  # changed on disk since it was inspected
+
+    async def broken_probe(path, timeout=30):
+        raise RuntimeError("ffprobe failed: boom")
+
+    monkeypatch.setattr(inspection_service, "probe", broken_probe)
+    stats = asyncio.run(tasks.media_inspection(FakeCtx()))
+    assert stats["status"] == "complete" and requeued == []
+    assert asyncio.run(tasks.media_inspection(FakeCtx()))["processed"] == 0

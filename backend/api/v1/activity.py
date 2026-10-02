@@ -1,6 +1,7 @@
 """Search, grabs, queue, history, blocklist and wanted lists."""
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -11,6 +12,7 @@ from backend.api.deps import DB, Paging, Requires, page_response
 from backend.core.security import Permission
 from backend.db import models
 from backend.db.repositories import EpisodeRepository, HistoryRepository, MovieRepository, QueueRepository, Repository
+from backend.db.session import session_scope
 from backend.domain.diagnosis import CHANGES_SETTINGS_FIX_KINDS, FixKind, ImportFailureReason
 from backend.services import download_service, import_diagnosis, metadata_service, search_service
 from backend.workers.queue import job_queue
@@ -87,12 +89,17 @@ async def retry_queue_item(queue_id: int, user: Requires(Permission.QUEUE_WRITE)
 
 
 @router.post("/queue/{queue_id}/import", tags=["queue"])
-async def retry_import(queue_id: int, db: DB, user: Requires(Permission.IMPORT), body: schemas.ImportRequest | None = _OPTIONAL_IMPORT_BODY):
-    q = db.get(models.DownloadQueueItem, queue_id)
-    if q is None:
-        raise HTTPException(404, "Queue item not found")
-    if q.status not in ("completed", "import_failed"):
-        raise HTTPException(409, f"Item is {q.status}; only completed downloads can be imported")
+async def retry_import(queue_id: int, user: Requires(Permission.IMPORT), body: schemas.ImportRequest | None = _OPTIONAL_IMPORT_BODY):
+    # async because apply_fix is; the DB work runs in a thread so it never blocks the event loop
+    def check() -> None:
+        with session_scope() as db:
+            q = db.get(models.DownloadQueueItem, queue_id)
+            if q is None:
+                raise HTTPException(404, "Queue item not found")
+            if q.status not in ("completed", "import_failed"):
+                raise HTTPException(409, f"Item is {q.status}; only completed downloads can be imported")
+
+    await asyncio.to_thread(check)
 
     if body and body.fix:
         try:
@@ -108,9 +115,15 @@ async def retry_import(queue_id: int, db: DB, user: Requires(Permission.IMPORT),
         return result
 
     force = bool(body and body.strategy == "force")
-    q.status = "completed"
-    db.commit()
-    return {"job_id": job_queue.enqueue("import_download", {"queue_id": queue_id, "force": force}, dedupe_key=str(queue_id))}
+
+    def requeue() -> int | None:
+        with session_scope() as db:
+            q = db.get(models.DownloadQueueItem, queue_id)
+            if q is not None:
+                q.status = "completed"
+        return job_queue.enqueue("import_download", {"queue_id": queue_id, "force": force}, dedupe_key=str(queue_id))
+
+    return {"job_id": await asyncio.to_thread(requeue)}
 
 
 @router.post("/queue/{queue_id}/diagnose", tags=["queue"])
@@ -127,15 +140,19 @@ def diagnose_import(queue_id: int, db: DB, _: Requires(Permission.QUEUE_READ)):
 
 
 @router.post("/queue/fixes", tags=["queue"])
-async def bulk_fix(req: schemas.QueueFixRequest, db: DB, user: Requires(Permission.IMPORT)):
+async def bulk_fix(req: schemas.QueueFixRequest, user: Requires(Permission.IMPORT)):
     try:
         kind = FixKind(req.kind)
     except ValueError:
         raise HTTPException(400, f"Unknown fix kind: {req.kind}")
     if kind in CHANGES_SETTINGS_FIX_KINDS and Permission.SETTINGS_WRITE not in user.permissions:
         raise HTTPException(403, f"Missing permission: {Permission.SETTINGS_WRITE.value}")
-    sample = db.scalar(select(models.DownloadQueueItem.id).where(
-        models.DownloadQueueItem.status == "import_failed", models.DownloadQueueItem.failure_signature == req.signature))
+    def find_sample() -> int | None:
+        with session_scope() as db:
+            return db.scalar(select(models.DownloadQueueItem.id).where(
+                models.DownloadQueueItem.status == "import_failed", models.DownloadQueueItem.failure_signature == req.signature))
+
+    sample = await asyncio.to_thread(find_sample)
     if sample is None:
         raise HTTPException(404, "No failed items match this signature")
     try:

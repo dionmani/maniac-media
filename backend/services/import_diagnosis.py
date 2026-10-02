@@ -294,43 +294,62 @@ def _bulk_targets(queue_id: int, bulk: bool) -> list[int]:
         ))]
 
 
+def _requeue(targets: list[int]) -> None:
+    for qid in targets:
+        job_queue.enqueue("import_download", {"queue_id": qid}, dedupe_key=str(qid))
+
+
+def _apply_path_mapping(client_id: int, remote_path: str | None, local_path: str, targets: list[int], actor: Actor) -> None:
+    if not local_path or not Path(local_path).is_dir():
+        raise FixError(f"Local path does not exist or is not a directory: {local_path}")
+    with session_scope() as db:
+        client = db.get(models.DownloadClient, client_id)
+        if client is None:
+            raise FixError("Download client not found")
+        client.remote_path, client.local_path = remote_path, local_path
+        audit(db, "settings", "download_client.path_mapping", actor=actor, entity_type="download_client", entity_id=client_id,
+             details={"remote_path": remote_path, "local_path": local_path})
+        # Re-apply the (now correct) mapping to paths already recorded on the queue – otherwise
+        # a retry would read the same unmapped path and fail the exact same way.
+        for qid in targets:
+            q = db.get(models.DownloadQueueItem, qid)
+            if q is not None and q.download_path:
+                q.download_path = map_remote_path(q.download_path, {"remote_path": remote_path, "local_path": local_path})
+    _requeue(targets)
+
+
+def _create_folder(path: str, targets: list[int]) -> None:
+    folder = Path(path)
+    settings = get_settings()
+    roots = [Path(settings.media_root_movies), Path(settings.media_root_tv)]
+    if not folder.parts or not any(_is_within(folder, root) for root in roots):
+        raise FixError("Folder is outside the configured media roots")
+    folder.mkdir(parents=True, exist_ok=True)
+    _requeue(targets)
+
+
+def _error_message(queue_id: int) -> str:
+    with session_scope() as db:
+        q = db.get(models.DownloadQueueItem, queue_id)
+        return (q.error_message if q else None) or "Import failed"
+
+
 async def apply_fix(queue_id: int, kind: FixKind, params: dict, actor: Actor, *, bulk: bool = False) -> dict:
-    """Apply one catalogued fix, optionally to every queue item sharing the same failure signature."""
+    """Apply one catalogued fix, optionally to every queue item sharing the same failure signature.
+
+    Async (some fixes call async download-service code), so every DB / filesystem step is pushed
+    to a worker thread rather than run on the event loop.
+    """
     params = params or {}
-    targets = _bulk_targets(queue_id, bulk)
+    targets = await asyncio.to_thread(_bulk_targets, queue_id, bulk)
 
     if kind == FixKind.APPLY_PATH_MAPPING:
-        client_id = int(params["client_id"])
-        local_path = str(params.get("local_path") or "")
-        if not local_path or not Path(local_path).is_dir():
-            raise FixError(f"Local path does not exist or is not a directory: {local_path}")
-        remote_path = params.get("remote_path")
-        with session_scope() as db:
-            client = db.get(models.DownloadClient, client_id)
-            if client is None:
-                raise FixError("Download client not found")
-            client.remote_path, client.local_path = remote_path, local_path
-            audit(db, "settings", "download_client.path_mapping", actor=actor, entity_type="download_client", entity_id=client_id,
-                 details={"remote_path": remote_path, "local_path": local_path})
-            # Re-apply the (now correct) mapping to paths already recorded on the queue – otherwise
-            # a retry would read the same unmapped path and fail the exact same way.
-            for qid in targets:
-                q = db.get(models.DownloadQueueItem, qid)
-                if q is not None and q.download_path:
-                    q.download_path = map_remote_path(q.download_path, {"remote_path": remote_path, "local_path": local_path})
-        for qid in targets:
-            job_queue.enqueue("import_download", {"queue_id": qid}, dedupe_key=str(qid))
+        await asyncio.to_thread(_apply_path_mapping, int(params["client_id"]), params.get("remote_path"),
+                                str(params.get("local_path") or ""), targets, actor)
         return {"applied": kind.value, "retried": len(targets)}
 
     if kind == FixKind.CREATE_FOLDER:
-        folder = Path(str(params.get("path") or ""))
-        settings = get_settings()
-        roots = [Path(settings.media_root_movies), Path(settings.media_root_tv)]
-        if not folder.parts or not any(_is_within(folder, root) for root in roots):
-            raise FixError("Folder is outside the configured media roots")
-        folder.mkdir(parents=True, exist_ok=True)
-        for qid in targets:
-            job_queue.enqueue("import_download", {"queue_id": qid}, dedupe_key=str(qid))
+        await asyncio.to_thread(_create_folder, str(params.get("path") or ""), targets)
         return {"applied": kind.value, "retried": len(targets)}
 
     if kind == FixKind.FORCE_IMPORT:
@@ -345,22 +364,22 @@ async def apply_fix(queue_id: int, kind: FixKind, params: dict, actor: Actor, *,
         return {"applied": kind.value, "retried": len(targets)}
 
     if kind == FixKind.RETRY_WHEN_STABLE:
-        for qid in targets:
-            job_queue.enqueue("import_download", {"queue_id": qid}, delay_seconds=300, dedupe_key=f"stable:{qid}")
+        def stable() -> None:
+            for qid in targets:
+                job_queue.enqueue("import_download", {"queue_id": qid}, delay_seconds=300, dedupe_key=f"stable:{qid}")
+
+        await asyncio.to_thread(stable)
         return {"applied": kind.value, "retried": len(targets)}
 
     if kind == FixKind.RETRY:
-        for qid in targets:
-            job_queue.enqueue("import_download", {"queue_id": qid}, dedupe_key=str(qid))
+        await asyncio.to_thread(_requeue, targets)
         return {"applied": kind.value, "retried": len(targets)}
 
     if kind == FixKind.BLOCKLIST_AND_SEARCH:
         from backend.services import download_service
 
         for qid in targets:
-            with session_scope() as db:
-                q = db.get(models.DownloadQueueItem, qid)
-                error = (q.error_message if q else None) or "Import failed"
+            error = await asyncio.to_thread(_error_message, qid)
             await download_service.handle_failed(qid, error, release_at_fault=True)
         return {"applied": kind.value, "retried": len(targets)}
 

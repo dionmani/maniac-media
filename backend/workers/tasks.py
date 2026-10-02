@@ -146,22 +146,14 @@ async def inspect_file(ctx: JobContext):
     from backend.services.inspection_service import inspect_file as _inspect_file
     media_file_id = int(ctx.payload["media_file_id"])
     force = bool(ctx.payload.get("force", False))
-    db = db_manager.session()
-    try:
-        outcome = await _inspect_file(db, media_file_id, force=force)
-    finally:
-        db.close()
+    outcome = await _inspect_file(media_file_id, force=force)
     return {"status": outcome.status, "error": outcome.error}
 
 
 @job_queue.register("media_inspection", "Media Inspection (Backlog)", priority=7)
 async def media_inspection(ctx: JobContext):
     from backend.services.inspection_service import inspect_backlog
-    db = db_manager.session()
-    try:
-        stats = await inspect_backlog(db, limit=200, progress=ctx.progress)
-    finally:
-        db.close()
+    stats = await inspect_backlog(limit=200, progress=ctx.progress)
     if stats.get("status") == "more_pending":
         await asyncio.to_thread(
             job_queue.enqueue, "media_inspection", {}, trigger="event", dedupe_key="backlog", delay_seconds=10

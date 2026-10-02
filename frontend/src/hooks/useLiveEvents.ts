@@ -23,6 +23,9 @@ const INVALIDATES: Record<string, string[][]> = {
   'database.migration': [['database']],
 };
 
+/** Query families that are costly to refetch; their live invalidations are throttled harder. */
+const HEAVY = new Set(['movies', 'series', 'dashboard']);
+
 export function useLiveEvents() {
   const token = useAuth((s) => s.token);
   const qc = useQueryClient();
@@ -34,18 +37,32 @@ export function useLiveEvents() {
     let retry = 1000;
     let stopped = false;
     let ping: ReturnType<typeof setInterval>;
-    const pending = new Set<string>();
-    let flush: ReturnType<typeof setTimeout> | null = null;
+    // Coalesce bursts (e.g. hundreds of job updates during a scan). The whole-library lists and the
+    // dashboard are expensive to reload (the library page fetches every page), so during a scan or
+    // metadata refresh they refresh at most every few seconds instead of on every event.
+    const makeBatch = (delay: number) => {
+      const pending = new Set<string>();
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      return {
+        add(key: string) {
+          pending.add(key);
+          if (timer) return;
+          timer = setTimeout(() => {
+            pending.forEach((k) => qc.invalidateQueries({ queryKey: JSON.parse(k) }));
+            pending.clear();
+            timer = null;
+          }, delay);
+        },
+        cancel() {
+          if (timer) clearTimeout(timer);
+        },
+      };
+    };
+    const fast = makeBatch(400);
+    const slow = makeBatch(3000);
 
     const invalidate = (keys: string[][]) => {
-      keys.forEach((k) => pending.add(JSON.stringify(k)));
-      if (flush) return;
-      // coalesce bursts (e.g. hundreds of job updates during a scan)
-      flush = setTimeout(() => {
-        pending.forEach((k) => qc.invalidateQueries({ queryKey: JSON.parse(k) }));
-        pending.clear();
-        flush = null;
-      }, 400);
+      keys.forEach((k) => (HEAVY.has(k[0]) ? slow : fast).add(JSON.stringify(k)));
     };
 
     const connect = () => {
@@ -81,6 +98,8 @@ export function useLiveEvents() {
     return () => {
       stopped = true;
       clearInterval(ping);
+      fast.cancel();
+      slow.cancel();
       ws?.close();
     };
   }, [token, qc, setConnected]);
