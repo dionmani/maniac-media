@@ -30,6 +30,7 @@ from backend.api.compat.common import (
     iso,
     queue_page,
     queue_record,
+    source_name,
     validation_error,
 )
 from backend.api.deps import DB, Requires, allow_api_key_query, guard_maintenance, require
@@ -40,7 +41,7 @@ from backend.db import models
 from backend.db.repositories import MovieRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service
+from backend.services import media_service, metadata_service, tag_service
 from backend.workers.queue import job_queue
 
 URL_BASE = "/api/compat/radarr"
@@ -138,7 +139,7 @@ def movie_resource(movie: models.Movie) -> dict[str, Any]:
         "certification": movie.certification or "",
         "added": iso(movie.added_date),
         "images": images(movie.poster_path, movie.backdrop_path),
-        "tags": [],
+        "tags": movie.tags or [],
     }
     if movie.has_file and (file := _movie_file(movie)) is not None:
         resource["movieFile"] = file
@@ -266,6 +267,7 @@ async def add_movie(body: MovieIn, user: Requires(Permission.MEDIA_WRITE)):
             except media_service.ConflictError:
                 return {}
             db.flush()
+            tag_service.set_tags(db, movie, body.tags, actor=user.actor, source=source_name(db, user))
             return movie_resource(movie)
 
     out = await asyncio.to_thread(persist)
@@ -287,6 +289,7 @@ def _update(movie_id: int, body: MovieIn, db: Session, user) -> dict:
         changes["quality_profile_id"] = profile_id
     # rootFolderPath/path changes are ignored: moving an existing movie's files is not a request-manager job.
     media_service.update_movie(db, movie, changes, user.actor)
+    tag_service.set_tags(db, movie, body.tags, actor=user.actor, source=source_name(db, user))
     db.commit()
     bus.publish(EventType.MEDIA_UPDATED, media_type="movie", media_id=movie.id)
     return movie_resource(movie)

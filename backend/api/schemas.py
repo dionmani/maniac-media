@@ -223,6 +223,7 @@ class MovieOut(_ArtMixin):
     last_search_at: datetime | None = None
     added_date: datetime | None = None
     files: list[MediaFileOut] = []
+    requested_by: list[str] = []  # users whose request-manager tags are on it (filled by the detail endpoint)
 
 
 class MovieSummary(_ArtMixin):
@@ -339,6 +340,7 @@ class SeriesOut(SeriesSummary):
     metadata_source: str | None = None
     last_metadata_refresh: datetime | None = None
     seasons: list[SeasonOut] = []
+    requested_by: list[str] = []  # users whose request-manager tags are on it (filled by the detail endpoint)
 
 
 class SeriesUpdate(BaseModel):

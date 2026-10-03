@@ -85,6 +85,7 @@ export interface MediaFile {
 }
 
 export interface Movie extends MovieSummary {
+  requested_by?: string[];
   quality_profile_id?: number | null;
   root_folder?: string | null;
   path?: string | null;
@@ -207,6 +208,7 @@ export interface MergePlan {
 }
 
 export interface Series extends SeriesSummary {
+  requested_by?: string[];
   quality_profile_id?: number | null;
   root_folder?: string | null;
   path?: string | null;

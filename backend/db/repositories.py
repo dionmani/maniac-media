@@ -318,6 +318,22 @@ class QueueRepository(Repository[models.DownloadQueueItem]):
         return self.db.scalar(stmt.limit(1)) is not None
 
 
+class TagRepository(Repository[models.Tag]):
+    model = models.Tag
+
+    def all(self) -> Sequence[models.Tag]:
+        return self.db.scalars(select(models.Tag).order_by(models.Tag.id)).all()
+
+    def by_label(self, label: str) -> models.Tag | None:
+        """Case-insensitive, like Radarr/Sonarr."""
+        return self.db.scalars(select(models.Tag).where(func.lower(models.Tag.label) == label.strip().lower()).limit(1)).first()
+
+    def labels(self, ids: Sequence[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        return dict(self.db.execute(select(models.Tag.id, models.Tag.label).where(models.Tag.id.in_(list(ids)))).all())
+
+
 class HistoryRepository(Repository[models.History]):
     model = models.History
     default_sort = "timestamp"

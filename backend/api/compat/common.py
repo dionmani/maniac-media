@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,9 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend import __version__
-from backend.api.deps import DB, Requires, allow_api_key_query
+from backend.api.deps import DB, CurrentUser, Requires, allow_api_key_query
 from backend.core.security import Permission
 from backend.db import models
+from backend.services import tag_service
 
 # MM queue status -> (servarr status, trackedDownloadStatus, trackedDownloadState)
 QUEUE_STATE = {
@@ -91,6 +91,16 @@ def norm_path(path: str | None) -> str:
 
 def is_known_root(path: str, roots: list[str]) -> bool:
     return norm_path(path) in {norm_path(r) for r in roots}
+
+
+def source_name(db: Session, user: CurrentUser) -> str:
+    """How history credits the caller: the API key's name (e.g. "Seerr")."""
+    key = db.get(models.ApiKey, user.api_key_id) if user.api_key_id else None
+    return key.name if key is not None else "request manager"
+
+
+def tag_resource(tag: models.Tag) -> dict[str, Any]:
+    return {"id": tag.id, "label": tag.label}
 
 
 def client_names(db: Session) -> dict[int, str]:
@@ -198,19 +208,29 @@ def add_servarr_routes(router: APIRouter, *, url_base: str, version: str, root_f
             out.append({"id": i, "path": path, "accessible": accessible, "freeSpace": free, "totalSpace": total, "unmappedFolders": []})
         return out
 
-    # Tags are accepted for compatibility (Seerr's optional "tag requests") but not stored: ids are a
-    # stable hash of the label, so repeated creates of the same label agree with each other.
+    # Tags are shared by both facades. Seerr's "tag requests" finds or creates one per requesting
+    # user, then sends its id with the add/update; tag_service turns that into request attribution.
     @router.get("/tag")
     @allow_api_key_query
-    def list_tags(_: Requires(Permission.MEDIA_READ)):
-        return []
+    def list_tags(db: DB, _: Requires(Permission.MEDIA_READ)):
+        return [tag_resource(t) for t in tag_service.list_tags(db)]
 
     @router.post("/tag", status_code=201)
     @allow_api_key_query
-    def create_tag(body: TagIn, _: Requires(Permission.MEDIA_WRITE)):
-        return {"id": zlib.crc32(body.label.encode()) & 0x7FFFFFFF or 1, "label": body.label}
+    def create_tag(body: TagIn, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+        try:
+            tag = tag_service.create_tag(db, body.label, user.actor)
+        except tag_service.TagError as exc:
+            return validation_error("Label", str(exc))
+        db.commit()
+        return tag_resource(tag)
 
     @router.put("/tag/{tag_id}", status_code=202)
     @allow_api_key_query
-    def rename_tag(tag_id: int, body: TagIn, _: Requires(Permission.MEDIA_WRITE)):
-        return {"id": tag_id, "label": body.label}
+    def rename_tag(tag_id: int, body: TagIn, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+        try:
+            tag = tag_service.rename_tag(db, tag_id, body.label, user.actor)
+        except tag_service.TagError as exc:
+            return validation_error("Label", str(exc))
+        db.commit()
+        return tag_resource(tag)

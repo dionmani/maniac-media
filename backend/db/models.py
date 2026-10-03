@@ -69,6 +69,8 @@ class Movie(Base):
     metadata_source: Mapped[str | None] = mapped_column(String(32))
     last_metadata_refresh: Mapped[datetime | None] = mapped_column(DateTime)
     last_search_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # v4 – ids into ``tags`` (set by request managers via the compat API)
+    tags: Mapped[list[int] | None] = mapped_column(JSON)
 
     files: Mapped[list["MediaFile"]] = relationship(
         back_populates="movie", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"
@@ -112,6 +114,8 @@ class Series(Base):
     metadata_source: Mapped[str | None] = mapped_column(String(32))
     last_metadata_refresh: Mapped[datetime | None] = mapped_column(DateTime)
     last_search_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # v4 – ids into ``tags`` (set by request managers via the compat API)
+    tags: Mapped[list[int] | None] = mapped_column(JSON)
 
     seasons: Mapped[list["Season"]] = relationship(
         back_populates="series", cascade="all, delete-orphan", order_by="Season.season_number"
@@ -357,7 +361,7 @@ class History(Base):
     media_type: Mapped[str] = mapped_column(String(16))
     media_id: Mapped[int | None] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(String(1024))
-    # added | grabbed | downloaded | imported | renamed | deleted | download_failed | import_failed | upgraded
+    # added | requested | grabbed | downloaded | imported | renamed | deleted | download_failed | import_failed | upgraded
     event_type: Mapped[str] = mapped_column(String(32), index=True)
     quality: Mapped[str | None] = mapped_column(String(64))
     details: Mapped[str | None] = mapped_column(Text)
@@ -365,6 +369,16 @@ class History(Base):
     # v2
     download_id: Mapped[int | None] = mapped_column(Integer)
     data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class Tag(Base):
+    """Servarr-style labels. Seerr's "tag requests" creates one per requesting user (see domain/tags.py)."""
+
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(256), unique=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
 
 
 class Blocklist(Base):

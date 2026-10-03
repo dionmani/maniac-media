@@ -33,6 +33,14 @@ Just start v2. The existing `maniac_media.db` is backed up to `data/backups/`, a
 in place; the master key moves from `data/master.key` into the OS credential store; every movie,
 series and episode is kept. Metadata enrichment then runs in the background.
 
+### Requests from Seerr
+
+Already using Seerr (or Overseerr/Jellyseerr)? Add Maniac Media to it as a Radarr server
+(URL base `/api/compat/radarr`) and a Sonarr server (URL base `/api/compat/sonarr`), using an API
+key from the **Request manager** preset. Requests, download progress, availability and
+"requested by" attribution all work. See **[docs/SEERR.md](docs/SEERR.md)** for step-by-step setup
+and troubleshooting.
+
 ## Docker / Unraid
 
 Pushing to `main` (or a `v*.*.*` tag) runs `.github/workflows/publish.yml`, which tests the code and

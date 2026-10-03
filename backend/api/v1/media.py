@@ -16,7 +16,7 @@ from backend.db.repositories import MediaFileRepository, MovieRepository, Series
 from backend.db.session import session_scope
 from backend.domain.parser import parse_external_id
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service, renamer_service
+from backend.services import media_service, metadata_service, renamer_service, tag_service
 from backend.workers.queue import job_queue
 
 router = APIRouter()
@@ -47,7 +47,9 @@ def get_movie(movie_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
     movie = db.get(models.Movie, movie_id)
     if movie is None:
         raise HTTPException(404, "Movie not found")
-    return movie
+    out = schemas.MovieOut.model_validate(movie)
+    out.requested_by = tag_service.requesters(db, movie.tags)
+    return out
 
 
 @router.post("/movies", response_model=schemas.MovieOut, status_code=201, tags=["movies"])
@@ -156,6 +158,7 @@ def get_series(series_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
     out = schemas.SeriesOut.model_validate(series)
     for k, v in repo.episode_stats([series.id]).get(series.id, {}).items():
         setattr(out, k, v)
+    out.requested_by = tag_service.requesters(db, series.tags)
     return out
 
 

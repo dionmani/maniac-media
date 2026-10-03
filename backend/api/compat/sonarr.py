@@ -36,6 +36,7 @@ from backend.api.compat.common import (
     iso,
     queue_page,
     queue_record,
+    source_name,
     validation_error,
 )
 from backend.api.deps import DB, Requires, allow_api_key_query, guard_maintenance, require
@@ -46,7 +47,7 @@ from backend.db import models
 from backend.db.repositories import EpisodeRepository, QueueRepository, SeriesRepository
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service
+from backend.services import media_service, metadata_service, tag_service
 from backend.workers.queue import job_queue
 
 URL_BASE = "/api/compat/sonarr"
@@ -156,7 +157,7 @@ def series_resource(series: models.Series, stats: dict[int, dict[str, Any]]) -> 
         "titleSlug": str(series.id),
         "certification": series.certification or "",
         "genres": genres(series.genres),
-        "tags": [],
+        "tags": series.tags or [],
         "added": iso(series.added_date),
         "ratings": {"votes": series.votes or 0, "value": series.rating or 0},
         "statistics": series_stats,
@@ -234,12 +235,17 @@ def _match_library(db: Session, meta: MediaMetadata, tvdb_id: int) -> models.Ser
     return series
 
 
-def _apply_seasons(db: Session, series: models.Series, seasons: list[SeasonIn], actor) -> None:
-    """Flip only the seasons whose flag changed: set_season_monitored rewrites every episode in it."""
+def _apply_seasons(db: Session, series: models.Series, seasons: list[SeasonIn], actor) -> list[int]:
+    """Flip only the seasons whose flag changed: set_season_monitored rewrites every episode in it.
+    Returns the season numbers switched on, i.e. what this request asked for."""
     current = {s.season_number: s.monitored for s in series.seasons}
+    switched_on = []
     for season in seasons:
         if season.season_number in current and current[season.season_number] != season.monitored:
             media_service.set_season_monitored(db, series.id, season.season_number, season.monitored, actor)
+            if season.monitored:
+                switched_on.append(season.season_number)
+    return sorted(switched_on)
 
 
 # --------------------------------------------------------------------------- series
@@ -356,7 +362,8 @@ async def add_series(body: SeriesIn, user: Requires(Permission.MEDIA_WRITE)):
             media_service.update_series(db, series, changes, user.actor)
             db.flush()
             db.refresh(series)
-            _apply_seasons(db, series, body.seasons, user.actor)
+            requested = _apply_seasons(db, series, body.seasons, user.actor)
+            tag_service.set_tags(db, series, body.tags, actor=user.actor, source=source_name(db, user), seasons=requested)
             db.flush()
             return _resource(db, series)
 
@@ -383,7 +390,8 @@ def _update(series_id: int, body: SeriesIn, db: Session, user) -> dict:
         changes["monitor_new_seasons"] = body.monitor_new_items == "all"
     # rootFolderPath/path are ignored: moving an existing show's files is not a request-manager job.
     media_service.update_series(db, series, changes, user.actor)
-    _apply_seasons(db, series, body.seasons, user.actor)
+    requested = _apply_seasons(db, series, body.seasons, user.actor)
+    tag_service.set_tags(db, series, body.tags, actor=user.actor, source=source_name(db, user), seasons=requested)
     db.commit()
     db.refresh(series)
     bus.publish(EventType.MEDIA_UPDATED, media_type="tv", media_id=series.id)

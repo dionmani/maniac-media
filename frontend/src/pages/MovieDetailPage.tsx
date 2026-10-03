@@ -8,7 +8,7 @@ import type { HistoryItem, Movie, Page, QualityProfile } from '../api/types';
 import { ErrorAlert, Loading, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
-import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
+import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
 import { bytes, errorMessage, relative } from '../utils/format';
@@ -75,6 +75,7 @@ export default function MovieDetailPage() {
             {m.has_file ? <Chip color="success" size="small" label="On disk" /> : <Chip color="error" size="small" label="Missing" variant="outlined" />}
             {m.quality && <QualityChip quality={m.quality} />}
             {m.rating ? <Chip size="small" label={`★ ${m.rating.toFixed(1)}`} /> : null}
+            {requestedByChip(m.requested_by)}
             {genreChips(m.genres)}
           </>
         }

@@ -1,4 +1,5 @@
 import { Avatar, Box, Chip, Paper, Stack, Tooltip, Typography } from '@mui/material';
+import { UserRound } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Cast } from '../api/types';
 import { palette } from '../theme';
@@ -56,6 +57,14 @@ export function Fact({ label, children }: { label: string; children: ReactNode }
     </Box>
   );
 }
+
+/** Who asked for a title through a request manager (Seerr's per-user request tags). */
+export const requestedByChip = (names?: string[]) =>
+  names?.length ? (
+    <Tooltip title="Requested through Seerr">
+      <Chip size="small" color="info" variant="outlined" icon={<UserRound size={14} />} label={`Requested by ${names.join(', ')}`} />
+    </Tooltip>
+  ) : null;
 
 export const genreChips = (genres?: string | null) =>
   (genres ?? '').split(',').map((g) => g.trim()).filter((g) => g && !['Cinema', 'Series', 'Feature Film'].includes(g))

@@ -36,7 +36,7 @@ import type { DeleteEpisodesResult, Episode, PruneStaleResult, QualityProfile, S
 import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
-import { CastList, Fact, MediaHeader, genreChips } from '../components/MediaHeader';
+import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
 import { palette } from '../theme';
@@ -139,6 +139,7 @@ export default function SeriesDetailPage() {
             <Chip size="small" color={s.episode_file_count >= s.aired_episode_count ? 'success' : 'warning'} label={`${s.episode_file_count} / ${s.aired_episode_count} episodes`} />
             {s.size_on_disk > 0 && <Chip size="small" label={bytes(s.size_on_disk)} variant="outlined" />}
             {s.rating ? <Chip size="small" label={`★ ${s.rating.toFixed(1)}`} /> : null}
+            {requestedByChip(s.requested_by)}
             {genreChips(s.genres)}
           </>
         }

@@ -169,7 +169,10 @@ never blocked, which is the actual goal behind "async I/O everywhere possible".
 * Compat API (`backend/api/compat/`): `/api/compat/radarr/api/v3/*` and `/api/compat/sonarr/api/v3/*`
   are Radarr/Sonarr v3 facades covering the subset Seerr/Overseerr call (status, profiles, root
   folders, tags, movie/series CRUD + lookup, episodes, search commands, queue). Seerr identifies
-  shows by TVDB id; a lookup miss matches by TVmaze/IMDb/TMDB id and backfills `series.tvdb_id`. Auth is an API key via `?apikey=` (the key must allow query
+  shows by TVDB id; a lookup miss matches by TVmaze/IMDb/TMDB id and backfills `series.tvdb_id`.
+  Tags (`tags` table, `movies.tags`/`series.tags` id lists) are stored with Radarr semantics; a newly
+  attached requester tag (`<id>-<name>`, `domain/tags.py`) becomes a `requested` history entry and the
+  `requested_by` field on movie/series detail. User guide: [SEERR.md](SEERR.md). Auth is an API key via `?apikey=` (the key must allow query
   params); it only translates to the same services as `/api/v1` and is excluded from the OpenAPI
   spec. Seerr's file deletes are honoured only with `seerr_allow_file_deletion`, via the recycle bin.
 * Lists return `{items,total,page,page_size,pages}`; `page`, `page_size ≤ 500`, `sort`, `order`

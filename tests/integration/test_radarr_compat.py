@@ -75,9 +75,9 @@ def test_connection_test_calls(seerr):
     assert seerr.get("/qualityprofile").json() == profiles
     folders = seerr.get("/rootfolder").json()
     assert len(folders) == 1 and folders[0]["id"] == 1
-    assert seerr.get("/tag").json() == []
     tag = seerr.post("/tag", {"label": "1 - alice"}).json()
     assert tag["label"] == "1 - alice" and tag["id"] == seerr.post("/tag", {"label": "1 - alice"}).json()["id"]
+    assert tag in seerr.get("/tag").json()
 
 
 def test_request_flow_lookup_add_sync(seerr, fake_tmdb):
