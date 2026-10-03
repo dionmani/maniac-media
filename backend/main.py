@@ -107,6 +107,7 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
     app.include_router(compat.radarr_router)
+    app.include_router(compat.sonarr_router)
 
     @app.get("/api/health", tags=["system"])
     def liveness():

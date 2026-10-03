@@ -27,6 +27,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { del, get, patch, post } from '../../api/client';
+import { copyText } from '../../utils/clipboard';
 import type { ApiKey, ApiKeyCreatedResponse, ApiKeyPreset, Page, User } from '../../api/types';
 import { Loading, Section, useConfirm } from '../../components/common';
 import { useAuth } from '../../store/auth';
@@ -75,6 +76,7 @@ export function ApiKeySettings() {
 
   const [newKeyRevealed, setNewKeyRevealed] = useState<ApiKeyCreatedResponse | null>(null);
   const [copied, setCopied] = useState(false);
+  const [keyInput, setKeyInput] = useState<HTMLInputElement | null>(null);
 
   const call = useMutation({
     mutationFn: (fn: () => Promise<unknown>) => fn(),
@@ -308,16 +310,22 @@ export function ApiKeySettings() {
             <TextField
               fullWidth
               value={newKeyRevealed?.api_key || ''}
+              inputRef={setKeyInput}
+              onFocus={(e) => e.target.select()}
               InputProps={{
                 readOnly: true,
                 endAdornment: (
                   <InputAdornment position="end">
                     <IconButton
-                      onClick={() => {
-                        if (newKeyRevealed?.api_key) {
-                          navigator.clipboard.writeText(newKeyRevealed.api_key);
+                      aria-label="Copy API key"
+                      onClick={async () => {
+                        if (!newKeyRevealed?.api_key) return;
+                        if (await copyText(newKeyRevealed.api_key)) {
                           setCopied(true);
                           setTimeout(() => setCopied(false), 2000);
+                        } else {
+                          toast('Could not copy automatically. The key is selected; press Ctrl+C to copy it.', 'warning');
+                          keyInput?.select();
                         }
                       }}
                     >

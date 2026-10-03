@@ -186,6 +186,44 @@ class SeriesRepository(Repository[models.Series]):
     def by_tvmaze(self, tvmaze_id: int) -> models.Series | None:
         return self.db.scalar(select(models.Series).where(models.Series.tvmaze_id == tvmaze_id))
 
+    def by_tmdb(self, tmdb_id: int) -> models.Series | None:
+        return self.db.scalars(select(models.Series).where(models.Series.tmdb_id == tmdb_id).limit(1)).first()
+
+    def by_imdb(self, imdb_id: str) -> models.Series | None:
+        return self.db.scalars(select(models.Series).where(models.Series.imdb_id == imdb_id).limit(1)).first()
+
+    def season_stats(self, series_ids: Sequence[int]) -> dict[int, dict[int, dict[str, Any]]]:
+        """Per-season counts, Sonarr-style, in one query: ``{series_id: {season_number: stats}}``.
+
+        ``episode_count`` is what Sonarr calls episodeCount: episodes that have a file, or are
+        monitored and have aired (undated counts as aired). ``total_episode_count`` is every episode.
+        """
+        if not series_ids:
+            return {}
+        today = date.today().isoformat()
+        e = models.Episode
+        aired = or_(e.air_date.is_(None), e.air_date <= today)
+        rows = self.db.execute(
+            select(
+                e.series_id,
+                e.season_number,
+                func.count(e.id),
+                func.sum(case((e.has_file.is_(True), 1), else_=0)),
+                func.sum(case((or_(e.has_file.is_(True), and_(e.monitored.is_(True), aired)), 1), else_=0)),
+                func.sum(case((e.has_file.is_(True), func.coalesce(e.file_size_bytes, 0)), else_=0)),
+                func.max(case((aired, e.air_date), else_=None)),
+            )
+            .where(e.series_id.in_(series_ids))
+            .group_by(e.series_id, e.season_number)
+        ).all()
+        out: dict[int, dict[int, dict[str, Any]]] = {}
+        for series_id, season, total, files, count, size, last_aired in rows:
+            out.setdefault(series_id, {})[season] = {
+                "total_episode_count": total or 0, "episode_file_count": int(files or 0), "episode_count": int(count or 0),
+                "size_on_disk": int(size or 0), "previous_airing": last_aired,
+            }
+        return out
+
 
 class EpisodeRepository(Repository[models.Episode]):
     model = models.Episode
@@ -200,6 +238,28 @@ class EpisodeRepository(Repository[models.Episode]):
                 models.Episode.episode_number == episode,
             )
         )
+
+    def for_series(self, series_id: int) -> Sequence[models.Episode]:
+        return self.db.scalars(
+            select(models.Episode).where(models.Episode.series_id == series_id)
+            .order_by(models.Episode.season_number, models.Episode.episode_number)
+        ).all()
+
+    def seasons_with_missing(self, series_id: int) -> list[int]:
+        """Season numbers that have monitored, aired episodes without a file (what a series search should cover)."""
+        today = date.today().isoformat()
+        return list(self.db.scalars(
+            select(models.Episode.season_number).distinct()
+            .join(models.Season, models.Season.id == models.Episode.season_id)
+            .where(
+                models.Episode.series_id == series_id,
+                models.Episode.monitored.is_(True),
+                models.Episode.has_file.is_(False),
+                models.Season.monitored.is_(True),
+                or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today),
+            )
+            .order_by(models.Episode.season_number)
+        ))
 
     def wanted_missing(self, today: str) -> Select:
         return (

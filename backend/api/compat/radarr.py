@@ -5,25 +5,33 @@ Seerr is added as a Radarr server with URL base ``/api/compat/radarr``; it then 
 query-param keys and the key itself must allow them. Only the subset Seerr uses is implemented
 (see its ``server/api/servarr/{base,radarr}.ts``): status, profiles, root folders, tags, movie
 list/get/lookup/add/update/delete, commands and the queue. Responses carry the fields Seerr reads
-plus the common Radarr ones; request bodies are parsed leniently because Seerr echoes back whole
-movie resources.
+plus the common Radarr ones.
 """
 from __future__ import annotations
 
 import asyncio
 import os
-import shutil
-import zlib
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from pydantic import Field
 from sqlalchemy.orm import Session, selectinload
 
-from backend import __version__
+from backend.api.compat.common import (
+    CommandIn,
+    Lenient,
+    add_servarr_routes,
+    client_names,
+    command_response,
+    genres,
+    images,
+    is_known_root,
+    iso,
+    queue_page,
+    queue_record,
+    validation_error,
+)
 from backend.api.deps import DB, Requires, allow_api_key_query, guard_maintenance, require
 from backend.core.events import EventType, bus
 from backend.core.security import Permission
@@ -36,36 +44,26 @@ from backend.services import media_service, metadata_service
 from backend.workers.queue import job_queue
 
 URL_BASE = "/api/compat/radarr"
-# Reported to clients as the Radarr version; Seerr only checks that the call succeeds.
-RADARR_VERSION = "5.0.0.0"
 
 # Kept out of /api/openapi.json: that spec documents Maniac Media's own versioned API only.
 router = APIRouter(prefix=f"{URL_BASE}/api/v3", include_in_schema=False, dependencies=[Depends(guard_maintenance)])
 
+
+def _root_folders() -> list[str]:
+    return [get_settings().media_root_movies]
+
+
+add_servarr_routes(router, url_base=URL_BASE, version="5.0.0.0", root_folders=_root_folders)
+
 _STATUS = {"announced": "announced", "in_cinemas": "inCinemas", "released": "released"}
 _AVAILABILITY = {"announced": "announced", "in_cinemas": "inCinemas", "released": "released", "predb": "released"}
-# MM queue status -> (Radarr status, trackedDownloadStatus, trackedDownloadState)
-_QUEUE_STATE = {
-    "queued": ("queued", "ok", "downloading"),
-    "downloading": ("downloading", "ok", "downloading"),
-    "paused": ("paused", "ok", "downloading"),
-    "completed": ("completed", "ok", "importPending"),
-    "importing": ("completed", "ok", "importing"),
-    "warning": ("warning", "warning", "downloading"),
-    "import_failed": ("completed", "warning", "importBlocked"),
-}
 
 
-# --------------------------------------------------------------------------- request bodies
-class _Lenient(BaseModel):
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-
-class AddOptions(_Lenient):
+class AddOptions(Lenient):
     search_for_movie: bool = Field(False, alias="searchForMovie")
 
 
-class MovieIn(_Lenient):
+class MovieIn(Lenient):
     id: int | None = None
     title: str = ""
     year: int | None = None
@@ -79,42 +77,7 @@ class MovieIn(_Lenient):
     add_options: AddOptions | None = Field(None, alias="addOptions")
 
 
-class CommandIn(_Lenient):
-    name: str
-    movie_ids: list[int] = Field(default_factory=list, alias="movieIds")
-
-
-class TagIn(_Lenient):
-    label: str = Field(min_length=1, max_length=256)
-
-
 # --------------------------------------------------------------------------- mapping
-def _iso(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _timeleft(seconds: int | None) -> str | None:
-    if seconds is None or seconds < 0:
-        return None
-    days, rest = divmod(int(seconds), 86400)
-    hours, rest = divmod(rest, 3600)
-    minutes, secs = divmod(rest, 60)
-    clock = f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{days}.{clock}" if days else clock
-
-
-def _images(poster: str | None, fanart: str | None) -> list[dict[str, str]]:
-    out = []
-    for kind, url in (("poster", poster), ("fanart", fanart)):
-        if url and url.startswith(("http://", "https://")):
-            out.append({"coverType": kind, "remoteUrl": url, "url": url})
-    return out
-
-
 def _movie_file(movie: models.Movie) -> dict[str, Any] | None:
     primary = next((f for f in movie.files if f.role == "main"), None)
     if primary is None:
@@ -125,7 +88,7 @@ def _movie_file(movie: models.Movie) -> dict[str, Any] | None:
         "relativePath": primary.relative_path or os.path.basename(primary.path),
         "path": primary.path,
         "size": primary.size_bytes or 0,
-        "dateAdded": _iso(primary.added_at),
+        "dateAdded": iso(primary.added_at),
         "sceneName": primary.scene_name,
         "releaseGroup": primary.release_group,
         "edition": primary.edition or "",
@@ -170,11 +133,11 @@ def movie_resource(movie: models.Movie) -> dict[str, Any]:
         "rootFolderPath": movie.root_folder or "",
         "sizeOnDisk": movie.file_size_bytes or 0,
         "runtime": movie.runtime_minutes or 0,
-        "genres": [g.strip() for g in (movie.genres or "").split(",") if g.strip()],
+        "genres": genres(movie.genres),
         "studio": movie.studio or "",
         "certification": movie.certification or "",
-        "added": _iso(movie.added_date),
-        "images": _images(movie.poster_path, movie.backdrop_path),
+        "added": iso(movie.added_date),
+        "images": images(movie.poster_path, movie.backdrop_path),
         "tags": [],
     }
     if movie.has_file and (file := _movie_file(movie)) is not None:
@@ -197,51 +160,9 @@ def lookup_resource(meta: MediaMetadata) -> dict[str, Any]:
         "isAvailable": False,
         "runtime": meta.runtime_minutes or 0,
         "genres": list(meta.genres),
-        "images": _images(meta.poster_url, meta.backdrop_url),
+        "images": images(meta.poster_url, meta.backdrop_url),
         "tags": [],
     }
-
-
-def queue_record(item: models.DownloadQueueItem, client_names: dict[int, str]) -> dict[str, Any]:
-    status, tracked_status, tracked_state = _QUEUE_STATE.get(item.status, ("queued", "ok", "downloading"))
-    size = item.size_bytes or 0
-    sizeleft = max(0, int(size * (1 - min(item.progress or 0.0, 100.0) / 100)))
-    eta = None
-    if item.eta_seconds is not None and item.eta_seconds >= 0:
-        eta = _iso(datetime.now(UTC) + timedelta(seconds=item.eta_seconds))
-    messages = [{"title": item.release_title, "messages": [item.error_message]}] if item.error_message else []
-    return {
-        "id": item.id,
-        "movieId": item.media_id,
-        "title": item.release_title or item.title,
-        "size": size,
-        "sizeleft": sizeleft,
-        "timeleft": _timeleft(item.eta_seconds),
-        "estimatedCompletionTime": eta,
-        "added": _iso(item.added_at),
-        "status": status,
-        "trackedDownloadStatus": tracked_status,
-        "trackedDownloadState": tracked_state,
-        "statusMessages": messages,
-        "errorMessage": item.error_message or "",
-        "downloadId": item.client_item_id or "",
-        "protocol": item.protocol or "unknown",
-        "downloadClient": client_names.get(item.download_client_id or 0, ""),
-        "indexer": item.indexer_name or "",
-        "quality": {"quality": {"name": item.quality or "Unknown"}},
-    }
-
-
-def _validation_error(prop: str, message: str) -> JSONResponse:
-    return JSONResponse([{"propertyName": prop, "errorMessage": message, "severity": "error"}], status_code=400)
-
-
-def _norm(path: str) -> str:
-    return os.path.normcase(os.path.normpath(path.strip())) if path and path.strip() else ""
-
-
-def _root_folders() -> list[str]:
-    return [get_settings().media_root_movies]
 
 
 def _movie_or_404(db: Session, movie_id: int) -> models.Movie:
@@ -249,75 +170,6 @@ def _movie_or_404(db: Session, movie_id: int) -> models.Movie:
     if movie is None:
         raise HTTPException(404, "Movie not found")
     return movie
-
-
-# --------------------------------------------------------------------------- system & settings
-@router.get("/system/status")
-@allow_api_key_query
-def system_status(request: Request, _: Requires(Permission.MEDIA_READ)):
-    return {
-        "appName": "Maniac Media",
-        "instanceName": "Maniac Media",
-        "version": RADARR_VERSION,
-        "maniacMediaVersion": __version__,
-        "urlBase": request.scope.get("root_path", "") + URL_BASE,
-        "isProduction": True,
-        "isAdmin": False,
-        "authentication": "external",
-        "startTime": None,
-    }
-
-
-@router.get("/qualityprofile")
-@router.get("/qualityProfile")  # Seerr's spelling; Radarr's routing is case-insensitive
-@allow_api_key_query
-def quality_profiles(db: DB, _: Requires(Permission.MEDIA_READ)):
-    profiles = db.scalars(select(models.QualityProfile).order_by(models.QualityProfile.id)).all()
-    return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "upgradeAllowed": bool(p.upgrade_allowed),
-            "cutoff": p.cutoff,
-            "items": [{"quality": {"name": q}, "allowed": True} for q in (p.items or [])],
-        }
-        for p in profiles
-    ]
-
-
-@router.get("/rootfolder")
-@router.get("/rootFolder")
-@allow_api_key_query
-def root_folders(_: Requires(Permission.MEDIA_READ)):
-    out = []
-    for i, path in enumerate(_root_folders(), start=1):
-        try:
-            usage = shutil.disk_usage(path)
-            free, total, accessible = usage.free, usage.total, True
-        except OSError:
-            free, total, accessible = 0, 0, False
-        out.append({"id": i, "path": path, "accessible": accessible, "freeSpace": free, "totalSpace": total, "unmappedFolders": []})
-    return out
-
-
-# Tags are accepted for compatibility (Seerr's optional "tag requests") but not stored: ids are a
-# stable hash of the label, so repeated creates of the same label agree with each other.
-@router.get("/tag")
-@allow_api_key_query
-def list_tags(_: Requires(Permission.MEDIA_READ)):
-    return []
-
-
-@router.post("/tag", status_code=201)
-@allow_api_key_query
-def create_tag(body: TagIn, _: Requires(Permission.MEDIA_WRITE)):
-    return {"id": zlib.crc32(body.label.encode()) & 0x7FFFFFFF or 1, "label": body.label}
-
-
-@router.put("/tag/{tag_id}", status_code=202)
-@allow_api_key_query
-def rename_tag(tag_id: int, body: TagIn, _: Requires(Permission.MEDIA_WRITE)):
-    return {"id": tag_id, "label": body.label}
 
 
 # --------------------------------------------------------------------------- movies
@@ -384,18 +236,18 @@ def get_movie(movie_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
 @allow_api_key_query
 async def add_movie(body: MovieIn, user: Requires(Permission.MEDIA_WRITE)):
     if body.tmdb_id <= 0:
-        return _validation_error("TmdbId", "'Tmdb Id' must be greater than '0'.")
+        return validation_error("TmdbId", "'Tmdb Id' must be greater than '0'.")
     profile_id = body.quality_profile_id or body.profile_id or 1
     root = body.root_folder_path or _root_folders()[0]
-    if _norm(root) not in {_norm(r) for r in _root_folders()}:
-        return _validation_error("RootFolderPath", f"Root folder '{root}' is not configured in Maniac Media")
+    if not is_known_root(root, _root_folders()):
+        return validation_error("RootFolderPath", f"Root folder '{root}' is not configured in Maniac Media")
 
     def precheck() -> JSONResponse | None:
         with session_scope() as db:
             if db.get(models.QualityProfile, profile_id) is None:
-                return _validation_error("QualityProfileId", f"Quality profile {profile_id} does not exist")
+                return validation_error("QualityProfileId", f"Quality profile {profile_id} does not exist")
             if MovieRepository(db).by_tmdb(body.tmdb_id):
-                return _validation_error("TmdbId", "This movie has already been added")
+                return validation_error("TmdbId", "This movie has already been added")
             return None
 
     if (error := await asyncio.to_thread(precheck)) is not None:
@@ -418,7 +270,7 @@ async def add_movie(body: MovieIn, user: Requires(Permission.MEDIA_WRITE)):
 
     out = await asyncio.to_thread(persist)
     if not out:
-        return _validation_error("TmdbId", "This movie has already been added")
+        return validation_error("TmdbId", "This movie has already been added")
     bus.publish(EventType.MEDIA_ADDED, media_type="movie", media_id=out["id"], title=out["title"])
     if (body.add_options and body.add_options.search_for_movie) or get_settings().search_on_add:
         await asyncio.to_thread(_enqueue_search, out["id"], user.id, user.username)
@@ -476,41 +328,21 @@ def _enqueue_search(movie_id: int, user_id: int, username: str) -> int | None:
 @router.post("/command", status_code=201)
 @allow_api_key_query
 def run_command(body: CommandIn, request: Request, db: DB, user: Requires(Permission.MEDIA_READ)):
-    now = _iso(datetime.now(UTC))
     job_ids: list[int] = []
     if body.name.lower() == "moviessearch":
         require(Permission.SEARCH)(user, request)
         for movie_id in body.movie_ids:
             if db.get(models.Movie, movie_id) is not None and (job := _enqueue_search(movie_id, user.id, user.username)):
                 job_ids.append(job)
-        status = "queued"
-    else:
-        # RefreshMonitoredDownloads (sent every minute by Seerr) and friends: MM's download monitor
-        # already polls on its own schedule, so these are acknowledged without doing anything.
-        status = "completed"
-    return {
-        "id": job_ids[0] if job_ids else 0,
-        "name": body.name,
-        "commandName": body.name,
-        "body": body.model_dump(by_alias=True),
-        "status": status,
-        "queued": now,
-        "trigger": "manual",
-    }
+        return command_response(body, "queued", job_ids)
+    # RefreshMonitoredDownloads (sent every minute by Seerr) and friends: MM's download monitor
+    # already polls on its own schedule, so these are acknowledged without doing anything.
+    return command_response(body, "completed", job_ids)
 
 
 @router.get("/queue")
 @allow_api_key_query
 def queue(db: DB, _: Requires(Permission.QUEUE_READ), page: int = 1, pageSize: int = 1000):
-    items = [q for q in QueueRepository(db).for_display() if q.media_type == "movie"]
-    client_names = {c.id: c.name for c in db.scalars(select(models.DownloadClient)).all()}
-    page_size = max(1, min(pageSize, 1000))
-    start = (max(1, page) - 1) * page_size
-    return {
-        "page": max(1, page),
-        "pageSize": page_size,
-        "sortKey": "timeleft",
-        "sortDirection": "ascending",
-        "totalRecords": len(items),
-        "records": [queue_record(q, client_names) for q in items[start:start + page_size]],
-    }
+    names = client_names(db)
+    records = [{**queue_record(q, names), "movieId": q.media_id} for q in QueueRepository(db).for_display() if q.media_type == "movie"]
+    return queue_page(records, page, pageSize)

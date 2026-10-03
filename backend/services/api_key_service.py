@@ -23,7 +23,7 @@ PRESETS: list[schemas.ApiKeyPreset] = [
     ),
     schemas.ApiKeyPreset(
         name="Request manager (Seerr/Overseerr)",
-        description="Lets Seerr use Maniac Media as its Radarr server (URL base /api/compat/radarr)",
+        description="Lets Seerr use Maniac Media as its Radarr and Sonarr server (URL bases /api/compat/radarr and /api/compat/sonarr)",
         permissions=["media:read", "media:write", "media:delete", "search:execute", "queue:read"],
         allow_query_param=True,  # Seerr only ever sends ?apikey=
     ),
