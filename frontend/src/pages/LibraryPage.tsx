@@ -25,7 +25,7 @@ import {
   Typography,
 } from '@mui/material';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bookmark, BookmarkX, Film, LayoutGrid, List, ListChecks, Pencil, Plus, RefreshCw, Search, Tv, X } from 'lucide-react';
+import { Bookmark, BookmarkX, Film, LayoutGrid, List, ListChecks, Pencil, Plus, RefreshCw, Search, ThumbsDown, ThumbsUp, Tv, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
@@ -386,6 +386,7 @@ function BulkEditDialog({ open, mode, ids, onClose, onDone }: { open: boolean; m
 const PosterCard = memo(function PosterCard({ item, onOpen, selecting, selected, anchor }: CardProps) {
   const series = isSeries(item);
   const progress = series ? (item.aired_episode_count ? (item.episode_file_count / item.aired_episode_count) * 100 : 0) : item.has_file ? 100 : 0;
+  const ended = series && (item.status ?? '').toLowerCase() === 'ended';
   const badge = series
     ? { label: `${item.episode_file_count}/${item.aired_episode_count}`, color: progress >= 100 ? palette.green : progress > 0 ? palette.amber : palette.red }
     : item.has_file ? { label: item.quality ?? 'On disk', color: palette.green } : { label: 'Missing', color: palette.red };
@@ -397,11 +398,17 @@ const PosterCard = memo(function PosterCard({ item, onOpen, selecting, selected,
           <Poster src={item.poster_path} title={item.title} height={240} />
           <Chip size="small" label={badge.label} sx={{ position: 'absolute', top: 8, right: 8, width: 'auto !important', height: '22px !important',
             bgcolor: `${badge.color}d9`, color: '#fff', backdropFilter: 'blur(6px)', borderRadius: '11px !important' }} />
+          {series && (
+            <Box title={ended ? 'Ended series' : 'Continuing series'} sx={{ position: 'absolute', top: 8, left: 8, width: '26px !important', height: '26px !important', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              bgcolor: `${ended ? palette.red : palette.green}d9`, color: '#fff', backdropFilter: 'blur(6px)', borderRadius: '13px !important' }}>
+              {ended ? <ThumbsDown size={14} /> : <ThumbsUp size={14} />}
+            </Box>
+          )}
           {selecting && (
-            <Checkbox checked={selected} size="small" sx={{ position: 'absolute', top: 36, left: 4, width: 'auto !important', height: 'auto !important', color: '#fff', bgcolor: '#000a', p: 0.25, borderRadius: '6px !important' }} />
+            <Checkbox checked={selected} size="small" sx={{ position: 'absolute', top: 40, left: 4, width: 'auto !important', height: 'auto !important', color: '#fff', bgcolor: '#000a', p: 0.25, borderRadius: '6px !important' }} />
           )}
           {!item.monitored && (
-            <Chip size="small" label="Unmonitored" sx={{ position: 'absolute', top: 8, left: 8, width: 'auto !important', height: '22px !important', bgcolor: '#000a', borderRadius: '11px !important' }} />
+            <Chip size="small" label="Unmonitored" sx={{ position: 'absolute', bottom: 8, left: 8, width: 'auto !important', height: '22px !important', bgcolor: '#000a', borderRadius: '11px !important' }} />
           )}
         </Box>
         <LinearProgress variant="determinate" value={progress} sx={{ borderRadius: 0, height: 3 }} />
