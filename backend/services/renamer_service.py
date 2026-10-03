@@ -72,8 +72,8 @@ def _preview_episode(ep: models.Episode, series: models.Series, include_folders:
     series_dir = current.parent.parent if current.parent.name.lower().startswith(("season", "specials", "s0", "s1")) else current.parent
     if include_folders:
         root = Path(series.root_folder) if series.root_folder else series_dir.parent
-        series_dir = root / render(settings.series_folder_format, {"title": series.title, "year": series.year, "tvdbid": series.tvdb_id}, EPISODE_TOKENS)
-    title = " + ".join(e.title for e in group) if len(group) > 1 else ep.title
+        series_dir = root / render(settings.series_folder_format, {"title": series.title, "year": series.year, "tvdbid": series.tvdb_id, "imdbid": series.imdb_id}, EPISODE_TOKENS)
+    title =" + ".join(e.title for e in group) if len(group) > 1 else ep.title
     values = {
         "title": series.title, "year": series.year, "season": ep.season_number, "episode": ep.episode_number, "episodetitle": title,
         "airdate": ep.air_date, "quality": q.quality.name if q.quality.weight else "", "resolution": q.quality.resolution.value if q.quality.weight else "",
