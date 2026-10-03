@@ -152,7 +152,7 @@ def preview(template: str, kind: str) -> NamingPreview:
         allowed, sample = EPISODE_TOKENS, {
             "title": "Breaking Bad", "year": 2008, "season": 1, "episode": 1, "episodetitle": "Pilot",
             "airdate": "2008-01-20", "quality": "Bluray-1080p", "resolution": "1080p", "source": "BluRay",
-            "codec": "H264", "tvdbid": 81189, "releasegroup": "DEMAND",
+            "codec": "H264", "tvdbid": 81189, "imdbid": "tt0903747", "releasegroup": "DEMAND",
         }
     errors = validate(template, allowed)
     example = None if errors else render(template, sample, allowed)

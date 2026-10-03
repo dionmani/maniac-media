@@ -60,7 +60,8 @@ ENV PATH=/venv/bin:$PATH \
     PUID=99 \
     PGID=100 \
     UMASK=002 \
-    MANIAC_VERSION=${VERSION}
+    MANIAC_VERSION=${VERSION} \
+    MANIAC_REVISION=${REVISION}
 
 WORKDIR /app
 COPY --from=ffmpeg /ffprobe /usr/local/bin/

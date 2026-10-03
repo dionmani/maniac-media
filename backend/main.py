@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend import __version__
+from backend import __build__, __version__
 from backend.api import compat
 from backend.api.v1 import api_router
 from backend.core import paths
@@ -112,7 +112,7 @@ def create_app() -> FastAPI:
     @app.get("/api/health", tags=["system"])
     def liveness():
         """Unauthenticated liveness probe for Docker/Kubernetes."""
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "build": __build__}
 
     @app.get("/metrics", include_in_schema=False)
     def metrics(request: Request):

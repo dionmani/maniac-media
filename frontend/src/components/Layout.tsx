@@ -35,7 +35,7 @@ import {
   ShieldCheck,
   Tv,
 } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { post } from '../api/client';
 import { useAuth } from '../store/auth';
@@ -66,6 +66,11 @@ export default function Layout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
+  const [version, setVersion] = useState<{ version: string; build: string } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/health').then((r) => r.json()).then(setVersion).catch(() => undefined);
+  }, []);
 
   const drawer = (
     <Stack sx={{ height: '100%', p: 2 }}>
@@ -78,8 +83,13 @@ export default function Layout({ children }: { children: ReactNode }) {
             MANIAC MEDIA
           </Typography>
           <Typography variant="caption" sx={{ color: palette.cyan, fontWeight: 700, letterSpacing: 1 }}>
-            v2.1 · AUTOMATION
+            {version ? `v${version.version}` : 'v…'} · AUTOMATION
           </Typography>
+          {version?.build && (
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.65rem', lineHeight: 1.2 }}>
+              build {version.build}
+            </Typography>
+          )}
         </Box>
       </Stack>
 

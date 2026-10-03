@@ -1,6 +1,6 @@
 [project]
 name = "maniac-media"
-version = "2.1.0"
+version = "2.1.1"
 description = "Unified movie & TV automation platform (Sonarr + Radarr, redesigned)"
 requires-python = ">=3.12"
 
