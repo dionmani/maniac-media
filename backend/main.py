@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import __version__
+from backend.api import compat
 from backend.api.v1 import api_router
 from backend.core import paths
 from backend.core.events import bus
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(api_router)
+    app.include_router(compat.radarr_router)
 
     @app.get("/api/health", tags=["system"])
     def liveness():

@@ -166,6 +166,11 @@ never blocked, which is the actual goal behind "async I/O everywhere possible".
   (`/test`, `/migrate`, `/migration`, `/backup`), `/users`, `/dashboard`, `/system/{status,health,
   tasks,jobs,audit,logs}` (tasks: `PUT /{name}`, `POST /{name}/run`; jobs: `POST /{id}/cancel`),
   `/ws`; plus `/metrics` (Prometheus, outside `/api/v1`).
+* Compat API (`backend/api/compat/`): `/api/compat/radarr/api/v3/*` is a Radarr v3 facade covering
+  the subset Seerr/Overseerr call (status, profiles, root folders, tags, movie CRUD + lookup,
+  `MoviesSearch` command, queue). Auth is an API key via `?apikey=` (the key must allow query
+  params); it only translates to the same services as `/api/v1` and is excluded from the OpenAPI
+  spec. Seerr's file deletes are honoured only with `seerr_allow_file_deletion`, via the recycle bin.
 * Lists return `{items,total,page,page_size,pages}`; `page`, `page_size ≤ 500`, `sort`, `order`
   plus resource-specific filters.
 * Errors: `{"detail": "..."}` with 401/403/404/409/410/422/429/503 semantics.

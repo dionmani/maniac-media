@@ -13,6 +13,7 @@ type Settings = Record<string, unknown> & {
   movie_folder_format: string; movie_format: string; series_folder_format: string; tv_format: string; rename_on_import: boolean;
   auto_import: boolean; import_mode: string; min_import_size_mb: number; watch_download_folder: boolean; download_poll_seconds: number; import_untracked_downloads: boolean;
   search_on_add: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; metadata_language: string;
+  seerr_allow_file_deletion: boolean;
   access_token_ttl_minutes: number; rate_limit_per_minute: number; metrics_require_auth: boolean;
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
 };
@@ -36,7 +37,7 @@ export function MediaManagement() {
   const canWrite = useAuth((s) => s.can)('settings:write');
   if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
   const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
-    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'metadata_language'];
+    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'metadata_language', 'seerr_allow_file_deletion'];
   const text = (k: keyof Settings, label: string, help?: string) => (
     <TextField fullWidth size="small" label={label} value={form[k] as string} helperText={help} onChange={(e) => set(k as string, e.target.value)} disabled={!canWrite} />
   );
@@ -87,6 +88,7 @@ export function MediaManagement() {
           {toggle('import_untracked_downloads', 'Import untracked downloads', 'Also import files placed in the watch folder that were not grabbed by Maniac Media, when they match a library item')}
           {toggle('auto_retry_failed_downloads', 'On failure: blocklist the release and search for another')}
           {toggle('search_on_add', 'Search for new titles as soon as they are added')}
+          {toggle('seerr_allow_file_deletion', 'Let Seerr delete files when it removes a movie', 'Seerr always asks for files to be deleted when an admin removes a title. Off: only the library entry is removed. On: files are moved to the recycle bin.')}
         </Stack>
       </Section>
       {canWrite && <Box><Button variant="contained" startIcon={<Save size={16} />} onClick={() => save.mutate(keys)} disabled={save.isPending}>Save</Button></Box>}

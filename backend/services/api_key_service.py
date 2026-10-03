@@ -22,10 +22,10 @@ PRESETS: list[schemas.ApiKeyPreset] = [
         allow_query_param=False,
     ),
     schemas.ApiKeyPreset(
-        name="Request manager (Overseerr)",
-        description="Search and request media addition",
-        permissions=["media:read", "media:write", "search:execute"],
-        allow_query_param=False,
+        name="Request manager (Seerr/Overseerr)",
+        description="Lets Seerr use Maniac Media as its Radarr server (URL base /api/compat/radarr)",
+        permissions=["media:read", "media:write", "media:delete", "search:execute", "queue:read"],
+        allow_query_param=True,  # Seerr only ever sends ?apikey=
     ),
     schemas.ApiKeyPreset(
         name="Webhook receiver",

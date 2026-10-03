@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import { Loading, Toaster } from './components/common';
 import { useLiveEvents } from './hooks/useLiveEvents';
@@ -21,6 +21,12 @@ const Settings = lazy(() => import('./pages/SettingsPage'));
 const System = lazy(() => import('./pages/SystemPage'));
 const Help = lazy(() => import('./pages/HelpPage'));
 
+// Radarr-style /movie/:id links (Seerr's "open in Radarr" button points here via the compat API's titleSlug)
+function RadarrMovieLink() {
+  const { id } = useParams();
+  return <Navigate to={`/movies/${id}`} replace />;
+}
+
 function Authenticated() {
   useLiveEvents();
   return (
@@ -30,6 +36,7 @@ function Authenticated() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/library" element={<Library />} />
           <Route path="/movies/:id" element={<MovieDetail />} />
+          <Route path="/movie/:id" element={<RadarrMovieLink />} />
           <Route path="/series/:id" element={<SeriesDetail />} />
           <Route path="/add" element={<AddMedia />} />
           <Route path="/wanted" element={<Wanted />} />

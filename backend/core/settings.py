@@ -66,6 +66,10 @@ class AppSettings(BaseModel):
     auto_retry_failed_downloads: bool = True
     max_download_retries: int = 2
 
+    # --- integrations
+    # Seerr's "remove from Radarr" always asks for files to be deleted; off = drop the library entry only
+    seerr_allow_file_deletion: bool = False
+
     # --- metadata
     metadata_language: str = "en"
     metadata_providers: dict[str, MetadataProviderSettings] = Field(

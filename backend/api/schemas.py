@@ -750,6 +750,7 @@ class GeneralSettings(BaseModel):
     search_on_add: bool | None = None
     auto_retry_failed_downloads: bool | None = None
     max_download_retries: int | None = Field(None, ge=0, le=10)
+    seerr_allow_file_deletion: bool | None = None
     metadata_language: str | None = None
     metadata_refresh_batch_size: int | None = Field(None, ge=10, le=5000)
     access_token_ttl_minutes: int | None = Field(None, ge=5, le=60 * 24 * 30)
