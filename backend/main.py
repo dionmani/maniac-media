@@ -145,6 +145,13 @@ def _mount_frontend(app: FastAPI) -> None:
     if (dist / "assets").exists():
         app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 
+    @app.get("/icon", include_in_schema=False)
+    def app_icon():
+        icon = dist / "logo.png"
+        if not icon.is_file():
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return FileResponse(icon, media_type="image/png")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str):
         if full_path.startswith("api/"):
