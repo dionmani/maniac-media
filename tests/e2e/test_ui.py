@@ -107,6 +107,7 @@ def test_every_page_renders(server, page):
         ("/library", "movies in your library"), ("/wanted", "Wanted"), ("/calendar", "Calendar"), ("/activity", "Queue is empty"),
         ("/import", "Manual import"), ("/renamer", "Renamer"), ("/settings?tab=quality", "HD-1080p"), ("/settings?tab=indexers", "No indexers yet"),
         ("/settings?tab=database", "Migration wizard"), ("/settings?tab=users", "Users & roles"), ("/system", "Health"), ("/system?tab=tasks", "RSS Sync"),
+        ("/discover", "Discover needs a TMDB API key"), ("/settings?tab=metadata", "Original languages"), ("/system?tab=tasks", "Discover Refresh"),
     ]:
         page.goto(server + path)
         page.wait_for_selector(f"text={marker}", timeout=15000)

@@ -12,6 +12,7 @@ from backend.db import models
 from backend.db.base import utcnow
 from backend.db.session import db_manager, session_scope
 from backend.services import (
+    discover_service,
     download_service,
     fileops,
     health_service,
@@ -68,6 +69,11 @@ async def metadata_refresh(ctx: JobContext):
         await asyncio.to_thread(job_queue.enqueue, "metadata_refresh", {"media_type": ctx.payload.get("media_type", "all")},
                                 trigger="event", dedupe_key="backlog", delay_seconds=30)
     return stats
+
+
+@job_queue.register("discover_refresh", "Discover Refresh", priority=8)
+async def discover_refresh(ctx: JobContext):
+    return await discover_service.refresh_all()
 
 
 @job_queue.register("library_scan", "Library Scan", priority=6)
@@ -134,6 +140,8 @@ async def cleanup(ctx: JobContext):
                 issues += db.execute(delete(models.LibraryIssue).where(
                     models.LibraryIssue.status == "dismissed", models.LibraryIssue.media_type == media_type,
                     models.LibraryIssue.media_id.not_in(select(model.id)))).rowcount
+            # a title that drops out of Discover for a year may as well count as new when it returns
+            discover_seen = db.execute(delete(models.DiscoverSeen).where(models.DiscoverSeen.first_seen_at < now - timedelta(days=365))).rowcount
             consistency = media_file_service.check_consistency(db)
         bins = {Path(settings.recycle_bin)}
         # files on another volume than the bin are recycled to a hidden bin on their own volume (see fileops.recycle)
@@ -141,7 +149,8 @@ async def cleanup(ctx: JobContext):
             if root and (local := fileops.volume_recycle_root(Path(root))) is not None:
                 bins.add(local)
         recycled = sum(fileops.cleanup_recycle_bin(b, settings.recycle_bin_days) for b in bins)
-        return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "recycle_folders": recycled, "consistency": consistency}
+        return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "discover_seen": discover_seen, "recycle_folders": recycled,
+                "consistency": consistency}
 
     return await asyncio.to_thread(run)
 
@@ -173,6 +182,7 @@ SCHEDULED_DEFAULTS: dict[str, tuple[int, bool]] = {
     "download_folder_scan": (5, True),
     "health_check": (15, True),
     "metadata_refresh": (12 * 60, True),
+    "discover_refresh": (6 * 60, True),
     "library_scan": (6 * 60, True),
     "media_inspection": (6 * 60, True),
     "missing_search": (24 * 60, False),

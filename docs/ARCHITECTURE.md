@@ -58,8 +58,8 @@ backend/
   workers/     queue.py (persistent queue + pool), scheduler.py, tasks.py, watcher.py
   api/         deps.py (auth/paging), schemas.py (contracts), v1/ routers
 frontend/src/  api/ (client + types), store/ (Zustand: auth, ui), hooks/ (useLiveEvents – WebSocket),
-               components/ (Layout, MediaHeader, InteractiveSearchDialog, common),
-               pages/ (Dashboard, Library, Movie/Series detail, AddMedia, Calendar, Wanted, Activity,
+               components/ (Layout, MediaHeader, InteractiveSearchDialog, Discover{Card,Row,Dialog}, common),
+               pages/ (Dashboard, Library, Movie/Series detail, AddMedia, Discover, Calendar, Wanted, Activity,
                Import, Renamer, System, Login) + pages/settings/ (General, Quality, Integration,
                Database, User); server state via React Query
 tests/         unit/, integration/, e2e/ (Playwright)
@@ -83,6 +83,7 @@ All v1 tables are preserved (additive migration only):
 | `users`, `audit_log` | Security | argon2 hash, `token_version`, lockout; append-only audit |
 | `notification_channels` | Notifications | plain settings JSON + **encrypted** secret JSON |
 | `scan_state`, `library_issues` | Scanner | folder mtimes; typed issues (see `domain/issues.py`) with fingerprint, severity, JSON evidence and an open/resolved/dismissed lifecycle, reconciled by `IssueRecorder` so dismissals persist |
+| `discover_seen`, `discover_exclusions` | Discover | first time each TMDB id appeared per section (unique `(media_type, section, tmdb_id)`, drives "new" badges; pruned after a year); "not interested" titles (unique `(media_type, tmdb_id)`, shaped like the planned `import_list_exclusions` so the two can merge) |
 
 Sizes are `BIGINT` (files > 2 GiB overflow 32-bit `INTEGER` on PostgreSQL/MSSQL). A naming
 convention on `MetaData` gives deterministic constraint names across engines.
@@ -98,11 +99,19 @@ convention on `MetaData` gives deterministic constraint names across engines.
   lingua franca between plugins and services.
 * **Parser** turns release names into `ParsedMovie` / `ParsedEpisode` (S01E01, multi-episode,
   1x01, daily, season packs); **naming** renders allow-listed templates.
+* **Discover** (`domain/discover.py`) defines the sections (movies: announced, in theaters,
+  coming to streaming & video; TV: new shows, new seasons) as date windows and rules – e.g. a
+  "new season" is a season ≥ 2 whose season air date is in the window, so binge drops count.
+  Providers fetch candidates; these rules decide membership. `DiscoverItem` carries the title plus
+  `reason`/`reason_date` and streaming services (`WatchProvider`).
 
 ## 5. Plugin architecture
 
 Contracts in `plugins/base.py`: `MetadataProvider`, `IndexerPlugin`, `DownloadClientPlugin`,
 `NotificationPlugin`. Each declares a `key` and `fields` (used by the UI to render forms).
+`MetadataProvider.discover()` is optional (`supports_discover`); only TMDB implements it, reading
+TMDB's list endpoints (`/discover/*`, `/movie/now_playing`) plus one detail call per title for
+regional release dates and JustWatch streaming services.
 `registry.discover()` loads, in order: built-in packages, `data/plugins/*.py` (drop-in), and the
 `maniac_media.plugins` entry-point group (pip-installable). A failing plugin is recorded and
 skipped; the core never imports a concrete plugin.
@@ -120,6 +129,7 @@ the same registry.
 |---|---|
 | `media_service` | add/edit/delete, monitoring presets, add season/episode, prune stale seasons (removes file-less episodes/seasons no longer in provider metadata; dry-run supported), recycle on delete |
 | `metadata_service` | provider chain by priority, merge richer data over keyless data, batch refresh |
+| `discover_service` | Discover sections from the first discover-capable provider; in-memory section cache (6 h, warmed by `discover_refresh`, keyed by region/languages), first-seen recording on each fill; per request it drops exclusions and flags titles already in the library (TMDB/IMDb/TVDB ids) |
 | `indexer_service` | fan-out search (asyncio.gather), per-indexer token bucket, retry/backoff, circuit breaker, health |
 | `decision_engine` | accept/reject + score every release with human-readable reasons |
 | `search_service` | interactive search (server-side release cache), automatic search, missing sweep, RSS matching |
@@ -156,7 +166,8 @@ never blocked, which is the actual goal behind "async I/O everywhere possible".
   `GET /auth/me`; `POST /auth/logout` (revokes all tokens); `POST /auth/password`.
 * Resources: `/movies` (+ `/{id}/refresh`, `/bulk`), `/series` (+ `/{id}/refresh`, `/{id}/monitoring`,
   `/{id}/seasons`, `/{id}/episodes`, `/{id}/seasons/{n}/monitor`, `/{id}/prune-stale`),
-  `/episodes/monitor`, `/artwork/{type}/{id}/{kind}`, `/calendar`, `/lookup`, `/releases`,
+  `/episodes/monitor`, `/artwork/{type}/{id}/{kind}`, `/calendar`, `/lookup`, `/discover/{movie|tv}`
+  (+ `/{section}`, `/refresh`), `/discover/exclusions` (+ `DELETE /{media_type}/{tmdb_id}`), `/releases`,
   `/releases/grab`, `/search/automatic`, `/search/missing`, `/queue` (+ `/{id}/retry`, `/{id}/import`,
   `/refresh`), `/history`, `/blocklist`, `/wanted/missing`, `/wanted/cutoff`, `/library/scan`,
   `/library/issues` (+ `/{id}/resolve`), `/library/manual-import` (+ `/scan`, `/match`, `/delete`),
@@ -218,7 +229,8 @@ scheduler derives the next run from `last_run`. Event-driven jobs (import after 
 follow-up monitoring every 5 s while downloads are active, watcher-triggered scans) use the same
 queue. Scheduled tasks (default interval): download monitor (1 min), download-folder scan (5 min),
 RSS sync (15 min), health check (15 min), metadata refresh (12 h, self-continuing backlog), library
-scan (6 h), missing search (24 h, off by default), cleanup/housekeeping (24 h). On-demand job types:
+scan (6 h), Discover refresh (6 h, re-fetches the Discover sections so page loads hit a warm cache),
+missing search (24 h, off by default), cleanup/housekeeping (24 h). On-demand job types:
 import download, automatic search, rename.
 
 **Decision – DB-backed queue over Redis/Celery.** Zero extra infrastructure for self-hosters,

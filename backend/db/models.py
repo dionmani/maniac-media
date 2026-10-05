@@ -531,3 +531,31 @@ class LibraryIssue(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
     resolution: Mapped[str | None] = mapped_column(String(32))  # auto | dismissed | <action>
+
+
+# --------------------------------------------------------------------------- discover
+class DiscoverSeen(Base):
+    """When a title first showed up in a Discover section; drives the "new since your last visit" badge."""
+
+    __tablename__ = "discover_seen"
+    __table_args__ = (UniqueConstraint("media_type", "section", "tmdb_id", name="uq_discover_seen_media_section_tmdb"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(16))
+    section: Mapped[str] = mapped_column(String(32))
+    tmdb_id: Mapped[int] = mapped_column(Integer)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class DiscoverExclusion(Base):
+    """A title the user marked "not interested"; it is hidden from every Discover section."""
+
+    __tablename__ = "discover_exclusions"
+    __table_args__ = (UniqueConstraint("media_type", "tmdb_id", name="uq_discover_exclusions_media_tmdb"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(16))
+    tmdb_id: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(512))
+    year: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

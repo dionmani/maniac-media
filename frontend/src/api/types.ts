@@ -246,6 +246,69 @@ export interface LookupResult {
   cast: Cast[];
 }
 
+export type DiscoverReason = 'announced' | 'in_theaters' | 'digital' | 'physical' | 'series_premiere' | 'season_premiere';
+
+export interface DiscoverItem {
+  media_type: 'movie' | 'tv';
+  provider: string;
+  title: string;
+  original_title?: string | null;
+  year?: number | null;
+  overview?: string | null;
+  tagline?: string | null;
+  poster_url?: string | null;
+  backdrop_url?: string | null;
+  genres: string[];
+  runtime_minutes?: number | null;
+  rating?: number | null;
+  votes?: number | null;
+  certification?: string | null;
+  studio?: string | null;
+  release_date?: string | null;
+  digital_release_date?: string | null;
+  physical_release_date?: string | null;
+  theatrical_release_date?: string | null;
+  tmdb_id: number;
+  imdb_id?: string | null;
+  tvdb_id?: number | null;
+  tvmaze_id?: number | null;
+  season_count?: number | null;
+  section: string;
+  reason: DiscoverReason;
+  reason_date?: string | null;
+  season_number?: number | null;
+  watch_providers: { name: string; logo_url?: string | null }[];
+  popularity?: number | null;
+  in_library: boolean;
+  library_id?: number | null;
+  first_seen_at?: string | null;
+}
+
+export interface DiscoverSection {
+  key: string;
+  label: string;
+  items: DiscoverItem[];
+  total: number;
+  error?: string;
+}
+
+export interface DiscoverResponse {
+  media_type: 'movie' | 'tv';
+  configured: boolean;
+  region: string;
+  provider?: string | null;
+  sections: DiscoverSection[];
+}
+
+export interface DiscoverExclusion {
+  id: number;
+  media_type: 'movie' | 'tv';
+  tmdb_id: number;
+  title: string;
+  year?: number | null;
+  created_at: string;
+}
+
 export interface Release {
   guid: string;
   title: string;

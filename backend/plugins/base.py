@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from backend.domain.types import ClientItem, MediaMetadata, NotificationMessage, ReleaseInfo, SearchCriteria
+from backend.domain.types import ClientItem, DiscoverItem, MediaMetadata, NotificationMessage, ReleaseInfo, SearchCriteria
 
 
 class PluginKind(StrEnum):
@@ -81,6 +82,7 @@ class MetadataProvider(Plugin):
     supports_movies: ClassVar[bool] = True
     supports_series: ClassVar[bool] = True
     requires_api_key: ClassVar[bool] = False
+    supports_discover: ClassVar[bool] = False
 
     def is_configured(self) -> bool:
         return not self.requires_api_key or bool(self.setting("api_key"))
@@ -99,9 +101,16 @@ class MetadataProvider(Plugin):
     ) -> MediaMetadata | None:
         return None
 
+    async def discover(
+        self, media_type: str, section: str, *, region: str, languages: list[str], today: date
+    ) -> list[DiscoverItem]:
+        """Titles for a Discover section (keys and date rules in domain/discover.py), most popular first."""
+        return []
+
     @classmethod
     def extra_description(cls) -> dict[str, Any]:
-        return {"supports_movies": cls.supports_movies, "supports_series": cls.supports_series, "requires_api_key": cls.requires_api_key}
+        return {"supports_movies": cls.supports_movies, "supports_series": cls.supports_series,
+                "requires_api_key": cls.requires_api_key, "supports_discover": cls.supports_discover}
 
 
 class IndexerPlugin(Plugin):

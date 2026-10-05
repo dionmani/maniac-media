@@ -67,6 +67,40 @@ class MediaMetadata:
 
 
 @dataclass
+class WatchProvider:
+    """A streaming service carrying a title in the configured region."""
+
+    name: str
+    logo_url: str | None = None
+
+
+@dataclass
+class DiscoverItem:
+    """A title surfaced by a Discover section (see domain/discover.py), with why it is there.
+
+    ``reason`` is a stable code the UI turns into a caption; ``reason_date`` is the date behind it.
+    """
+
+    meta: MediaMetadata
+    section: str
+    reason: str  # announced | in_theaters | digital | physical | series_premiere | season_premiere
+    reason_date: str | None = None
+    season_number: int | None = None
+    theatrical_release_date: str | None = None
+    watch_providers: list[WatchProvider] = field(default_factory=list)
+    popularity: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {k: v for k, v in self.meta.to_dict().items() if k not in {"cast", "crew", "episodes"}}
+        data.update(
+            section=self.section, reason=self.reason, reason_date=self.reason_date, season_number=self.season_number,
+            theatrical_release_date=self.theatrical_release_date, popularity=self.popularity,
+            watch_providers=[asdict(p) for p in self.watch_providers],
+        )
+        return data
+
+
+@dataclass
 class SearchCriteria:
     media_type: str  # movie | tv
     title: str

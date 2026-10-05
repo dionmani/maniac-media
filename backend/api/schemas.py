@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -269,6 +269,26 @@ class AddMediaRequest(BaseModel):
     monitored: bool = True
     monitor: Literal["all", "future", "missing", "none", "latest", "first"] = "all"
     search_on_add: bool = False
+
+
+class DiscoverExclusionCreate(BaseModel):
+    """Hide a title from Discover ("not interested")."""
+
+    media_type: Literal["movie", "tv"]
+    tmdb_id: int = Field(..., ge=1)
+    title: str = Field(..., min_length=1, max_length=512)
+    year: int | None = Field(None, ge=1870, le=2100)
+
+
+class DiscoverExclusionOut(BaseModel):
+    model_config = ORM
+
+    id: int
+    media_type: str
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    created_at: datetime
 
 
 class EpisodeOut(BaseModel):
@@ -755,6 +775,8 @@ class GeneralSettings(BaseModel):
     seerr_allow_file_deletion: bool | None = None
     metadata_language: str | None = None
     metadata_refresh_batch_size: int | None = Field(None, ge=10, le=5000)
+    discover_region: str | None = Field(None, pattern=r"^[A-Z]{2}$")
+    discover_languages: list[Annotated[str, Field(pattern=r"^[a-z]{2}$")]] | None = None
     access_token_ttl_minutes: int | None = Field(None, ge=5, le=60 * 24 * 30)
     rate_limit_per_minute: int | None = Field(None, ge=30, le=100000)
     cors_origins: list[str] | None = None

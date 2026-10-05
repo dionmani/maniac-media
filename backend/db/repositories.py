@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Generic, Sequence, TypeVar
 
 from sqlalchemy import Select, and_, case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from backend.db import models
-from backend.db.base import Base
+from backend.db.base import Base, utcnow
 from backend.domain.parser import normalise_path_key
 
 T = TypeVar("T", bound=Base)
@@ -119,6 +120,16 @@ class MovieRepository(Repository[models.Movie]):
     def wanted_missing(self) -> Select:
         return select(models.Movie).where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False))
 
+    def ids_by_external(self, tmdb_ids: Sequence[int], imdb_ids: Sequence[str]) -> tuple[dict[int, int], dict[str, int]]:
+        """Library movie ids for many external ids at once: ({tmdb_id: id}, {imdb_id: id})."""
+        if not tmdb_ids and not imdb_ids:
+            return {}, {}
+        rows = self.db.execute(
+            select(models.Movie.id, models.Movie.tmdb_id, models.Movie.imdb_id)
+            .where(or_(models.Movie.tmdb_id.in_(tmdb_ids), models.Movie.imdb_id.in_(imdb_ids)))
+        ).all()
+        return {r.tmdb_id: r.id for r in rows if r.tmdb_id}, {r.imdb_id: r.id for r in rows if r.imdb_id}
+
 
 class SeriesRepository(Repository[models.Series]):
     model = models.Series
@@ -191,6 +202,16 @@ class SeriesRepository(Repository[models.Series]):
 
     def by_imdb(self, imdb_id: str) -> models.Series | None:
         return self.db.scalars(select(models.Series).where(models.Series.imdb_id == imdb_id).limit(1)).first()
+
+    def ids_by_external(self, tmdb_ids: Sequence[int], tvdb_ids: Sequence[int]) -> tuple[dict[int, int], dict[int, int]]:
+        """Library series ids for many external ids at once: ({tmdb_id: id}, {tvdb_id: id})."""
+        if not tmdb_ids and not tvdb_ids:
+            return {}, {}
+        rows = self.db.execute(
+            select(models.Series.id, models.Series.tmdb_id, models.Series.tvdb_id)
+            .where(or_(models.Series.tmdb_id.in_(tmdb_ids), models.Series.tvdb_id.in_(tvdb_ids)))
+        ).all()
+        return {r.tmdb_id: r.id for r in rows if r.tmdb_id}, {r.tvdb_id: r.id for r in rows if r.tvdb_id}
 
     def season_stats(self, series_ids: Sequence[int]) -> dict[int, dict[int, dict[str, Any]]]:
         """Per-season counts, Sonarr-style, in one query: ``{series_id: {season_number: stats}}``.
@@ -356,6 +377,66 @@ class JobRepository(Repository[models.Job]):
     model = models.Job
     default_sort = "created"
     sortable = {"created": models.Job.created_at, "id": models.Job.id}
+
+
+class DiscoverRepository(Repository[models.DiscoverExclusion]):
+    """Discover state: when titles first appeared, and the ones the user is not interested in."""
+
+    model = models.DiscoverExclusion
+    default_sort = "created"
+    sortable = {"created": models.DiscoverExclusion.created_at, "title": models.DiscoverExclusion.title, "id": models.DiscoverExclusion.id}
+
+    def record_seen(self, media_type: str, section: str, tmdb_ids: Sequence[int]) -> dict[int, datetime]:
+        """Remember the first time each title appeared in ``section``; returns {tmdb_id: first_seen_at}."""
+        ids = list(dict.fromkeys(tmdb_ids))
+        if not ids:
+            return {}
+        seen = self.first_seen(media_type, section, ids)
+        missing = [i for i in ids if i not in seen]
+        if missing:
+            now = utcnow()
+            try:
+                with self.db.begin_nested():
+                    self.db.add_all(models.DiscoverSeen(media_type=media_type, section=section, tmdb_id=i, first_seen_at=now) for i in missing)
+            except IntegrityError:
+                pass  # recorded concurrently; the re-read below picks those rows up
+            seen = self.first_seen(media_type, section, ids)
+        return seen
+
+    def first_seen(self, media_type: str, section: str, tmdb_ids: Sequence[int]) -> dict[int, datetime]:
+        rows = self.db.execute(
+            select(models.DiscoverSeen.tmdb_id, models.DiscoverSeen.first_seen_at).where(
+                models.DiscoverSeen.media_type == media_type, models.DiscoverSeen.section == section,
+                models.DiscoverSeen.tmdb_id.in_(tmdb_ids))
+        ).all()
+        return {r.tmdb_id: r.first_seen_at for r in rows}
+
+    def excluded_ids(self, media_type: str) -> set[int]:
+        return set(self.db.scalars(select(models.DiscoverExclusion.tmdb_id).where(models.DiscoverExclusion.media_type == media_type)))
+
+    def exclusions(self, media_type: str | None = None) -> Sequence[models.DiscoverExclusion]:
+        stmt = select(models.DiscoverExclusion).order_by(models.DiscoverExclusion.created_at.desc(), models.DiscoverExclusion.id.desc())
+        if media_type:
+            stmt = stmt.where(models.DiscoverExclusion.media_type == media_type)
+        return self.db.scalars(stmt).all()
+
+    def exclusion(self, media_type: str, tmdb_id: int) -> models.DiscoverExclusion | None:
+        return self.db.scalar(select(models.DiscoverExclusion).where(
+            models.DiscoverExclusion.media_type == media_type, models.DiscoverExclusion.tmdb_id == tmdb_id))
+
+    def add_exclusion(self, media_type: str, tmdb_id: int, title: str, year: int | None) -> models.DiscoverExclusion:
+        """Idempotent: excluding a title twice keeps the original entry."""
+        existing = self.exclusion(media_type, tmdb_id)
+        if existing is not None:
+            return existing
+        return self.add(models.DiscoverExclusion(media_type=media_type, tmdb_id=tmdb_id, title=title, year=year))
+
+    def remove_exclusion(self, media_type: str, tmdb_id: int) -> bool:
+        existing = self.exclusion(media_type, tmdb_id)
+        if existing is None:
+            return False
+        self.db.delete(existing)
+        return True
 
 
 class MediaFileRepository(Repository[models.MediaFile]):

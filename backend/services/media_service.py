@@ -104,6 +104,8 @@ def add_series(
         raise ConflictError("Series already in library")
     if meta.tvmaze_id and repo.by_tvmaze(meta.tvmaze_id):
         raise ConflictError("Series already in library")
+    if meta.tmdb_id and repo.by_tmdb(meta.tmdb_id):
+        raise ConflictError("Series already in library")
     root = root_folder or get_settings().media_root_tv
     series = models.Series(
         title=meta.title,

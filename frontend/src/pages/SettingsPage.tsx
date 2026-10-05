@@ -1,11 +1,11 @@
-import { Box, Tab, Tabs } from '@mui/material';
+import { Box, Stack, Tab, Tabs } from '@mui/material';
 import { Settings } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/common';
 import { useAuth } from '../store/auth';
 import { palette } from '../theme';
 import DatabaseSettings from './settings/DatabaseSettings';
-import { MediaManagement, NamingSettings, SecuritySettings } from './settings/GeneralSettings';
+import { DiscoverSettings, MediaManagement, NamingSettings, SecuritySettings } from './settings/GeneralSettings';
 import { ClientSettings, IndexerSettings, MetadataSettings, NotificationSettings } from './settings/IntegrationSettings';
 import QualitySettings from './settings/QualitySettings';
 import { AccountSettings, UserSettings } from './settings/UserSettings';
@@ -16,7 +16,7 @@ const TABS = [
   { key: 'quality', label: 'Quality profiles', perm: 'settings:read', el: <QualitySettings /> },
   { key: 'indexers', label: 'Indexers', perm: 'settings:read', el: <IndexerSettings /> },
   { key: 'clients', label: 'Download clients', perm: 'settings:read', el: <ClientSettings /> },
-  { key: 'metadata', label: 'Metadata', perm: 'settings:read', el: <MetadataSettings /> },
+  { key: 'metadata', label: 'Metadata', perm: 'settings:read', el: <Stack spacing={2}><MetadataSettings /><DiscoverSettings /></Stack> },
   { key: 'notifications', label: 'Notifications', perm: 'settings:read', el: <NotificationSettings /> },
   { key: 'database', label: 'Database', perm: 'database:manage', el: <DatabaseSettings /> },
   { key: 'security', label: 'Security', perm: 'settings:write', el: <SecuritySettings /> },

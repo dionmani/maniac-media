@@ -13,7 +13,7 @@ type Settings = Record<string, unknown> & {
   movie_folder_format: string; movie_format: string; series_folder_format: string; tv_format: string; rename_on_import: boolean;
   auto_import: boolean; import_mode: string; min_import_size_mb: number; watch_download_folder: boolean; download_poll_seconds: number; import_untracked_downloads: boolean;
   search_on_add: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; metadata_language: string;
-  seerr_allow_file_deletion: boolean;
+  seerr_allow_file_deletion: boolean; discover_region: string; discover_languages: string[];
   access_token_ttl_minutes: number; rate_limit_per_minute: number; metrics_require_auth: boolean;
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
 };
@@ -93,6 +93,51 @@ export function MediaManagement() {
       </Section>
       {canWrite && <Box><Button variant="contained" startIcon={<Save size={16} />} onClick={() => save.mutate(keys)} disabled={save.isPending}>Save</Button></Box>}
     </Stack>
+  );
+}
+
+const DISCOVER_REGIONS = ['US', 'CA', 'GB', 'IE', 'AU', 'NZ', 'DE', 'AT', 'CH', 'FR', 'BE', 'NL', 'ES', 'PT', 'IT', 'SE', 'NO', 'DK', 'FI', 'PL', 'BR', 'MX', 'AR', 'IN', 'JP', 'KR', 'ZA'];
+
+function regionName(code: string): string {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+export function DiscoverSettings() {
+  const { query, form, set, save } = useSettingsForm();
+  const qc = useQueryClient();
+  const canWrite = useAuth((s) => s.can)('settings:write');
+  const [languages, setLanguages] = useState('');
+  useEffect(() => { if (query.data) setLanguages((query.data.discover_languages ?? []).join(', ')); }, [query.data]);
+  if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
+  const regions = DISCOVER_REGIONS.includes(form.discover_region) ? DISCOVER_REGIONS : [form.discover_region, ...DISCOVER_REGIONS];
+  const editLanguages = (text: string) => {
+    setLanguages(text);
+    set('discover_languages', text.split(/[\s,]+/).map((l) => l.trim().toLowerCase()).filter(Boolean));
+  };
+  const submit = () => save.mutate(['discover_region', 'discover_languages'], { onSuccess: () => qc.invalidateQueries({ queryKey: ['discover'] }) });
+  return (
+    <Section title="Discover">
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        The Discover page lists new and upcoming titles from TMDB. The region decides which theatrical, digital and disc release dates and
+        streaming services are shown.
+      </Typography>
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <TextField select fullWidth size="small" label="Region" value={form.discover_region} onChange={(e) => set('discover_region', e.target.value)} disabled={!canWrite}>
+            {regions.map((r) => <MenuItem key={r} value={r}>{regionName(r)} ({r})</MenuItem>)}
+          </TextField>
+        </Grid>
+        <Grid size={{ xs: 12, md: 8 }}>
+          <TextField fullWidth size="small" label="Original languages" value={languages} onChange={(e) => editLanguages(e.target.value)} disabled={!canWrite}
+            placeholder="Any language" helperText="Two-letter codes, comma separated (e.g. en, es). Leave empty to include every language." />
+        </Grid>
+      </Grid>
+      {canWrite && <Box sx={{ mt: 2 }}><Button variant="contained" startIcon={<Save size={16} />} onClick={submit} disabled={save.isPending}>Save</Button></Box>}
+    </Section>
   );
 }
 

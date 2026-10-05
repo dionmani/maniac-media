@@ -22,6 +22,7 @@ import {
   Activity,
   AlertTriangle,
   CalendarClock,
+  Compass,
   FileText,
   Film,
   FolderInput,
@@ -47,6 +48,7 @@ const WIDTH = 248;
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, perm: 'media:read' },
   { to: '/add', label: 'Add New', icon: PlusCircle, perm: 'media:write' },
+  { to: '/discover', label: 'Discover', icon: Compass, perm: 'media:read' },
   { to: '/wanted', label: 'Wanted', icon: Search, perm: 'media:read' },
   { to: '/issues', label: 'Issues', icon: AlertTriangle, perm: 'media:read' },
   { to: '/calendar', label: 'Calendar', icon: CalendarClock, perm: 'media:read' },

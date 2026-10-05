@@ -82,6 +82,10 @@ class AppSettings(BaseModel):
     )
     metadata_refresh_batch_size: int = 150
 
+    # --- discover (new & upcoming titles from TMDB)
+    discover_region: str = "US"  # ISO 3166-1 country whose theatrical/streaming dates and services are shown
+    discover_languages: list[str] = Field(default_factory=list)  # ISO 639-1 original languages; empty = any
+
     # --- security / API
     access_token_ttl_minutes: int = 720
     rate_limit_per_minute: int = 900
