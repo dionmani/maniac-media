@@ -149,8 +149,10 @@ async def cleanup(ctx: JobContext):
             if root and (local := fileops.volume_recycle_root(Path(root))) is not None:
                 bins.add(local)
         recycled = sum(fileops.cleanup_recycle_bin(b, settings.recycle_bin_days) for b in bins)
+        # moved-out imports leave their release folders behind in the download folder
+        empty_folders = import_service.prune_download_folder()
         return {"jobs": jobs, "history": history, "audit": audit_rows, "finished_queue": queue, "issues": issues, "discover_seen": discover_seen, "recycle_folders": recycled,
-                "consistency": consistency}
+                "empty_download_folders": empty_folders, "consistency": consistency}
 
     return await asyncio.to_thread(run)
 

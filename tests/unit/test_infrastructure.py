@@ -1,4 +1,6 @@
 import hashlib
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -201,3 +203,22 @@ def test_recycle_never_uses_a_filesystem_root(tmp_path, make_video, monkeypatch)
     monkeypatch.setattr(fileops, "same_volume", lambda a, b: False)
     monkeypatch.setattr(fileops, "_mount_root", lambda p: Path(Path(p).anchor))
     assert fileops.recycle_root_for(video, config_bin) == config_bin
+
+
+def test_prune_empty_dirs_removes_only_old_empty_trees(tmp_path, make_video):
+    root = tmp_path / "downloads"
+    nested = root / "Show.S01.1080p" / "Subs"  # a folder holding only empty folders goes in the same pass
+    nested.mkdir(parents=True)
+    fresh, kept, skipped = root / "Just.Started", root / "movies", root / "_UNPACK_x"
+    hidden = root / ".maniac-recycle" / "2026-01-01"
+    for d in (fresh, kept, skipped, hidden):
+        d.mkdir(parents=True)
+    video = make_video(root / "Movie.2024" / "movie.mkv")
+    then = time.time() - 7200
+    for d in (nested, nested.parent, kept, skipped, hidden, hidden.parent, video.parent):
+        os.utime(d, (then, then))
+
+    removed = fileops.prune_empty_dirs(root, min_age_seconds=3600, skip=lambda p: p.name.startswith("_UNPACK_"),
+                                       keep=lambda p: p.name == "movies")
+    assert removed == 2 and not nested.parent.exists()
+    assert all(p.exists() for p in (root, fresh, kept, skipped, hidden, video))

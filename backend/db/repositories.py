@@ -330,6 +330,10 @@ class QueueRepository(Repository[models.DownloadQueueItem]):
             select(models.DownloadQueueItem).where(models.DownloadQueueItem.status.in_(self.ACTIVE)).order_by(models.DownloadQueueItem.added_at)
         ).all()
 
+    def active_download_paths(self) -> list[str]:
+        q = models.DownloadQueueItem
+        return list(self.db.scalars(select(q.download_path).where(q.status.in_(self.ACTIVE), q.download_path.is_not(None))))
+
     def is_queued(self, media_type: str, media_id: int, season: int | None = None, episode: int | None = None) -> bool:
         stmt = select(models.DownloadQueueItem.id).where(
             models.DownloadQueueItem.media_type == media_type,

@@ -292,15 +292,59 @@ class FileTransaction:
         return errors
 
 
-def remove_empty_dirs(start: Path, stop_at: Path) -> None:
+def remove_empty_dirs(start: Path, stop_at: Path, keep=None) -> None:
+    """Remove ``start`` and then each parent while they're empty, stopping below ``stop_at`` or at a ``keep(path)`` folder."""
     current = start
     try:
         stop = stop_at.resolve()
     except OSError:
         return
-    while current.exists() and current.resolve() != stop and stop in current.resolve().parents:
+    while (current.exists() and current.resolve() != stop and stop in current.resolve().parents
+           and not (keep is not None and keep(current))):
         try:
             current.rmdir()
         except OSError:
             return
         current = current.parent
+
+
+def prune_empty_dirs(root: Path, *, min_age_seconds: float = 0, skip=None, keep=None) -> int:
+    """Remove every empty directory below ``root`` (never ``root`` itself), deepest first.
+
+    A folder holding only empty folders goes in the same pass. Only ``os.rmdir`` is used, so a
+    folder with anything in it – or one a download client writes into mid-pass – is never touched.
+    Folders modified within ``min_age_seconds`` stay, so one a client just created isn't pulled
+    out from under it. Dot-folders, symlinks and junctions are never entered; ``skip(path)``
+    excludes a folder and everything below it, ``keep(path)`` only spares the folder itself.
+    """
+    cutoff = time.time() - min_age_seconds
+    removed = 0
+
+    def visit(directory: Path) -> None:
+        nonlocal removed
+        try:
+            with os.scandir(long_path(directory)) as it:
+                subdirs = [directory / e.name for e in it
+                           if not e.name.startswith(".") and e.is_dir(follow_symlinks=False) and not e.is_junction()]
+        except OSError:
+            return
+        for sub in subdirs:
+            if skip is not None and skip(sub):
+                continue
+            try:
+                # taken before visiting: removing the children below bumps the folder's own mtime
+                old = os.stat(long_path(sub)).st_mtime < cutoff
+            except OSError:
+                continue
+            visit(sub)
+            if not old or (keep is not None and keep(sub)):
+                continue
+            try:
+                os.rmdir(long_path(sub))
+            except OSError:
+                continue  # not empty
+            removed += 1
+            log.info("Removed empty folder %s", sub)
+
+    visit(root)
+    return removed

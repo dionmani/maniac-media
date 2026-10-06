@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from backend.core.events import EventType, bus
 from backend.core.observability import IMPORT_FAILURES_TOTAL, IMPORTS_TOTAL
 from backend.core.settings import get_settings
 from backend.db import models
-from backend.db.repositories import MediaFileRepository
+from backend.db.repositories import MediaFileRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.diagnosis import ImportFailureReason, classify_oserror
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
@@ -496,6 +497,9 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
                 q.failure_reason = None
                 q.failure_signature = None
                 q.failure_analysis = None
+    if result.imported and _mode_for(protocol) == "move":
+        src = Path(download_path)
+        _remove_emptied_folder(src if src.is_dir() else src.parent)
     if failure:
         IMPORTS_TOTAL.labels(media_type, "failed").inc()
         IMPORT_FAILURES_TOTAL.labels(analysis.reason.value if analysis else fail_reason.value).inc()
@@ -592,6 +596,8 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
                                 item.get("season"), list(item.get("episodes") or []), mode, src.name, None)
             result.imported.append(label)
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
+            if mode == "move":
+                _remove_emptied_folder(src.parent)
         except Exception as exc:
             result.failed.append(f"{src.name}: {exc}")
             result.failed_paths[item["path"]] = str(exc)
@@ -668,6 +674,14 @@ def delete_candidates(paths: list[str], actor: Actor) -> DeleteResult:
 
 
 # --------------------------------------------------------------------------- watch folder
+_CLIENT_WORK_PREFIXES = ("_UNPACK_", "_FAILED_", "_ADMIN_")  # SABnzbd/NZBGet working folders
+_CATEGORY_DIRS = {"movies", "tv", "series", "complete", "sonarr", "radarr", "maniac-media"}
+# folders a download client keeps around rather than per-release ones: emptied all the time, but
+# removing them can upset a client (a blackhole watcher loses its folder) or a shared /data layout
+_CLIENT_DIRS = _CATEGORY_DIRS | {"incomplete", "intermediate", "downloading", "watch", "blackhole", "torrents", "usenet"}
+EMPTY_FOLDER_MIN_AGE = 3600  # seconds; younger empty folders may be a download that's just starting
+
+
 def scan_download_folder() -> dict:
     """Detect completed / partial / corrupt downloads in the watch folder.
 
@@ -692,10 +706,10 @@ def scan_download_folder() -> dict:
         if str(entry).lower() in tracked:
             continue
         upper = entry.name.upper()
-        if upper.startswith(("_UNPACK_", "_FAILED_", "_ADMIN_")):  # SABnzbd/NZBGet working folders
+        if upper.startswith(_CLIENT_WORK_PREFIXES):
             report["corrupt" if upper.startswith("_FAILED_") else "partial"] += 1
             continue
-        if entry.is_dir() and entry.name.lower() in ("movies", "tv", "series", "complete", "sonarr", "radarr", "maniac-media"):
+        if entry.is_dir() and entry.name.lower() in _CATEGORY_DIRS:
             entries.extend(sub for sub in _safe_iterdir(entry))  # category sub-folders
             continue
         videos, partial = find_video_files(entry)
@@ -721,6 +735,8 @@ def scan_download_folder() -> dict:
             try:
                 _run_import(video, c.quality, c.media_type, c.media_id, c.season, c.episodes, settings.import_mode, video.name, None)
                 report["imported"] += 1
+                if settings.import_mode == "move":
+                    _remove_emptied_folder(video.parent)
             except Exception as exc:
                 log.info("Untracked import of %s skipped: %s", video.name, exc)
     return report
@@ -733,10 +749,60 @@ def _safe_iterdir(path: Path) -> list[Path]:
         return []
 
 
+def _norm(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _download_folder_guards() -> tuple[Path, Callable[[Path], bool], Callable[[Path], bool]] | None:
+    """The download folder plus ``skip`` / ``keep`` predicates that confine empty-folder removal to
+    release folders: never a client's category or working folders, a download still in flight, or a
+    media library / recycle bin that happens to live underneath."""
+    settings = get_settings()
+    root = Path(os.path.abspath(settings.download_folder))
+    libraries = {_norm(p) for p in (settings.media_root_movies, settings.media_root_tv, settings.recycle_bin) if p}
+    if not root.is_dir() or _norm(root) in libraries:
+        return None
+    with session_scope() as db:
+        protected = libraries | {_norm(p) for p in QueueRepository(db).active_download_paths()}
+
+    def skip(path: Path) -> bool:
+        return path.name.upper().startswith(_CLIENT_WORK_PREFIXES) or _norm(path) in protected
+
+    def keep(path: Path) -> bool:
+        return path.name.lower() in _CLIENT_DIRS
+
+    return root, skip, keep
+
+
+def prune_download_folder() -> int:
+    """Housekeeping: remove empty release folders left in the download folder (older than an hour)."""
+    if (guards := _download_folder_guards()) is None:
+        return 0
+    root, skip, keep = guards
+    return fileops.prune_empty_dirs(root, min_age_seconds=EMPTY_FOLDER_MIN_AGE, skip=skip, keep=keep)
+
+
+def _remove_emptied_folder(folder: Path) -> None:
+    """Right after a move import: remove the release folder the video came from once nothing is left
+    in it (empty Subs/-style subfolders included), then any parents that emptied with it."""
+    try:
+        if (guards := _download_folder_guards()) is None:
+            return
+        root, skip, keep = guards
+        folder = Path(os.path.abspath(folder))
+        if Path(_norm(root)) not in Path(_norm(folder)).parents or skip(folder) or keep(folder):
+            return  # outside the download folder, or a loose file sitting in the root / a category folder
+        fileops.prune_empty_dirs(folder, skip=skip, keep=keep)
+        fileops.remove_empty_dirs(folder, root, keep=lambda p: skip(p) or keep(p))
+    except Exception:  # tidying up must never fail an import that already succeeded
+        log.warning("Could not remove the emptied download folder %s", folder, exc_info=True)
+
+
 def failed_imports(db: Session) -> int:
     from sqlalchemy import func
 
     return db.scalar(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed")) or 0
 
 
-__all__ = ["import_queue_item", "manual_scan", "manual_import", "annotate_match", "delete_candidates", "scan_download_folder", "failed_imports", "SYSTEM"]
+__all__ = ["import_queue_item", "manual_scan", "manual_import", "annotate_match", "delete_candidates", "scan_download_folder", "prune_download_folder",
+           "failed_imports", "SYSTEM"]

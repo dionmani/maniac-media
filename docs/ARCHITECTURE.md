@@ -243,6 +243,10 @@ transactional with the data it touches, and portable across all supported databa
 * Modes: move, copy, hardlink (default for torrents so seeding continues), symlink.
 * `FileTransaction` journals operations; any failure – including the DB commit – replays it backwards.
 * Recycle bin instead of deletion; housekeeping purges after N days.
+* A move-mode import removes the release folder it emptied, plus any parents that emptied with it. Housekeeping
+  also catches stragglers that are untouched for 1 h. Both only use `rmdir`. Neither touches the download folder
+  itself, client category/working folders (`movies/`, `incomplete/`, `_UNPACK_*` …), downloads still in flight,
+  or a library/recycle bin nested underneath.
 * Scanner uses `os.scandir`, pre-loaded lookups and batched commits; incremental scans skip
   folders with unchanged mtimes (authoritative `os.stat`, since `DirEntry` caches can lag on Windows).
 

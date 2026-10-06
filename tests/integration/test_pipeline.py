@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -34,8 +37,6 @@ def test_full_download_and_import_pipeline(database, library):
     result = asyncio.run(search_service.automatic("movie", movie_id))
     assert result["grabbed"] and "Interstellar" in result["grabbed"]
     queue_id = result["queue_id"]
-
-    import time
 
     for _ in range(40):  # the simulator finishes any release within 15 s
         asyncio.run(download_service.sync_clients())
@@ -97,6 +98,72 @@ def test_upgrade_replaces_and_recycles(database, library, make_video):
     result = import_service.manual_import([{"path": str(worse), "media_type": "movie", "media_id": movie_id}], "move", SYSTEM)
     assert not result.imported and "Not an upgrade" in result.failed[0]
     assert worse.exists()
+
+
+def _age(*dirs: Path, seconds: int = 2 * 3600) -> None:
+    then = time.time() - seconds
+    for d in dirs:
+        os.utime(d, (then, then))
+
+
+def test_move_import_removes_the_emptied_release_folder(database, library, make_video):
+    downloads = library["downloads"]
+    movie_id = _add_movie("Arrival", 2016)
+    release = downloads / "movies" / "Arrival.2016.1080p.BluRay.x264-GRP"
+    make_video(release / f"{release.name}.mkv")
+    (release / "Subs").mkdir()  # nothing but an empty folder is left once the video moves out
+    with session_scope() as db:
+        q = models.DownloadQueueItem(title="Arrival", media_type="movie", media_id=movie_id, release_title=release.name,
+                                     status="completed", download_path=str(release), protocol="usenet")
+        db.add(q)
+        db.flush()
+        queue_id = q.id
+    assert import_service.import_queue_item(queue_id).imported
+    assert not release.exists()
+    assert (downloads / "movies").exists()  # the client's category folder stays
+
+    pack = downloads / "Sicario.Collection"  # manual imports too, along with parents that emptied with it
+    src = make_video(pack / "Sicario.2015.1080p.BluRay.x264" / "Sicario.2015.1080p.BluRay.x264.mkv")
+    item = {"path": str(src), "media_type": "movie", "media_id": _add_movie("Sicario", 2015)}
+    assert import_service.manual_import([item], "move", SYSTEM).imported
+    assert not pack.exists() and downloads.exists()
+
+    copied = make_video(downloads / "Prisoners.2013.1080p.BluRay.x264" / "Prisoners.2013.1080p.BluRay.x264.mkv")
+    item = {"path": str(copied), "media_type": "movie", "media_id": _add_movie("Prisoners", 2013)}
+    assert import_service.manual_import([item], "copy", SYSTEM).imported
+    assert copied.exists()  # a copy leaves the download as it was
+
+
+def test_housekeeping_removes_old_empty_download_folders(database, library):
+    from backend.workers import tasks
+
+    downloads = library["downloads"]
+    release = downloads / "movies" / "Left.Behind.2016.1080p.BluRay.x264-GRP"
+    (release / "Subs").mkdir(parents=True)  # a folder holding only empty folders goes too
+    fresh = downloads / "Just.Grabbed.2024"  # a client may create the folder a little before writing to it
+    in_flight = downloads / "Still.Downloading.2024"
+    working = downloads / "_UNPACK_Some.Release"
+    for d in (fresh, in_flight, working):
+        d.mkdir()
+    with session_scope() as db:
+        q = models.DownloadQueueItem(title="Still Downloading", media_type="movie", media_id=1,
+                                     release_title=in_flight.name, status="downloading", download_path=str(in_flight))
+        db.add(q)
+        db.flush()
+        queue_id = q.id
+    _age(release / "Subs", release, downloads / "movies", in_flight, working)
+
+    try:
+        result = asyncio.run(tasks.cleanup(SimpleNamespace(payload={}, progress=lambda *a, **kw: None)))
+        assert result["empty_download_folders"] == 2
+        assert not release.exists()
+        assert downloads.exists() and (downloads / "movies").exists()  # the client's category folder stays
+        assert fresh.exists() and in_flight.exists() and working.exists()
+    finally:
+        with session_scope() as db:
+            db.delete(db.get(models.DownloadQueueItem, queue_id))
+        for d in (fresh, in_flight, working):
+            d.rmdir()
 
 
 def test_scanner_and_renamer(database, library, make_video):
