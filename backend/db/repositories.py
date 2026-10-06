@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from backend.db import models
 from backend.db.base import Base, utcnow
+from backend.domain.availability import catalog_cutoff, date_only_cutoff
 from backend.domain.parser import normalise_path_key
 
 T = TypeVar("T", bound=Base)
@@ -120,6 +121,18 @@ class MovieRepository(Repository[models.Movie]):
     def wanted_missing(self) -> Select:
         return select(models.Movie).where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False))
 
+    @staticmethod
+    def released(today: date, catalog_days: int):
+        """SQL form of ``domain.availability.movie_availability`` - keep the two in step."""
+        m, t = models.Movie, today.isoformat()
+        conds = [and_(m.digital_release_date != "", m.digital_release_date <= t),
+                 and_(m.physical_release_date != "", m.physical_release_date <= t)]
+        cutoff = catalog_cutoff(today, catalog_days)
+        if cutoff:
+            conds += [and_(m.release_date != "", m.release_date <= cutoff.isoformat()),
+                      and_(or_(m.release_date.is_(None), m.release_date == ""), m.year > 0, m.year < cutoff.year)]
+        return or_(*conds)
+
     def ids_by_external(self, tmdb_ids: Sequence[int], imdb_ids: Sequence[str]) -> tuple[dict[int, int], dict[str, int]]:
         """Library movie ids for many external ids at once: ({tmdb_id: id}, {imdb_id: id})."""
         if not tmdb_ids and not imdb_ids:
@@ -165,9 +178,9 @@ class SeriesRepository(Repository[models.Series]):
     def episode_stats(self, series_ids: Sequence[int]) -> dict[int, dict[str, int]]:
         """Aggregate counts in one query instead of loading 15k episode rows.
 
-        An episode that hasn't aired yet (air_date in the future) can't be missing, so it is
-        excluded from ``missing_count`` and from ``aired_episode_count``. Undated episodes are
-        treated as aired, matching the wanted/search queries.
+        An episode that hasn't aired yet (see ``EpisodeRepository.aired`` - undated counts as not
+        aired) can't be missing, so it is excluded from ``missing_count`` and from
+        ``aired_episode_count``, matching the wanted/search queries.
 
         ``aired_episode_count`` is the "x / y episodes" denominator, i.e. Sonarr's episodeCount:
         episodes that have a file, or are monitored and have aired. Unmonitored episodes without a
@@ -175,8 +188,7 @@ class SeriesRepository(Repository[models.Series]):
         """
         if not series_ids:
             return {}
-        today = date.today().isoformat()
-        aired = or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today)
+        aired = EpisodeRepository.aired(utcnow())
         rows = self.db.execute(
             select(
                 models.Episode.series_id,
@@ -221,13 +233,12 @@ class SeriesRepository(Repository[models.Series]):
         """Per-season counts, Sonarr-style, in one query: ``{series_id: {season_number: stats}}``.
 
         ``episode_count`` is what Sonarr calls episodeCount: episodes that have a file, or are
-        monitored and have aired (undated counts as aired). ``total_episode_count`` is every episode.
+        monitored and have aired (``EpisodeRepository.aired``). ``total_episode_count`` is every episode.
         """
         if not series_ids:
             return {}
-        today = date.today().isoformat()
         e = models.Episode
-        aired = or_(e.air_date.is_(None), e.air_date <= today)
+        aired = EpisodeRepository.aired(utcnow())
         rows = self.db.execute(
             select(
                 e.series_id,
@@ -270,9 +281,20 @@ class EpisodeRepository(Repository[models.Episode]):
             .order_by(models.Episode.season_number, models.Episode.episode_number)
         ).all()
 
+    @staticmethod
+    def aired(now: datetime):
+        """SQL form of ``domain.availability.episode_availability`` - keep the two in step.
+
+        An exact air time wins; a bare date counts once it is over everywhere; undated never counts.
+        """
+        e = models.Episode
+        return or_(
+            and_(e.air_date_utc.is_not(None), e.air_date_utc <= now),
+            and_(e.air_date_utc.is_(None), e.air_date != "", e.air_date <= date_only_cutoff(now)),
+        )
+
     def seasons_with_missing(self, series_id: int) -> list[int]:
         """Season numbers that have monitored, aired episodes without a file (what a series search should cover)."""
-        today = date.today().isoformat()
         return list(self.db.scalars(
             select(models.Episode.season_number).distinct()
             .join(models.Season, models.Season.id == models.Episode.season_id)
@@ -281,12 +303,12 @@ class EpisodeRepository(Repository[models.Episode]):
                 models.Episode.monitored.is_(True),
                 models.Episode.has_file.is_(False),
                 models.Season.monitored.is_(True),
-                or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today),
+                self.aired(utcnow()),
             )
             .order_by(models.Episode.season_number)
         ))
 
-    def wanted_missing(self, today: str) -> Select:
+    def wanted_missing(self, now: datetime) -> Select:
         return (
             select(models.Episode)
             .join(models.Series, models.Series.id == models.Episode.series_id)
@@ -297,7 +319,7 @@ class EpisodeRepository(Repository[models.Episode]):
                 models.Series.monitored.is_(True),
                 models.Season.monitored.is_(True),
                 models.Episode.season_number > 0,
-                or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today),
+                self.aired(now),
             )
         )
 

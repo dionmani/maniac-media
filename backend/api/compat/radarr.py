@@ -41,7 +41,7 @@ from backend.db import models
 from backend.db.repositories import MovieRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service, tag_service
+from backend.services import media_service, metadata_service, search_service, tag_service
 from backend.workers.queue import job_queue
 
 URL_BASE = "/api/compat/radarr"
@@ -123,7 +123,8 @@ def movie_resource(movie: models.Movie) -> dict[str, Any]:
         # Seerr links to {externalUrl}/movie/{titleSlug}; the SPA redirects /movie/:id to the detail page
         "titleSlug": str(movie.id),
         "status": _STATUS.get(status, "released"),
-        "isAvailable": status == "released" or movie.has_file,
+        # the release gate, not TMDB's theatrical status: Seerr should see what automatic search will act on
+        "isAvailable": movie.has_file or search_service.movie_gate(movie).available,
         "monitored": movie.monitored,
         "hasFile": movie.has_file,
         "qualityProfileId": movie.quality_profile_id or 1,

@@ -116,6 +116,9 @@ export interface Episode {
   title: string;
   overview?: string | null;
   air_date?: string | null;
+  air_date_utc?: string | null;
+  /** out per the server's release gate (exact air time, or the whole air date over everywhere; TBA never) */
+  aired: boolean;
   monitored: boolean;
   has_file: boolean;
   file_path?: string | null;
@@ -328,6 +331,8 @@ export interface Release {
   score: number;
   season?: number | null;
   episodes: number[];
+  /** the release/air date that cleared (or held back) this release */
+  release_gate?: string | null;
   download_url_token: string;
 }
 

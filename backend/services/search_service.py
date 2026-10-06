@@ -7,16 +7,18 @@ from datetime import date
 
 from sqlalchemy import select
 
+from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
-from backend.db.repositories import EpisodeRepository, QueueRepository
+from backend.db.repositories import EpisodeRepository, MovieRepository, QueueRepository
 from backend.db.session import session_scope
+from backend.domain.availability import Availability, episode_availability, latest, movie_availability
 from backend.domain.parser import normalize_title, parse_episode, parse_movie
 from backend.domain.quality import get_quality, parse_quality
 from backend.domain.types import ReleaseInfo, SearchCriteria
 from backend.services import download_service, indexer_service
 from backend.services.audit import SYSTEM, Actor
-from backend.services.decision_engine import Decision, Target, evaluate, rank
+from backend.services.decision_engine import Decision, Target, evaluate, rank, release_gate
 from backend.services.quality_service import spec_for
 
 log = logging.getLogger("maniac.search")
@@ -54,6 +56,16 @@ def _blocklist(db, media_type: str, media_id: int) -> set[str]:
     return {r.lower() for r in rows}
 
 
+def movie_gate(movie: models.Movie) -> Availability:
+    """Whether ``movie`` is out per the release gate, and the date that says so."""
+    return movie_availability(digital=movie.digital_release_date, physical=movie.physical_release_date, release_date=movie.release_date,
+                              year=movie.year, today=date.today(), catalog_days=get_settings().release_gate_catalog_days)
+
+
+def _air_map(episodes, now) -> dict[tuple[int, int], Availability]:
+    return {(e.season_number, e.episode_number): episode_availability(air_date=e.air_date, air_date_utc=e.air_date_utc, now=now) for e in episodes}
+
+
 def build_target(media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None) -> tuple[Target, SearchCriteria, set[str]]:
     with session_scope() as db:
         if media_type == "movie":
@@ -65,7 +77,7 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
                 current = parse_quality(get_quality(movie.quality).name)
             target = Target("movie", movie.id, movie.title, movie.year, spec_for(db, movie.quality_profile_id),
                             current_quality=current, has_file=movie.has_file, aliases=[movie.original_title or ""],
-                            minimum_seeders=_min_seeders(db))
+                            minimum_seeders=_min_seeders(db), availability=movie_gate(movie))
             criteria = SearchCriteria("movie", movie.title, movie.year, imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id)
             return target, criteria, _blocklist(db, "movie", movie.id)
 
@@ -83,7 +95,7 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
         worst = min(with_files, key=lambda q: q.quality.weight) if with_files and all_have else None
         target = Target("tv", series.id, series.title, series.year, spec_for(db, series.quality_profile_id),
                         season=season, episodes=list(episodes or []), current_quality=worst, has_file=all_have,
-                        aliases=[series.original_title or ""], minimum_seeders=_min_seeders(db))
+                        aliases=[series.original_title or ""], minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()))
         criteria = SearchCriteria("tv", series.title, series.year, imdb_id=series.imdb_id, tvdb_id=series.tvdb_id,
                                   tvmaze_id=series.tvmaze_id, season=season, episode=episodes[0] if episodes and len(episodes) == 1 else None)
         return target, criteria, _blocklist(db, "tv", series.id)
@@ -94,9 +106,12 @@ async def interactive(media_type: str, media_id: int, season: int | None = None,
     releases, report = await indexer_service.search(criteria)
     decisions = rank([evaluate(r, target, blocked) for r in releases])
     await asyncio.to_thread(_touch_search, media_type, media_id, season, [episode] if episode else None)
+    hold = _hold(target)
     return {
         "releases": [{**d.to_dict(), "download_url_token": _release_cache_put(d.release)} for d in decisions],
         "indexers": report,
+        # a user may still override, but automatic search won't touch it until then
+        "held": f"Not released yet: {hold.reason}" if hold else None,
     }
 
 
@@ -151,15 +166,22 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
         if queued:
             return {"grabbed": None, "reason": "Already in the download queue"}
         target, criteria, blocked = await asyncio.to_thread(build_target, media_type, media_id, season, episodes)
+        hold = _hold(target)
+        if hold:
+            log.info("Not searching %s %s (season %s, episodes %s): not released yet - %s", media_type, media_id, season, episodes, hold.reason)
+            return {"grabbed": None, "held": True, "reason": f"Not released yet: {hold.reason}"}
         if media_type == "tv" and season is not None and not episodes:
-            # season search: prefer a pack, fall back to individual episodes
-            releases, _ = await indexer_service.search(criteria)
-            best = _best(releases, target, blocked)
-            if best:
-                qid = await download_service.grab(best.release, media_type="tv", media_id=media_id, season=season,
-                                                    episodes=best.episodes, actor=actor, retry_count=retry_count)
-                await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
-                return {"grabbed": best.release.title, "queue_id": qid}
+            # season search: prefer a pack (only once the whole season has aired), fall back to individual episodes
+            pack_gate = release_gate(target, season, [], True)
+            if pack_gate is None or pack_gate.available:
+                releases, _ = await indexer_service.search(criteria)
+                best = _best(releases, target, blocked)
+                if best:
+                    qid = await download_service.grab(best.release, media_type="tv", media_id=media_id, season=season,
+                                                        episodes=best.episodes, actor=actor, retry_count=retry_count,
+                                                        release_gate=best.release_gate)
+                    await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
+                    return {"grabbed": best.release.title, "queue_id": qid}
             missing = await asyncio.to_thread(_missing_episode_numbers, media_id, season)
             grabbed = []
             for number in missing:
@@ -167,7 +189,10 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
                 result = await automatic("tv", media_id, season, [number], actor, retry_count=retry_count)
                 if result.get("grabbed"):
                     grabbed.append(result["grabbed"])
-            return {"grabbed": grabbed or None, "reason": None if grabbed else "No acceptable releases found"}
+            out = {"grabbed": grabbed or None, "reason": None if grabbed else "No acceptable releases found"}
+            if pack_gate is not None and not pack_gate.available:
+                out["season_pack"] = f"Not searched: {pack_gate.reason}"
+            return out
 
         releases, report = await indexer_service.search(criteria)
         best = _best(releases, target, blocked)
@@ -175,8 +200,28 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
         if not best:
             return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases)}
         qid = await download_service.grab(best.release, media_type=media_type, media_id=media_id, season=season if season is not None else best.season,
-                                          episodes=episodes or best.episodes, actor=actor, retry_count=retry_count)
-        return {"grabbed": best.release.title, "queue_id": qid, "quality": best.quality.quality.name}
+                                          episodes=episodes or best.episodes, actor=actor, retry_count=retry_count,
+                                          release_gate=best.release_gate)
+        return {"grabbed": best.release.title, "queue_id": qid, "quality": best.quality.quality.name, "release_gate": best.release_gate}
+
+
+def _hold(target: Target) -> Availability | None:
+    """Why the target must not be searched for at all yet, or None.
+
+    A movie is held until its home release; specific episodes, or a season, until at least one of them has
+    aired (releases covering the rest are still rejected one by one by the decision engine).
+    """
+    if target.media_type == "movie":
+        return target.availability if target.availability and not target.availability.available else None
+    if target.season is None:
+        return None
+    if target.episodes:
+        known = [target.air[(target.season, e)] for e in target.episodes if (target.season, e) in target.air]
+    else:
+        known = [a for (s, _), a in target.air.items() if s == target.season]
+    if known and not any(a.available for a in known):
+        return latest(known)
+    return None
 
 
 def _best(releases: list[ReleaseInfo], target: Target, blocked: set[str]) -> Decision | None:
@@ -190,7 +235,6 @@ def _already_queued(media_type: str, media_id: int, season: int | None, episodes
 
 
 def _missing_episode_numbers(series_id: int, season: int) -> list[int]:
-    today = date.today().isoformat()
     with session_scope() as db:
         return list(
             db.scalars(
@@ -199,28 +243,29 @@ def _missing_episode_numbers(series_id: int, season: int) -> list[int]:
                     models.Episode.season_number == season,
                     models.Episode.monitored.is_(True),
                     models.Episode.has_file.is_(False),
-                    (models.Episode.air_date.is_(None)) | (models.Episode.air_date <= today),
+                    EpisodeRepository.aired(utcnow()),
                 )
             )
         )
 
 
 async def search_missing(limit: int = 50, progress=None) -> dict:
-    """Sweep monitored, missing items – least recently searched first."""
-    today = date.today().isoformat()
+    """Sweep monitored, missing items that are out (domain/availability.py) – least recently searched first."""
+    catalog_days = get_settings().release_gate_catalog_days
 
     def collect():
         with session_scope() as db:
             movies = list(
                 db.scalars(
                     select(models.Movie.id)
-                    .where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False))
+                    .where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False),
+                           MovieRepository.released(date.today(), catalog_days))
                     .order_by(models.Movie.last_search_at.is_not(None), models.Movie.last_search_at)
                     .limit(limit)
                 )
             )
             eps = db.execute(
-                EpisodeRepository(db).wanted_missing(today)
+                EpisodeRepository(db).wanted_missing(utcnow())
                 .with_only_columns(models.Episode.series_id, models.Episode.season_number, models.Episode.episode_number)
                 .order_by(models.Episode.last_search_at.is_not(None), models.Episode.last_search_at)
                 .limit(limit)
@@ -270,7 +315,8 @@ async def rss_sync() -> dict:
             async with lock:
                 if await asyncio.to_thread(_already_queued, media_type, media_id, season, decision.episodes):
                     continue
-                await download_service.grab(decision.release, media_type=media_type, media_id=media_id, season=season, episodes=decision.episodes)
+                await download_service.grab(decision.release, media_type=media_type, media_id=media_id, season=season, episodes=decision.episodes,
+                                            release_gate=decision.release_gate)
                 grabbed += 1
         except Exception as exc:
             log.warning("RSS grab failed for %s: %s", decision.release.title, exc)
@@ -278,8 +324,12 @@ async def rss_sync() -> dict:
 
 
 def _match_rss(releases: list[ReleaseInfo]) -> dict:
-    """Match RSS releases to monitored library items that want a file (missing or upgradable)."""
-    today = date.today().isoformat()
+    """Match RSS releases to monitored library items that want a file (missing or upgradable).
+
+    Targets carry the release gate, so the decision engine rejects anything not out yet (including a season
+    pack for a season that is still airing).
+    """
+    now = utcnow()
     out: dict[tuple, tuple[Target, set[str], ReleaseInfo]] = {}
     with session_scope() as db:
         movies: dict[str, list[models.Movie]] = {}
@@ -294,9 +344,10 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                 s = series.get(normalize_title(ep.series_title))
                 if not s:
                     continue
-                eps = [e for e in db.scalars(select(models.Episode).where(
-                    models.Episode.series_id == s.id, models.Episode.season_number == ep.season,
-                    models.Episode.monitored.is_(True))) if (ep.full_season or e.episode_number in ep.episodes) and (e.air_date is None or e.air_date <= today)]
+                season_eps = list(db.scalars(select(models.Episode).where(models.Episode.series_id == s.id, models.Episode.season_number == ep.season)))
+                air = _air_map(season_eps, now)
+                eps = [e for e in season_eps if e.monitored and (ep.full_season or e.episode_number in ep.episodes)
+                       and air[(e.season_number, e.episode_number)].available]
                 if not eps:
                     continue
                 have = [parse_quality(e.quality or e.file_path or "") for e in eps if e.has_file]
@@ -304,7 +355,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                 target = Target("tv", s.id, s.title, s.year, spec_for(db, s.quality_profile_id), season=ep.season,
                                 episodes=[] if ep.full_season else ep.episodes,
                                 current_quality=min(have, key=lambda q: q.quality.weight) if all_have and have else None,
-                                has_file=all_have, minimum_seeders=seeders)
+                                has_file=all_have, minimum_seeders=seeders, air=air)
                 out[("tv", s.id, ep.season, tuple(ep.episodes), release.guid)] = (target, _blocklist(db, "tv", s.id), release)
                 continue
             pm = parse_movie(release.title)
@@ -313,6 +364,6 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                     continue
                 current = parse_quality(m.quality or m.file_path or "") if m.has_file else None
                 target = Target("movie", m.id, m.title, m.year, spec_for(db, m.quality_profile_id), current_quality=current,
-                                has_file=m.has_file, minimum_seeders=seeders)
+                                has_file=m.has_file, minimum_seeders=seeders, availability=movie_gate(m))
                 out[("movie", m.id, None, (), release.guid)] = (target, _blocklist(db, "movie", m.id), release)
     return out

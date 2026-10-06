@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,7 @@ from backend.core.secrets import metadata_key_name, secret_store
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
+from backend.domain.availability import wants_air_times
 from backend.domain.parser import normalize_title
 from backend.domain.types import MediaMetadata
 from backend.plugins import registry
@@ -110,6 +111,7 @@ async def fetch_series(
     title: str | None = None, year: int | None = None,
 ) -> MediaMetadata | None:
     best: MediaMetadata | None = None
+    answers: list[MediaMetadata] = []
     for provider in providers("tv"):
         try:
             meta = await provider.get_series(tvdb_id=tvdb_id, tmdb_id=tmdb_id, tvmaze_id=tvmaze_id, imdb_id=imdb_id)
@@ -121,6 +123,7 @@ async def fetch_series(
                     f = found[0]
                     meta = await provider.get_series(tvdb_id=f.tvdb_id, tmdb_id=f.tmdb_id, tvmaze_id=f.tvmaze_id, imdb_id=f.imdb_id) or f
             if meta:
+                answers.append(meta)
                 best = _merge(best, meta)
                 tvdb_id, tvmaze_id, imdb_id = tvdb_id or meta.tvdb_id, tvmaze_id or meta.tvmaze_id, imdb_id or meta.imdb_id
                 tmdb_id = tmdb_id or meta.tmdb_id
@@ -128,7 +131,37 @@ async def fetch_series(
                     break
         except Exception as exc:
             log.warning("Series lookup via %s failed: %s", provider.name, exc)
+    if best is not None:
+        await _fill_air_times(best, answers)
     return best
+
+
+async def _fill_air_times(best: MediaMetadata, answers: list[MediaMetadata]) -> None:
+    """Borrow exact air times from a provider that has them when the episode list came from one that only has dates.
+
+    The release gate holds a date-only episode until that date is over everywhere; a real air time lets it go
+    as soon as the episode has aired. Only shows with recent or upcoming episodes are worth the extra lookup.
+    """
+    if any(e.air_date_utc for e in best.episodes) or not wants_air_times((e.air_date for e in best.episodes), date.today()):
+        return
+    source = next((a for a in answers if a is not best and any(e.air_date_utc for e in a.episodes)), None)
+    if source is None:
+        for provider in providers("tv"):
+            if not provider.provides_air_times or provider.key == best.provider:  # type: ignore[attr-defined]
+                continue
+            try:
+                source = await provider.get_series(tvdb_id=best.tvdb_id, tmdb_id=best.tmdb_id, tvmaze_id=best.tvmaze_id, imdb_id=best.imdb_id)
+            except Exception as exc:
+                log.info("Air times via %s unavailable: %s", provider.name, exc)
+            if source is not None:
+                break
+    if source is None:
+        return
+    # providers number some shows differently, so a time is only taken when the date agrees too
+    times = {(e.season_number, e.episode_number, e.air_date): e.air_date_utc for e in source.episodes if e.air_date_utc}
+    for ep in best.episodes:
+        ep.air_date_utc = times.get((ep.season_number, ep.episode_number, ep.air_date))
+    _merge(best, source)  # fills ids the first provider lacked (e.g. tvmaze_id), so the next refresh looks it up directly
 
 
 def series_lookup(series: models.Series) -> dict:
@@ -274,6 +307,10 @@ def merge_episodes(db: Session, series: models.Series, meta: MediaMetadata) -> d
             updated += 1
         row.title = ep.title or row.title
         row.overview = ep.overview or row.overview
+        if ep.air_date_utc:
+            row.air_date_utc = ep.air_date_utc
+        elif ep.air_date and ep.air_date != row.air_date:
+            row.air_date_utc = None  # rescheduled, and nobody knows the new time yet
         row.air_date = ep.air_date or row.air_date
         row.runtime_minutes = ep.runtime_minutes or row.runtime_minutes
         row.tvmaze_id = ep.tvmaze_id or row.tvmaze_id

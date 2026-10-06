@@ -83,6 +83,8 @@ class MetadataProvider(Plugin):
     supports_series: ClassVar[bool] = True
     requires_api_key: ClassVar[bool] = False
     supports_discover: ClassVar[bool] = False
+    # episodes carry an exact air time (EpisodeMetadata.air_date_utc), not just a date
+    provides_air_times: ClassVar[bool] = False
 
     def is_configured(self) -> bool:
         return not self.requires_api_key or bool(self.setting("api_key"))

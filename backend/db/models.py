@@ -164,6 +164,8 @@ class Episode(Base):
     tvdb_id: Mapped[int | None] = mapped_column(Integer)
     absolute_number: Mapped[int | None] = mapped_column(Integer)
     last_search_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # v10 – exact air time (naive UTC) when a provider knows it; the release gate prefers it over air_date
+    air_date_utc: Mapped[datetime | None] = mapped_column(DateTime)
 
     series: Mapped[Series] = relationship(back_populates="episodes")
     season: Mapped[Season] = relationship(back_populates="episodes")

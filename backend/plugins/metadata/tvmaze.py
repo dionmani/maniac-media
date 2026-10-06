@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from backend.core import http
 from backend.domain.types import CastMember, EpisodeMetadata, MediaMetadata
@@ -19,12 +20,24 @@ def _year(date: str | None) -> int | None:
     return int(date[:4]) if date and date[:4].isdigit() else None
 
 
+def _airstamp(value: str | None) -> datetime | None:
+    """TVmaze's ``airstamp`` (ISO 8601 with offset) as naive UTC."""
+    try:
+        stamp = datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+    if stamp is None or stamp.tzinfo is None:
+        return None
+    return stamp.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 @register
 class TvMazeProvider(MetadataProvider):
     key = "tvmaze"
     name = "TVmaze"
     description = "Free TV metadata with full episode lists. No API key required."
     supports_movies = False
+    provides_air_times = True
 
     def _convert(self, show: dict, embedded: bool = False) -> MediaMetadata:
         image = show.get("image") or {}
@@ -61,6 +74,7 @@ class TvMazeProvider(MetadataProvider):
                         title=ep.get("name") or f"Episode {ep['number']}",
                         overview=_strip_html(ep.get("summary")),
                         air_date=ep.get("airdate") or None,
+                        air_date_utc=_airstamp(ep.get("airstamp")) if ep.get("airdate") else None,
                         runtime_minutes=ep.get("runtime"),
                         tvmaze_id=ep.get("id"),
                     )

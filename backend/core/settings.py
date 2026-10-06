@@ -65,6 +65,9 @@ class AppSettings(BaseModel):
     search_on_add: bool = False
     auto_retry_failed_downloads: bool = True
     max_download_retries: int = 2
+    # release gate (domain/availability.py): a movie with no digital/physical date on record is still searched once
+    # its first release is this many days old (back catalogue); 0 = only a digital or physical date counts
+    release_gate_catalog_days: int = 365
 
     # --- integrations
     # Seerr's "remove from Radarr" always asks for files to be deleted; off = drop the library entry only

@@ -202,7 +202,7 @@ def episode_resource(ep: models.Episode) -> dict[str, Any]:
         "episodeNumber": ep.episode_number,
         "title": ep.title,
         "airDate": ep.air_date,
-        "airDateUtc": _airing(ep.air_date),
+        "airDateUtc": f"{ep.air_date_utc:%Y-%m-%dT%H:%M:%S}Z" if ep.air_date_utc else _airing(ep.air_date),
         "overview": ep.overview or "",
         "hasFile": ep.has_file,
         "monitored": ep.monitored,

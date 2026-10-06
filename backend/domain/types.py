@@ -28,6 +28,7 @@ class EpisodeMetadata:
     tvdb_id: int | None = None
     tvmaze_id: int | None = None
     absolute_number: int | None = None
+    air_date_utc: datetime | None = None  # exact air time, naive UTC (only some providers know it)
 
 
 @dataclass

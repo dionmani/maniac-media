@@ -4,14 +4,14 @@ from __future__ import annotations
 import shutil
 from datetime import date, timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from backend.api.schemas import public_art
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
-from backend.db.repositories import MediaFileRepository
+from backend.db.repositories import EpisodeRepository, MediaFileRepository
 
 
 def _disk(path: str) -> dict | None:
@@ -37,7 +37,7 @@ def stats(db: Session) -> dict:
         select(func.count(models.Episode.id))
         .join(models.Series, models.Series.id == models.Episode.series_id)
         .where(models.Episode.monitored.is_(True), models.Episode.has_file.is_(False), models.Series.monitored.is_(True),
-               models.Episode.season_number > 0, or_(models.Episode.air_date.is_(None), models.Episode.air_date <= today))
+               models.Episode.season_number > 0, EpisodeRepository.aired(utcnow()))
     )
     repo = MediaFileRepository(db)
     movie_bytes = repo.total_bytes("movie")

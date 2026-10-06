@@ -42,8 +42,6 @@ import { toast } from '../store/ui';
 import { palette } from '../theme';
 import { bytes, episodeCode, errorMessage } from '../utils/format';
 
-const today = new Date().toISOString().slice(0, 10);
-
 export default function SeriesDetailPage() {
   const id = Number(useParams().id);
   const navigate = useNavigate();
@@ -229,7 +227,7 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
   const episodes = [...season.episodes].sort((a, b) => b.episode_number - a.episode_number);
   const have = episodes.filter((e) => e.has_file).length;
   // same rule as the series' "x / y episodes": unmonitored or unaired episodes without a file aren't wanted, so they aren't counted
-  const counted = episodes.filter((e) => e.has_file || (e.monitored && (!e.air_date || e.air_date <= today))).length;
+  const counted = episodes.filter((e) => e.has_file || (e.monitored && e.aired)).length;
   const call =async (fn: () => Promise<unknown>, msg?: string) => {
     try {
       await fn();
@@ -307,7 +305,7 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
 function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, onSearch }: {
   ep: Episode; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
 }) {
-  const aired = !ep.air_date || ep.air_date <= today;
+  const aired = ep.aired;
   const primaryFile = ep.files?.find((f) => f.is_primary) ?? ep.files?.[0];
   const filePath = primaryFile?.path ?? ep.file_path ?? '';
   const otherEps = primaryFile?.episodes?.filter((e) => e.id !== ep.id);

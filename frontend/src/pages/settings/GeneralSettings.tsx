@@ -12,7 +12,7 @@ type Settings = Record<string, unknown> & {
   media_root_movies: string; media_root_tv: string; download_folder: string; recycle_bin: string; recycle_bin_days: number;
   movie_folder_format: string; movie_format: string; series_folder_format: string; tv_format: string; rename_on_import: boolean;
   auto_import: boolean; import_mode: string; min_import_size_mb: number; watch_download_folder: boolean; download_poll_seconds: number; import_untracked_downloads: boolean;
-  search_on_add: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; metadata_language: string;
+  search_on_add: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; release_gate_catalog_days: number; metadata_language: string;
   seerr_allow_file_deletion: boolean; discover_region: string; discover_languages: string[];
   access_token_ttl_minutes: number; rate_limit_per_minute: number; metrics_require_auth: boolean;
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
@@ -37,7 +37,7 @@ export function MediaManagement() {
   const canWrite = useAuth((s) => s.can)('settings:write');
   if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
   const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
-    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'metadata_language', 'seerr_allow_file_deletion'];
+    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion'];
   const text = (k: keyof Settings, label: string, help?: string) => (
     <TextField fullWidth size="small" label={label} value={form[k] as string} helperText={help} onChange={(e) => set(k as string, e.target.value)} disabled={!canWrite} />
   );
@@ -80,6 +80,12 @@ export function MediaManagement() {
             <TextField fullWidth size="small" type="number" label="Check active downloads every (seconds)" value={form.download_poll_seconds}
               inputProps={{ min: 5, max: 600 }} helperText="Finished downloads are still imported right away by the folder watcher"
               onChange={(e) => set('download_poll_seconds', Number(e.target.value))} disabled={!canWrite} />
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField fullWidth size="small" type="number" label="Back-catalogue movies after (days)" value={form.release_gate_catalog_days}
+              inputProps={{ min: 0, max: 3650 }}
+              helperText="Movies are only searched once out digitally or on disc. One with no such date on record counts as out this long after its first release. 0 = never"
+              onChange={(e) => set('release_gate_catalog_days', Number(e.target.value))} disabled={!canWrite} />
           </Grid>
         </Grid>
         <Stack sx={{ mt: 1 }}>

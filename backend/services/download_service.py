@@ -88,8 +88,9 @@ def _set_client_health(client_id: int, ok: bool, message: str | None) -> None:
 
 async def grab(
     release: ReleaseInfo, *, media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None,
-    actor: Actor = SYSTEM, retry_count: int = 0,
+    actor: Actor = SYSTEM, retry_count: int = 0, release_gate: str | None = None,
 ) -> int:
+    """``release_gate`` is the reference date that cleared the release (domain/availability.py), kept in history."""
     clients = await asyncio.to_thread(_clients, release.protocol)
     if not clients:
         raise DownloadError(f"No enabled download client handles {release.protocol} releases")
@@ -150,9 +151,9 @@ async def grab(
                         ep.status = "downloading"
             history(db, media_type, media_id, release.title, "grabbed", quality=quality.quality.name,
                     details=f"Sent to {client.name} from {release.indexer} ({release.protocol})", download_id=item.id,
-                    data={"indexer": release.indexer, "size": release.size_bytes, "client": client.name})
+                    data={"indexer": release.indexer, "size": release.size_bytes, "client": client.name, "release_gate": release_gate})
             audit(db, "media", "release.grab", actor=actor, entity_type=media_type, entity_id=media_id,
-                  details={"release": release.title, "indexer": release.indexer, "client": client.name})
+                  details={"release": release.title, "indexer": release.indexer, "client": client.name, "release_gate": release_gate})
             return item.id
 
     queue_id = await asyncio.to_thread(persist)

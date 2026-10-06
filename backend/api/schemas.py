@@ -1,10 +1,12 @@
 """API contracts (Pydantic v2). Secrets are write-only: responses expose ``has_*`` flags instead."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field, field_validator, model_validator
+
+from backend.domain.availability import episode_availability
 
 ORM = ConfigDict(from_attributes=True)
 
@@ -300,6 +302,7 @@ class EpisodeOut(BaseModel):
     title: str
     overview: str | None = None
     air_date: str | None = None
+    air_date_utc: datetime | None = None
     monitored: bool
     has_file: bool
     file_path: str | None = None
@@ -308,6 +311,13 @@ class EpisodeOut(BaseModel):
     status: str | None = None
     runtime_minutes: int | None = None
     files: list[MediaFileOut] = []
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def aired(self) -> bool:
+        """Out per the release gate (domain/availability.py) - the UI's Missing vs Unaired."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return episode_availability(air_date=self.air_date, air_date_utc=self.air_date_utc, now=now).available
 
 
 class SeasonOut(BaseModel):
@@ -772,6 +782,7 @@ class GeneralSettings(BaseModel):
     search_on_add: bool | None = None
     auto_retry_failed_downloads: bool | None = None
     max_download_retries: int | None = Field(None, ge=0, le=10)
+    release_gate_catalog_days: int | None = Field(None, ge=0, le=3650)
     seerr_allow_file_deletion: bool | None = None
     metadata_language: str | None = None
     metadata_refresh_batch_size: int | None = Field(None, ge=10, le=5000)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from backend.domain.availability import Availability, latest
 from backend.domain.parser import normalize_title, parse_episode, parse_movie
 from backend.domain.quality import ParsedQuality, QualityProfileSpec, parse_quality
 from backend.domain.types import ReleaseInfo
@@ -25,6 +26,9 @@ class Target:
     has_file: bool = False
     aliases: list[str] = field(default_factory=list)
     minimum_seeders: dict[int, int] = field(default_factory=dict)  # indexer id -> min seeders
+    # release gate (domain/availability.py): the movie's, and every in-scope episode's by (season, episode)
+    availability: Availability | None = None
+    air: dict[tuple[int, int], Availability] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,6 +40,7 @@ class Decision:
     score: int
     season: int | None = None
     episodes: list[int] = field(default_factory=list)
+    release_gate: str | None = None  # the reference date that let it through (or held it back)
 
     def to_dict(self) -> dict:
         r = self.release
@@ -59,6 +64,7 @@ class Decision:
             "score": self.score,
             "season": self.season,
             "episodes": self.episodes,
+            "release_gate": self.release_gate,
         }
 
 
@@ -66,7 +72,7 @@ def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = 
     rejections: list[str] = []
     quality = parse_quality(release.title)
     wanted_titles = {normalize_title(t) for t in [target.title, *target.aliases] if t}
-    season, episodes = None, []
+    season, episodes, full_season = None, [], False
 
     if target.media_type == "movie":
         parsed = parse_movie(release.title)
@@ -79,7 +85,7 @@ def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = 
         if ep is None:
             rejections.append("Could not parse season/episode")
         else:
-            season, episodes = ep.season, ep.episodes
+            season, episodes, full_season = ep.season, ep.episodes, ep.full_season
             if normalize_title(ep.series_title) not in wanted_titles:
                 rejections.append(f"Series mismatch ('{ep.series_title}')")
             if target.season is not None and ep.season != target.season:
@@ -113,6 +119,10 @@ def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = 
     if blocklist and release.title.lower() in blocklist:
         rejections.append("Release is blocklisted")
 
+    gate = release_gate(target, season, episodes, full_season)
+    if gate is not None and not gate.available:
+        rejections.append(f"Not released yet: {gate.reason}")
+
     if target.has_file and not profile.is_upgrade(target.current_quality, quality):
         rejections.append(
             f"Existing file ({target.current_quality.quality.name if target.current_quality else 'unknown'}) is equal or better / cutoff met"
@@ -121,7 +131,26 @@ def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = 
     score = profile.score(quality)
     # tie-breakers: availability and freshness
     score = score * 1000 + min(release.seeders or 0, 500) + (100 if release.protocol == "usenet" else 0) - min(release.age_days or 0, 99)
-    return Decision(release, quality, not rejections, rejections, score, season, episodes)
+    return Decision(release, quality, not rejections, rejections, score, season, episodes, gate.reason if gate else None)
+
+
+def release_gate(target: Target, season: int | None, episodes: list[int], full_season: bool) -> Availability | None:
+    """What decides whether the release's content is out: the movie's home release, or the air time of every
+    episode it covers - a season pack needs the whole season to have aired. None when nothing is known to check."""
+    if target.media_type == "movie":
+        return target.availability
+    if season is None:
+        return None
+    if full_season:
+        covered = [a for (s, _), a in target.air.items() if s == season]
+        if not covered and target.air:
+            return Availability(False, f"no episodes of season {season} are known")
+    else:
+        covered = [target.air[(season, e)] for e in episodes if (season, e) in target.air]
+    held = latest(a for a in covered if not a.available)
+    if held and full_season:
+        return Availability(False, f"season {season} hasn't finished airing ({held.reason})", held.reference)
+    return held or latest(covered)
 
 
 def rank(decisions: list[Decision]) -> list[Decision]:

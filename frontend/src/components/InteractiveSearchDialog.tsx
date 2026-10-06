@@ -43,7 +43,7 @@ export default function InteractiveSearchDialog({ target, onClose }: { target: S
     enabled: !!target,
     staleTime: 0,
     queryFn: () =>
-      get<{ releases: Release[]; indexers: { indexer: string; results: number; error: string | null }[] }>('/releases', {
+      get<{ releases: Release[]; indexers: { indexer: string; results: number; error: string | null }[]; held?: string | null }>('/releases', {
         media_type: target!.mediaType, media_id: target!.mediaId, season: target!.season, episode: target!.episode,
       }),
   });
@@ -89,6 +89,11 @@ export default function InteractiveSearchDialog({ target, onClose }: { target: S
               ))}
               {hidden > 0 && <Chip size="small" label={`${hidden} rejected hidden`} />}
             </Stack>
+            {query.data.held && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                {query.data.held}. Automatic search waits for this date; grabbing a release now overrides that.
+              </Alert>
+            )}
             <Table size="small">
               <TableHead>
                 <TableRow>

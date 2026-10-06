@@ -73,7 +73,7 @@ All v1 tables are preserved (additive migration only):
 | Table | Purpose | Notable columns |
 |---|---|---|
 | `movies` | Movie library | ids (tmdb unique, imdb idx), file info, `quality`, cast/crew JSON, release dates, `metadata_source`, `last_metadata_refresh`, `last_search_at` |
-| `series`, `seasons`, `episodes` | TV library | tvdb/tvmaze/imdb ids, `monitor_new_seasons`; episodes indexed by `(series_id, season_number, episode_number)` |
+| `series`, `seasons`, `episodes` | TV library | tvdb/tvmaze/imdb ids, `monitor_new_seasons`; episodes indexed by `(series_id, season_number, episode_number)`, `air_date` plus `air_date_utc` (exact air time when a provider knows it, for the release gate) |
 | `quality_profiles` | Ranking | `items` (allowed qualities, best first), `cutoff`, codec preferences/rejections, size limits |
 | `indexers`, `download_clients` | Integrations | **encrypted** `api_key`/`password`; health, failure counters, circuit-breaker `disabled_until`, remote path mapping |
 | `download_queue` | Grab → import lifecycle | client item id, **encrypted** download URL (contains indexer keys), status machine, retry count, client queue position (Activity mirrors the client's order) |
@@ -104,6 +104,19 @@ convention on `MetaData` gives deterministic constraint names across engines.
   "new season" is a season ≥ 2 whose season air date is in the window, so binge drops count.
   Providers fetch candidates; these rules decide membership. `DiscoverItem` carries the title plus
   `reason`/`reason_date` and streaming services (`WatchProvider`).
+* **Release gate** (`domain/availability.py`): nothing is searched for or queued before it is out,
+  because pre-release grabs are CAMs, telesyncs, fakes and malware. A movie is out on its digital or
+  physical release date, never its theatrical or festival date. One with no home-release date on
+  record counts as back catalogue once its first release is `release_gate_catalog_days` old
+  (default 365, 0 = off). An episode is out at `air_date_utc`. With only a date, it is out once that
+  date is over everywhere (36 h after it began in UTC). TBA is never out. Every `Availability` names
+  its reference date. Automatic search, the missing sweep and RSS hold unreleased targets before
+  touching an indexer. The decision engine rejects releases covering anything unreleased (a season
+  pack needs the whole season aired), so interactive search shows the reason and a user can still
+  override. A grab's history/audit entry records the date that cleared it. `MovieRepository.released`
+  / `EpisodeRepository.aired` are the SQL forms (wanted lists, counts), kept in step by a parity test.
+  TMDB/TVDB only give episode dates, so a TMDB-first series refresh borrows TVmaze's `airstamp`s when
+  it has recent or upcoming episodes (matched on season, episode *and* date).
 
 ## 5. Plugin architecture
 
@@ -132,7 +145,7 @@ the same registry.
 | `discover_service` | Discover sections from the first discover-capable provider; in-memory section cache (6 h, warmed by `discover_refresh`, keyed by region/languages), first-seen recording on each fill; per request it drops exclusions and flags titles already in the library (TMDB/IMDb/TVDB ids) |
 | `indexer_service` | fan-out search (asyncio.gather), per-indexer token bucket, retry/backoff, circuit breaker, health |
 | `decision_engine` | accept/reject + score every release with human-readable reasons |
-| `search_service` | interactive search (server-side release cache), automatic search, missing sweep, RSS matching |
+| `search_service` | interactive search (server-side release cache), automatic search, missing sweep, RSS matching; applies the release gate (§4) before searching |
 | `download_service` | grab via protocol-appropriate client, reconcile client state, failure → blocklist + re-search, retry |
 | `import_service` | validate → match → duplicate/upgrade/conflict → atomic placement → record; manual import; watch-folder report |
 | `renamer_service` | preview, dry-run, bulk rename (files or whole folders) |
