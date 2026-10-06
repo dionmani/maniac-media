@@ -97,6 +97,10 @@ def test_movie_crud_pagination_filtering(client, admin_headers, monkeypatch):
 
 
 def test_series_add_with_episodes_and_monitoring(client, admin_headers, monkeypatch):
+    from sqlalchemy import update
+
+    from backend.db import models
+    from backend.db.session import session_scope
     from backend.services import metadata_service
 
     async def fake_series(**kw):
@@ -110,8 +114,17 @@ def test_series_add_with_episodes_and_monitoring(client, admin_headers, monkeypa
     assert s["episode_count"] == 6
     seasons = {x["season_number"]: x for x in s["seasons"]}
     assert seasons[1]["monitored"] is False and seasons[2]["monitored"] is True
+    # the unmonitored season isn't wanted, so it stays out of the "x / y episodes" count
+    detail = client.get(f"{API}/series/{s['id']}", headers=admin_headers).json()
+    assert detail["aired_episode_count"] == 3 and detail["missing_count"] == 3
+    with session_scope() as db:  # ...unless it has a file
+        db.execute(update(models.Episode).where(models.Episode.series_id == s["id"], models.Episode.season_number == 1,
+                                                models.Episode.episode_number == 1).values(has_file=True, file_path="/x/s01e01.mkv"))
+    detail = client.get(f"{API}/series/{s['id']}", headers=admin_headers).json()
+    assert detail["aired_episode_count"] == 4 and detail["episode_file_count"] == 1
 
     assert client.put(f"{API}/series/{s['id']}/seasons/1/monitor", json={"monitored": True}, headers=admin_headers).status_code == 200
+    assert client.get(f"{API}/series/{s['id']}", headers=admin_headers).json()["aired_episode_count"] == 6
     assert client.post(f"{API}/series/{s['id']}/seasons", json={"season_number": 3, "episode_count": 2}, headers=admin_headers).status_code == 201
     assert client.post(f"{API}/series/{s['id']}/episodes", json={"season_number": 3, "episode_number": 3, "title": "Bonus"}, headers=admin_headers).status_code == 201
     detail = client.get(f"{API}/series/{s['id']}", headers=admin_headers).json()

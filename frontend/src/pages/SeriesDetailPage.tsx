@@ -228,7 +228,9 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
 }) {
   const episodes = [...season.episodes].sort((a, b) => b.episode_number - a.episode_number);
   const have = episodes.filter((e) => e.has_file).length;
-  const call = async (fn: () => Promise<unknown>, msg?: string) => {
+  // same rule as the series' "x / y episodes": unmonitored or unaired episodes without a file aren't wanted, so they aren't counted
+  const counted = episodes.filter((e) => e.has_file || (e.monitored && (!e.air_date || e.air_date <= today))).length;
+  const call =async (fn: () => Promise<unknown>, msg?: string) => {
     try {
       await fn();
       if (msg) toast(msg, 'success');
@@ -249,8 +251,12 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
             </IconButton>
           </Tooltip>
           <Typography fontWeight={700} sx={{ minWidth: 90 }}>{label}</Typography>
-          <LinearProgress variant="determinate" value={episodes.length ? (have / episodes.length) * 100 : 0} sx={{ flex: 1, maxWidth: 240 }} />
-          <Typography variant="body2" color="text.secondary">{have}/{episodes.length}</Typography>
+          <LinearProgress variant="determinate" value={counted ? (have / counted) * 100 : 0} sx={{ flex: 1, maxWidth: 240 }} />
+          <Tooltip title={counted < episodes.length ? `${episodes.length} episodes in total – unmonitored and unaired ones without a file aren't counted` : ''}>
+            <Typography variant="body2" color="text.secondary">
+              {counted ? `${have}/${counted}` : episodes.every((e) => !e.monitored) ? 'Unmonitored' : 'Not aired yet'}
+            </Typography>
+          </Tooltip>
           <Box sx={{ flex: 1 }} />
           {canSearch && (
             <Tooltip title="Search this season (pack preferred)">

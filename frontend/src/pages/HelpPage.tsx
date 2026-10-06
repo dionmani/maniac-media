@@ -18,12 +18,13 @@ const ENTRIES: Entry[] = [
   {
     q: 'Unaired episodes are showing as missing – are they?',
     topic: 'Missing & counts',
-    keywords: 'unaired future air date missing wanted count progress',
+    keywords: 'unaired future air date missing wanted count progress unmonitored specials',
     a: (
       <>
         No. An episode only counts as missing once its air date has passed. Episodes with a future air date show an <b>Unaired</b> chip and are left out
         of the missing count, the Wanted list, searches and the "x / y episodes" progress on the library and series pages. Episodes with <b>no</b> air
-        date (TBA) are treated as aired, so they do count.
+        date (TBA) are treated as aired, so they do count. Unmonitored episodes without a file (for example an unmonitored Specials season) are left
+        out of the "x / y episodes" progress too – they aren't wanted, so they aren't missing.
       </>
     ),
   },

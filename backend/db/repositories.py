@@ -168,6 +168,10 @@ class SeriesRepository(Repository[models.Series]):
         An episode that hasn't aired yet (air_date in the future) can't be missing, so it is
         excluded from ``missing_count`` and from ``aired_episode_count``. Undated episodes are
         treated as aired, matching the wanted/search queries.
+
+        ``aired_episode_count`` is the "x / y episodes" denominator, i.e. Sonarr's episodeCount:
+        episodes that have a file, or are monitored and have aired. Unmonitored episodes without a
+        file (e.g. an unmonitored Specials season) aren't wanted, so they must not read as missing.
         """
         if not series_ids:
             return {}
@@ -180,7 +184,7 @@ class SeriesRepository(Repository[models.Series]):
                 func.sum(case((models.Episode.has_file.is_(True), 1), else_=0)),
                 func.sum(case((and_(models.Episode.monitored.is_(True), models.Episode.has_file.is_(False), aired), 1), else_=0)),
                 func.sum(func.coalesce(models.Episode.file_size_bytes, 0)),
-                func.sum(case((or_(aired, models.Episode.has_file.is_(True)), 1), else_=0)),
+                func.sum(case((or_(models.Episode.has_file.is_(True), and_(models.Episode.monitored.is_(True), aired)), 1), else_=0)),
             )
             .where(models.Episode.series_id.in_(series_ids))
             .group_by(models.Episode.series_id)

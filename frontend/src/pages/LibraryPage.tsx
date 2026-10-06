@@ -314,7 +314,7 @@ const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, select
       <TableCell>
         {isSeries(i) ? (
           <Stack direction="row" spacing={1} alignItems="center">
-            <LinearProgress variant="determinate" value={i.aired_episode_count ? (i.episode_file_count / i.aired_episode_count) * 100 : 0} sx={{ width: 90 }} />
+            <LinearProgress variant="determinate" value={i.aired_episode_count ? (i.episode_file_count / i.aired_episode_count) * 100 : 100} sx={{ width: 90 }} />
             <Typography variant="caption">{i.episode_file_count}/{i.aired_episode_count}</Typography>
           </Stack>
         ) : bytes(i.file_size_bytes)}
@@ -385,7 +385,8 @@ function BulkEditDialog({ open, mode, ids, onClose, onDone }: { open: boolean; m
 
 const PosterCard = memo(function PosterCard({ item, onOpen, selecting, selected, anchor }: CardProps) {
   const series = isSeries(item);
-  const progress = series ? (item.aired_episode_count ? (item.episode_file_count / item.aired_episode_count) * 100 : 0) : item.has_file ? 100 : 0;
+  // 0/0 means nothing is wanted (all unmonitored or unaired), so nothing is missing either
+  const progress = series ? (item.aired_episode_count ? (item.episode_file_count / item.aired_episode_count) * 100 : 100) : item.has_file ? 100 : 0;
   const ended = series && (item.status ?? '').toLowerCase() === 'ended';
   const badge = series
     ? { label: `${item.episode_file_count}/${item.aired_episode_count}`, color: progress >= 100 ? palette.green : progress > 0 ? palette.amber : palette.red }
