@@ -1,6 +1,6 @@
-# 02 – Custom formats & advanced release scoring
+# 02 – Custom formats & advanced release scoring (Complete)
 
-> Phase 1 · Effort L (2–3 weeks) · Risk low · Depends on nothing (stores matches on F1 when available) · Priority #3
+> **Status: Complete (2026-10-16)** · Phase 1 · Effort L (2–3 weeks) · Risk low · Depends on nothing (stores matches on F1 when available) · Priority #3
 
 ## 1. Summary & user value
 
@@ -314,34 +314,34 @@ table, and is purged by the existing history retention.
 
 ## 5. Implementation milestones
 
-1. **Domain**: `custom_formats.py`, the extended `ParsedQuality` detection (HDR format, audio,
+1. [x] **Domain**: `custom_formats.py`, the extended `ParsedQuality` detection (HDR format, audio,
    channels, streaming service), and tests against a corpus of ~200 real release names checked in
    under `tests/fixtures/release_names.txt`.
-2. **Persistence + CRUD + tester + validation.**
-3. **Decision engine**: `sort_key`, min score rejection, breakdown, format-aware `is_upgrade`.
-   Existing decision tests must pass unchanged when no formats exist.
-4. **Search/grab/import wiring**: `current_format_score`, history data, stored matches.
-5. **Import/export (TRaSH).**
-6. **UI**: formats editor, profile scores, search badges and "why" panel.
-7. **Cutoff-unmet** integration and the `{CustomFormats}` naming token.
+2. [x] **Persistence + CRUD + tester + validation.** (`0011_custom_formats` migration, `custom_formats` table, `quality_profiles` & `media_files` columns)
+3. [x] **Decision engine**: `sort_key`, min score rejection, breakdown, format-aware `is_upgrade`.
+   Existing decision tests pass unchanged when no formats exist.
+4. [x] **Search/grab/import wiring**: `current_format_score`, history data, stored matches.
+5. [x] **Import/export (TRaSH).** (`backend/services/custom_format_io.py`)
+6. [x] **UI**: formats editor, profile scores, search badges and "why" panel.
+7. [x] **Cutoff-unmet** integration and the `{CustomFormats}` naming token.
 
 ## 6. Testing
 
-- **Unit:**
-  - spec semantics (required, negate, per-kind OR);
-  - all spec kinds;
-  - TRaSH JSON round-trip for a sample set (x265 HD, DV HDR10, TrueHD Atmos, LQ groups,
+- **Unit** (`tests/unit/test_custom_formats.py`):
+  - [x] spec semantics (required, negate, per-kind OR);
+  - [x] all spec kinds;
+  - [x] TRaSH JSON round-trip for a sample set (x265 HD, DV HDR10, TrueHD Atmos, LQ groups,
     AMZN/NF);
-  - `is_upgrade` matrix (quality better / same with higher format score / same with score at
+  - [x] `is_upgrade` matrix (quality better / same with higher format score / same with score at
     upgrade-until / cutoff met with format upgrade / unknown current score);
-  - `sort_key` ordering (quality beats format score; format score beats seeders);
-  - `validate_regex` rejects `(a+)+$`;
-  - benchmark.
-- **Integration:**
-  - A profile scoring `LQ` groups at −10000 and min 0 → an interactive search via the demo
+  - [x] `sort_key` ordering (quality beats format score; format score beats seeders);
+  - [x] `validate_regex` rejects `(a+)+$`;
+  - [x] benchmark (<200 ms for 1,000 titles × 100 formats).
+- **Integration** (`tests/integration/test_custom_formats_flow.py`):
+  - [x] A profile scoring `LQ` groups at −10000 and min 0 → an interactive search via the demo
     indexer shows the LQ release rejected with the reason.
-  - Automatic search grabs the highest format score within the same quality.
-  - With an existing file matching "x264" (score 0) and a new release "x265" (score 100), the
+  - [x] Automatic search grabs the highest format score within the same quality.
+  - [x] With an existing file matching "x264" (score 0) and a new release "x265" (score 100), the
     grab happens as a format upgrade. When the file is at upgrade-until, it doesn't.
 - **E2E:** create a format via the UI, score it in a profile, and see the badge in interactive
   search.
@@ -359,10 +359,11 @@ table, and is purged by the existing history retention.
 
 ## 8. Acceptance criteria
 
-- Users can create formats, import TRaSH JSON, and assign per-profile scores.
-- Interactive search shows matched formats and a per-release ranking explanation.
-- Automatic search picks the highest-quality release first, then the highest format score. It
+- [x] Users can create formats, import TRaSH JSON, and assign per-profile scores.
+- [x] Interactive search shows matched formats and a per-release ranking explanation.
+- [x] Automatic search picks the highest-quality release first, then the highest format score. It
   rejects releases below the minimum score.
-- Existing files are upgraded to a higher format score within the same quality until
+- [x] Existing files are upgraded to a higher format score within the same quality until
   upgrade-until is reached, and never loop.
-- With no custom formats defined, behaviour is identical to today (regression suite green).
+- [x] With no custom formats defined, behaviour is identical to today (regression suite green).
+
