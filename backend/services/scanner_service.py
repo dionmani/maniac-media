@@ -16,8 +16,8 @@ import hashlib
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from sqlalchemy import delete, select
 
@@ -36,8 +36,8 @@ from backend.services.quality_service import spec_for, to_spec
 
 log = logging.getLogger("maniac.scanner")
 Progress = Callable[[float, str], None]
-SEASON_DIR = re.compile(r"^(?:season|series|s)[\s._-]*(\d{1,3})$|^(specials?)$", re.I)
-MULTIPART = re.compile(r"(cd|disc|disk|part|pt)[\s._-]*\d", re.I)
+SEASON_DIR = re.compile(r"^(?:season|series|s)[\s._-]*(\d{1,3})$|^(specials?)$", re.IGNORECASE)
+MULTIPART = re.compile(r"(cd|disc|disk|part|pt)[\s._-]*\d", re.IGNORECASE)
 BATCH = 200
 
 
@@ -145,12 +145,33 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None, medi
                 recorder.report(IssueType.MISSING_FILE, "movie", m.id, m.file_path or "", "File referenced by the library no longer exists")
                 stats["missing"] += 1
             elif m.quality_profile_id is not None:
+                from backend.services.quality_service import get_matcher
+                from backend.services.search_service import compute_file_format_score
+
                 profile = profiles.get(m.quality_profile_id) or next(iter(profiles.values()), None)
-                if profile and m.monitored and profile.upgrade_allowed and not profile.cutoff_met(parse_quality(m.quality or m.file_path).quality):
-                    recorder.report(IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path,
-                                    f"{m.quality or 'Unknown'} is below the profile cutoff {profile.cutoff}",
-                                    data={"current": m.quality, "cutoff": profile.cutoff})
-                    stats["upgrades"] += 1
+                if profile and m.monitored and profile.upgrade_allowed:
+                    q_below = not profile.cutoff_met(parse_quality(m.quality or m.file_path).quality)
+                    if q_below:
+                        recorder.report(IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path,
+                                        f"{m.quality or 'Unknown'} is below the profile cutoff {profile.cutoff}",
+                                        data={"current": m.quality, "cutoff": profile.cutoff})
+                        stats["upgrades"] += 1
+                    elif profile.format_scores:
+                        current_fs, _ = compute_file_format_score(
+                            db, "movie", m.id, m.file_path, profile, get_matcher(db)
+                        )
+                        if current_fs is not None and current_fs < profile.upgrade_until_format_score:
+                            recorder.report(
+                                IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path,
+                                f"Format score {current_fs} is below the profile cutoff {profile.upgrade_until_format_score}",
+                                data={
+                                    "current": m.quality,
+                                    "cutoff": profile.cutoff,
+                                    "current_format_score": current_fs,
+                                    "upgrade_until_format_score": profile.upgrade_until_format_score,
+                                },
+                            )
+                            stats["upgrades"] += 1
         recorder.finish()
     if progress:
         progress(100, "Movie scan complete")
@@ -284,12 +305,34 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
                 continue
             monitored, profile_id = series_monitored.get(ep.series_id, (False, 1))
             if monitored and ep.monitored:
+                from backend.services.quality_service import get_matcher
+                from backend.services.search_service import compute_file_format_score
+
                 profile = profiles.get(profile_id) or profiles.setdefault(profile_id, spec_for(db, profile_id))
-                if profile.upgrade_allowed and ep.quality and ep.quality != "Detected (File)" and not profile.cutoff_met(parse_quality(ep.quality).quality):
-                    recorder.report(IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path,
-                                    f"{code}: {ep.quality} is below the profile cutoff {profile.cutoff}",
-                                    data={"current": ep.quality, "cutoff": profile.cutoff}, episode_id=ep.id, discriminator=code)
-                    stats["upgrades"] += 1
+                if profile.upgrade_allowed and ep.quality and ep.quality != "Detected (File)":
+                    q_below = not profile.cutoff_met(parse_quality(ep.quality).quality)
+                    if q_below:
+                        recorder.report(IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path,
+                                        f"{code}: {ep.quality} is below the profile cutoff {profile.cutoff}",
+                                        data={"current": ep.quality, "cutoff": profile.cutoff}, episode_id=ep.id, discriminator=code)
+                        stats["upgrades"] += 1
+                    elif profile.format_scores:
+                        current_fs, _ = compute_file_format_score(
+                            db, "tv", ep.series_id, ep.file_path, profile, get_matcher(db), episode_id=ep.id
+                        )
+                        if current_fs is not None and current_fs < profile.upgrade_until_format_score:
+                            recorder.report(
+                                IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path,
+                                f"{code}: format score {current_fs} is below the profile cutoff {profile.upgrade_until_format_score}",
+                                data={
+                                    "current": ep.quality,
+                                    "cutoff": profile.cutoff,
+                                    "current_format_score": current_fs,
+                                    "upgrade_until_format_score": profile.upgrade_until_format_score,
+                                },
+                                episode_id=ep.id, discriminator=code,
+                            )
+                            stats["upgrades"] += 1
         recorder.finish()
     if progress:
         progress(100, "TV scan complete")

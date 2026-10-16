@@ -37,6 +37,7 @@ class EventType:
     QUEUE_CHANGED = "queue.changed"
     DATABASE_MIGRATION = "database.migration"
     MEDIA_INSPECTED = "media.inspected"
+    SETTINGS_CHANGED = "settings.changed"
 
 
 @dataclass

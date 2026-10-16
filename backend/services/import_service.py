@@ -151,14 +151,44 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
     return candidate
 
 
+def _candidate_formats(
+    db: Session,
+    title: str,
+    size_bytes: int,
+    episode_count: int,
+    quality: ParsedQuality,
+    profile,
+) -> tuple[list, int, str]:
+    from backend.domain.custom_formats import ReleaseFacts
+    from backend.domain.custom_formats import score as score_formats
+    from backend.services import quality_service
+
+    matcher = quality_service.get_matcher(db)
+    facts = ReleaseFacts.from_title(
+        title,
+        size_bytes=size_bytes,
+        episode_count=max(episode_count, 1),
+        quality=quality,
+    )
+    matches = matcher.match(facts)
+    total_score, _ = score_formats(matches, profile.format_scores)
+    matched_ids = {m.format_id for m in matches}
+    rename_str = " ".join(cf.name for cf in matcher.formats if cf.include_in_rename and cf.id in matched_ids)
+    return matches, total_score, rename_str
+
+
 def _annotate_library_state(db: Session, candidate: Candidate) -> None:
     """Set library_state/existing_quality/existing_size once a media match is known.
 
     Read-only mirror of the duplicate/upgrade comparison `_check_existing` performs at import
     time, run eagerly during scan so the UI can show it before the user clicks Import.
     """
+    from backend.services.quality_service import get_matcher
+    from backend.services.search_service import compute_file_format_score
+
     if candidate.state != "ok" or not candidate.media_id:
         return
+    matcher = get_matcher(db)
     if candidate.media_type == "movie":
         movie = db.get(models.Movie, candidate.media_id)
         if movie is None or not movie.has_file:
@@ -166,7 +196,13 @@ def _annotate_library_state(db: Session, candidate: Candidate) -> None:
             return
         profile = spec_for(db, movie.quality_profile_id)
         current_q = parse_quality(movie.quality or movie.file_path or "")
-        candidate.library_state = "upgrade" if profile.is_upgrade(current_q, candidate.quality) else "duplicate"
+        current_fs, _ = compute_file_format_score(db, "movie", movie.id, movie.file_path, profile, matcher)
+        _, candidate_fs, _ = _candidate_formats(db, candidate.path.name, candidate.size, 1, candidate.quality, profile)
+        candidate.library_state = (
+            "upgrade"
+            if profile.is_upgrade(current_q, candidate.quality, current_fs=current_fs, candidate_fs=candidate_fs)
+            else "duplicate"
+        )
         candidate.existing_quality = movie.quality
         candidate.existing_size = movie.file_size_bytes
         return
@@ -181,13 +217,25 @@ def _annotate_library_state(db: Session, candidate: Candidate) -> None:
         profile = spec_for(db, series.quality_profile_id if series else None)
         worst = min(episodes, key=lambda e: parse_quality(e.quality or e.file_path or "").quality.weight)
         current_q = parse_quality(worst.quality or worst.file_path or "")
-        candidate.library_state = "upgrade" if profile.is_upgrade(current_q, candidate.quality) else "duplicate"
+        current_fs, _ = compute_file_format_score(
+            db, "tv", candidate.media_id, worst.file_path, profile, matcher, episode_id=worst.id
+        )
+        _, candidate_fs, _ = _candidate_formats(
+            db, candidate.path.name, candidate.size, len(candidate.episodes), candidate.quality, profile
+        )
+        candidate.library_state = (
+            "upgrade"
+            if profile.is_upgrade(current_q, candidate.quality, current_fs=current_fs, candidate_fs=candidate_fs)
+            else "duplicate"
+        )
         candidate.existing_quality = worst.quality
         candidate.existing_size = worst.file_size_bytes
 
 
 # --------------------------------------------------------------------------- destination
-def movie_destination(movie: models.Movie, src: Path, quality: ParsedQuality, original: str) -> Path:
+def movie_destination(
+    movie: models.Movie, src: Path, quality: ParsedQuality, original: str, custom_formats_token: str = ""
+) -> Path:
     settings = get_settings()
     root = Path(movie.root_folder or settings.media_root_movies)
     folder = Path(movie.path) if movie.path else root / render(settings.movie_folder_format, {"title": movie.title, "year": movie.year}, MOVIE_TOKENS)
@@ -197,11 +245,15 @@ def movie_destination(movie: models.Movie, src: Path, quality: ParsedQuality, or
         "title": movie.title, "year": movie.year, "quality": quality.quality.name, "resolution": quality.quality.resolution.value,
         "source": quality.quality.source.value, "codec": quality.codec.value if quality.codec.value != "unknown" else "",
         "imdbid": movie.imdb_id, "tmdbid": movie.tmdb_id, "releasegroup": parse_movie(original).release_group, "originalname": Path(original).stem,
+        "customformats": custom_formats_token,
     }
     return folder / (render(settings.movie_format, values, MOVIE_TOKENS) + src.suffix.lower())
 
 
-def episode_destination(series: models.Series, episodes: list[models.Episode], src: Path, quality: ParsedQuality, original: str) -> Path:
+def episode_destination(
+    series: models.Series, episodes: list[models.Episode], src: Path, quality: ParsedQuality, original: str,
+    custom_formats_token: str = "",
+) -> Path:
     settings = get_settings()
     root = Path(series.root_folder or settings.media_root_tv)
     folder = Path(series.path) if series.path else root / render(settings.series_folder_format, {"title": series.title, "year": series.year}, EPISODE_TOKENS)
@@ -214,7 +266,7 @@ def episode_destination(series: models.Series, episodes: list[models.Episode], s
         "episodetitle": title, "airdate": first.air_date, "quality": quality.quality.name, "resolution": quality.quality.resolution.value,
         "source": quality.quality.source.value, "codec": quality.codec.value if quality.codec.value != "unknown" else "",
         "tvdbid": series.tvdb_id, "imdbid": series.imdb_id, "releasegroup": (parse_episode(original) or parse_movie(original)).release_group,
-        "originalname": Path(original).stem,
+        "originalname": Path(original).stem, "customformats": custom_formats_token,
     }
     rel = render(settings.tv_format, values, EPISODE_TOKENS)
     if len(episodes) > 1:
@@ -248,8 +300,13 @@ def _import_one(
     season: int | None, episode_numbers: list[int], mode: str, original_name: str, queue_id: int | None,
     force: bool = False,
 ) -> str:
+    from backend.services.quality_service import get_matcher
+    from backend.services.search_service import compute_file_format_score
+
     settings = get_settings()
     recycle_root = Path(settings.recycle_bin)
+    src_size = src.stat().st_size if src.exists() else 0
+    matcher = get_matcher(db)
 
     if media_type == "movie":
         movie = db.get(models.Movie, media_id)
@@ -258,9 +315,15 @@ def _import_one(
         profile = spec_for(db, movie.quality_profile_id)
         existing = Path(movie.file_path) if movie.has_file and movie.file_path else None
         current_q = parse_quality(movie.quality or movie.file_path or "") if existing else None
-        upgrade = _check_existing(existing, src, current_q, quality, profile, force)
+        current_fs, _ = (
+            compute_file_format_score(db, "movie", movie.id, movie.file_path, profile, matcher)
+            if existing
+            else (None, None)
+        )
+        scored_cf, candidate_fs, rename_cf = _candidate_formats(db, original_name or src.name, src_size, 1, quality, profile)
+        upgrade = _check_existing(existing, src, current_q, quality, profile, force, current_fs=current_fs, candidate_fs=candidate_fs)
         existing_mf = MediaFileRepository(db).by_path(existing) if existing else None
-        dest = movie_destination(movie, src, quality, original_name)
+        dest = movie_destination(movie, src, quality, original_name, custom_formats_token=rename_cf)
         _clear_destination(tx, dest, existing, recycle_root)
         if upgrade and existing_mf:
             media_file_service.detach_file(db, existing_mf, reason="upgraded")
@@ -275,7 +338,13 @@ def _import_one(
         event = "upgraded" if upgrade else "imported"
         history(db, "movie", movie.id, movie.title, event, quality=quality.quality.name, download_id=queue_id,
                 details=f"{used} → {dest}",
-                data={"source": str(src), "previous_quality": current_q.quality.name if current_q else None, **({"forced": True} if force else {})})
+                data={
+                    "source": str(src),
+                    "previous_quality": current_q.quality.name if current_q else None,
+                    "formats": [m.name for m in scored_cf],
+                    "format_score": candidate_fs,
+                    **({"forced": True} if force else {}),
+                })
         audit(db, "import", f"movie.{event}", entity_type="movie", entity_id=movie.id, details={"file": str(dest), "mode": used})
         return f"{movie.title} ({movie.year})"
 
@@ -306,10 +375,22 @@ def _import_one(
     existing_paths = {Path(e.file_path) for e in episodes if e.has_file and e.file_path}
     existing = next(iter(existing_paths)) if len(existing_paths) == 1 else None
     current_q = None
+    current_fs = None
     if all(e.has_file for e in episodes):
-        current_q = min((parse_quality(e.quality or e.file_path or "") for e in episodes), key=lambda q: q.quality.weight)
-    upgrade = _check_existing(existing, src, current_q, quality, profile, force) if (current_q or force) else False
-    dest = episode_destination(series, episodes, src, quality, original_name)
+        worst_ep = min(episodes, key=lambda e: parse_quality(e.quality or e.file_path or "").quality.weight)
+        current_q = parse_quality(worst_ep.quality or worst_ep.file_path or "")
+        current_fs, _ = compute_file_format_score(
+            db, "tv", series.id, worst_ep.file_path, profile, matcher, episode_id=worst_ep.id
+        )
+    scored_cf, candidate_fs, rename_cf = _candidate_formats(
+        db, original_name or src.name, src_size, len(episode_numbers), quality, profile
+    )
+    upgrade = (
+        _check_existing(existing, src, current_q, quality, profile, force, current_fs=current_fs, candidate_fs=candidate_fs)
+        if (current_q or force)
+        else False
+    )
+    dest = episode_destination(series, episodes, src, quality, original_name, custom_formats_token=rename_cf)
     for old in existing_paths:
         if old != dest and old.exists():
             tx.recycle(old, recycle_root)
@@ -328,12 +409,20 @@ def _import_one(
     label = f"{series.title} S{season:02d}E{episode_numbers[0]:02d}" + (f"-E{episode_numbers[-1]:02d}" if len(episode_numbers) > 1 else "")
     event = "upgraded" if upgrade else "imported"
     history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}",
-            data={"source": str(src), **({"forced": True} if force else {})})
+            data={
+                "source": str(src),
+                "formats": [m.name for m in scored_cf],
+                "format_score": candidate_fs,
+                **({"forced": True} if force else {}),
+            })
     audit(db, "import", f"episode.{event}", entity_type="series", entity_id=series.id, details={"file": str(dest), "episodes": episode_numbers})
     return label
 
 
-def _check_existing(existing: Path | None, src: Path, current_q, new_q, profile, force: bool = False) -> bool:
+def _check_existing(
+    existing: Path | None, src: Path, current_q, new_q, profile, force: bool = False,
+    *, current_fs: int | None = None, candidate_fs: int = 0,
+) -> bool:
     """Duplicate / upgrade / conflict resolution. Returns True if this is an upgrade.
 
     ``force`` (from the FORCE_IMPORT fix) skips the allowed/upgrade checks but never the
@@ -353,7 +442,7 @@ def _check_existing(existing: Path | None, src: Path, current_q, new_q, profile,
     if not force and existing.stat().st_size == src.stat().st_size and existing.name == src.name:
         raise ImportError_("Duplicate: identical file already in library", reason=ImportFailureReason.DUPLICATE,
                            evidence={"existing": str(existing), "size": existing.stat().st_size})
-    if not force and not profile.is_upgrade(current_q, new_q):
+    if not force and not profile.is_upgrade(current_q, new_q, current_fs=current_fs, candidate_fs=candidate_fs):
         raise ImportError_(f"Not an upgrade: existing {current_q.quality.name if current_q else 'file'} is equal or better",
                            reason=ImportFailureReason.NOT_AN_UPGRADE,
                            evidence={"existing_quality": current_q.quality.name if current_q else None, "new_quality": new_q.quality.name})
@@ -804,5 +893,14 @@ def failed_imports(db: Session) -> int:
     return db.scalar(select(func.count(models.DownloadQueueItem.id)).where(models.DownloadQueueItem.status == "import_failed")) or 0
 
 
-__all__ = ["import_queue_item", "manual_scan", "manual_import", "annotate_match", "delete_candidates", "scan_download_folder", "prune_download_folder",
-           "failed_imports", "SYSTEM"]
+__all__ = [
+    "SYSTEM",
+    "annotate_match",
+    "delete_candidates",
+    "failed_imports",
+    "import_queue_item",
+    "manual_import",
+    "manual_scan",
+    "prune_download_folder",
+    "scan_download_folder",
+]

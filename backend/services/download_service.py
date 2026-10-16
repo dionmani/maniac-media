@@ -89,6 +89,7 @@ def _set_client_health(client_id: int, ok: bool, message: str | None) -> None:
 async def grab(
     release: ReleaseInfo, *, media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None,
     actor: Actor = SYSTEM, retry_count: int = 0, release_gate: str | None = None,
+    custom_formats: list[dict] | None = None, format_score: int | None = None,
 ) -> int:
     """``release_gate`` is the reference date that cleared the release (domain/availability.py), kept in history."""
     clients = await asyncio.to_thread(_clients, release.protocol)
@@ -115,8 +116,29 @@ async def grab(
             episodes = parsed.episodes
 
     def persist() -> int:
+        from backend.domain.custom_formats import ReleaseFacts
+        from backend.domain.custom_formats import score as score_formats
+        from backend.services import quality_service
+
         with session_scope() as db:
+            obj = db.get(models.Movie if media_type == "movie" else models.Series, media_id)
             title = _media_title(db, media_type, media_id)
+            cf_list = custom_formats
+            fs_val = format_score
+            if cf_list is None or fs_val is None:
+                matcher = quality_service.get_matcher(db)
+                prof = quality_service.spec_for(db, obj.quality_profile_id if obj else None)
+                ep_count = len(episodes) if episodes else 1
+                facts = ReleaseFacts.from_title(
+                    release.title, size_bytes=release.size_bytes, episode_count=ep_count, quality=quality
+                )
+                matches = matcher.match(facts)
+                fs_val, _ = score_formats(matches, prof.format_scores)
+                cf_list = [
+                    {"id": m.format_id, "name": m.name, "score": int(prof.format_scores.get(m.format_id, 0))}
+                    for m in matches
+                ]
+            format_names = [f["name"] if isinstance(f, dict) else str(f) for f in (cf_list or [])]
             item = models.DownloadQueueItem(
                 title=title,
                 media_type=media_type,
@@ -151,7 +173,14 @@ async def grab(
                         ep.status = "downloading"
             history(db, media_type, media_id, release.title, "grabbed", quality=quality.quality.name,
                     details=f"Sent to {client.name} from {release.indexer} ({release.protocol})", download_id=item.id,
-                    data={"indexer": release.indexer, "size": release.size_bytes, "client": client.name, "release_gate": release_gate})
+                    data={
+                        "indexer": release.indexer,
+                        "size": release.size_bytes,
+                        "client": client.name,
+                        "release_gate": release_gate,
+                        "formats": format_names,
+                        "format_score": fs_val,
+                    })
             audit(db, "media", "release.grab", actor=actor, entity_type=media_type, entity_id=media_id,
                   details={"release": release.title, "indexer": release.indexer, "client": client.name, "release_gate": release_gate})
             return item.id

@@ -356,6 +356,21 @@ function HistoryTab() {
                 <TableCell><QualityChip quality={h.quality} /></TableCell>
                 <TableCell sx={{ color: 'text.secondary', fontSize: '0.8rem', wordBreak: 'break-all' }}>
                   {h.data?.analysis?.summary ?? h.details}
+                  {((Array.isArray(h.data?.formats) && h.data.formats.length > 0) || typeof h.data?.format_score === 'number') && (
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                      {typeof h.data?.format_score === 'number' && h.data.format_score !== 0 && (
+                        <Chip
+                          size="small"
+                          label={`CF Score: ${h.data.format_score > 0 ? `+${h.data.format_score}` : h.data.format_score}`}
+                          color={h.data.format_score > 0 ? 'success' : 'error'}
+                          variant="outlined"
+                        />
+                      )}
+                      {Array.isArray(h.data?.formats) && h.data.formats.map((f) => (
+                        <Chip key={String(f)} size="small" label={String(f)} variant="outlined" />
+                      ))}
+                    </Stack>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from sqlalchemy import select
 
 from backend.api import schemas
@@ -74,22 +74,25 @@ def list_profiles(db: DB, _: Requires(Permission.MEDIA_READ)):
     return list(db.scalars(select(models.QualityProfile).order_by(models.QualityProfile.id)))
 
 
-def _apply_profile(profile: models.QualityProfile, req: schemas.QualityProfileIn) -> None:
-    errors = quality_service.validate_profile(req.items, req.cutoff)
+def _apply_profile(db: DB, profile: models.QualityProfile, req: schemas.QualityProfileIn) -> None:
+    errors = quality_service.validate_profile(req.items, req.cutoff, db=db, format_scores=req.format_scores)
     if errors:
         raise HTTPException(422, "; ".join(errors))
-    for key, value in req.model_dump().items():
+    data = req.model_dump()
+    data["format_scores"] = {str(k): int(v) for k, v in (req.format_scores or {}).items()}
+    for key, value in data.items():
         setattr(profile, key, value)
 
 
 @router.post("/quality-profiles", response_model=schemas.QualityProfileOut, status_code=201)
 def create_profile(req: schemas.QualityProfileIn, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
     profile = models.QualityProfile()
-    _apply_profile(profile, req)
+    _apply_profile(db, profile, req)
     db.add(profile)
     db.flush()
     audit(db, "settings", "quality_profile.create", actor=user.actor, entity_type="quality_profile", entity_id=profile.id, details={"name": req.name})
     db.commit()
+    quality_service.bump_formats_version()
     return profile
 
 
@@ -98,9 +101,10 @@ def update_profile(profile_id: int, req: schemas.QualityProfileIn, db: DB, user:
     profile = db.get(models.QualityProfile, profile_id)
     if profile is None:
         raise HTTPException(404, "Profile not found")
-    _apply_profile(profile, req)
+    _apply_profile(db, profile, req)
     audit(db, "settings", "quality_profile.update", actor=user.actor, entity_type="quality_profile", entity_id=profile.id, details=req.model_dump())
     db.commit()
+    quality_service.bump_formats_version()
     return profile
 
 
@@ -116,7 +120,115 @@ def delete_profile(profile_id: int, db: DB, user: Requires(Permission.SETTINGS_W
     audit(db, "settings", "quality_profile.delete", actor=user.actor, entity_type="quality_profile", entity_id=profile_id, severity="warning")
     db.delete(profile)
     db.commit()
+    quality_service.bump_formats_version()
     return schemas.Message(message="Profile deleted")
+
+
+# ------------------------------------------------------------------ custom formats
+@router.get("/custom-formats", response_model=list[schemas.CustomFormatOut])
+def list_custom_formats(db: DB, _: Requires(Permission.SETTINGS_READ)):
+    return list(db.scalars(select(models.CustomFormat).order_by(models.CustomFormat.id)))
+
+
+def _apply_custom_format(db: DB, row: models.CustomFormat, req: schemas.CustomFormatIn, exclude_id: int | None = None) -> None:
+    errors = quality_service.validate_custom_format(req.name, req.specifications, db=db, exclude_id=exclude_id)
+    if errors:
+        raise HTTPException(422, "; ".join(errors))
+    row.name = req.name.strip()
+    row.include_in_rename = bool(req.include_in_rename)
+    row.specifications = req.specifications
+    row.source = f"trash:{req.trash_id}" if req.trash_id else (req.source or row.source or "user")
+
+
+@router.post("/custom-formats", response_model=schemas.CustomFormatOut, status_code=201)
+def create_custom_format(req: schemas.CustomFormatIn, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
+    row = models.CustomFormat(name="")
+    _apply_custom_format(db, row, req)
+    db.add(row)
+    db.flush()
+    audit(db, "settings", "custom_format.create", actor=user.actor, entity_type="custom_format", entity_id=row.id, details={"name": row.name})
+    db.commit()
+    quality_service.bump_formats_version()
+    return row
+
+
+@router.post("/custom-formats/test")
+def test_custom_format(req: schemas.CustomFormatTestRequest, db: DB, _: Requires(Permission.SETTINGS_READ)):
+    return quality_service.test_release(
+        db,
+        req.title,
+        size_bytes=req.size_bytes,
+        specifications=req.specifications,
+        profile_id=req.profile_id,
+    )
+
+
+@router.post("/custom-formats/import")
+async def import_custom_formats(user: Requires(Permission.SETTINGS_WRITE), payload: dict | list = Body(...)):
+    from backend.services import custom_format_io
+
+    try:
+        if isinstance(payload, dict) and isinstance(payload.get("url"), str) and payload["url"].strip():
+            raw = await custom_format_io.fetch_and_parse_url(payload["url"].strip())
+        elif isinstance(payload, dict) and "json" in payload:
+            raw = json.loads(payload["json"]) if isinstance(payload["json"], str) else payload["json"]
+        elif isinstance(payload, dict) and "formats" in payload and isinstance(payload["formats"], list):
+            raw = payload["formats"]
+        else:
+            raw = payload
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+    def _do_import() -> dict:
+        from backend.db.session import session_scope
+
+        with session_scope() as s:
+            try:
+                res = custom_format_io.import_formats_data(s, raw)
+            except custom_format_io.CustomFormatImportError as exc:
+                raise HTTPException(422, str(exc))
+            audit(s, "settings", "custom_format.import", actor=user.actor, details=res)
+            s.flush()
+            return res
+
+    return await asyncio.to_thread(_do_import)
+
+
+@router.get("/custom-formats/export")
+def export_custom_formats(db: DB, _: Requires(Permission.SETTINGS_READ), ids: str | None = None):
+    from backend.services import custom_format_io
+
+    id_list: list[int] | None = None
+    if ids:
+        try:
+            id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(422, "Invalid format IDs")
+    return custom_format_io.export_formats(db, id_list)
+
+
+@router.put("/custom-formats/{format_id}", response_model=schemas.CustomFormatOut)
+def update_custom_format(format_id: int, req: schemas.CustomFormatIn, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
+    row = db.get(models.CustomFormat, format_id)
+    if row is None:
+        raise HTTPException(404, "Custom format not found")
+    _apply_custom_format(db, row, req, exclude_id=format_id)
+    audit(db, "settings", "custom_format.update", actor=user.actor, entity_type="custom_format", entity_id=row.id, details={"name": row.name})
+    db.commit()
+    quality_service.bump_formats_version()
+    return row
+
+
+@router.delete("/custom-formats/{format_id}", response_model=schemas.Message)
+def delete_custom_format(format_id: int, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
+    row = db.get(models.CustomFormat, format_id)
+    if row is None:
+        raise HTTPException(404, "Custom format not found")
+    name = row.name
+    quality_service.delete_custom_format(db, row)
+    audit(db, "settings", "custom_format.delete", actor=user.actor, entity_type="custom_format", entity_id=format_id, details={"name": name}, severity="warning")
+    db.commit()
+    return schemas.Message(message="Custom format deleted")
 
 
 # ------------------------------------------------------------------ plugins catalogue

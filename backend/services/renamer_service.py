@@ -28,15 +28,37 @@ log = logging.getLogger("maniac.renamer")
 
 
 def _quality_of(stored: str | None, path: Path):
+    from dataclasses import replace
+
     parsed = parse_quality(path.name)
     if stored and stored != "Detected (File)":
         q = get_quality(stored)
         if q.weight:
-            return parsed.__class__(q, parsed.codec, parsed.proper, parsed.repack, parsed.hdr)
+            return replace(parsed, quality=q)
     return parsed
 
 
-def _preview_movie(m: models.Movie, include_folders: bool) -> dict | None:
+def _rename_custom_formats(db, current: Path, q, ep_count: int = 1) -> str:
+    if db is None:
+        return ""
+    from backend.domain.custom_formats import ReleaseFacts
+    from backend.services import quality_service
+
+    matcher = quality_service.get_matcher(db)
+    if not matcher.formats:
+        return ""
+    mf = MediaFileRepository(db).by_path(current)
+    if mf and mf.custom_formats is not None:
+        matched_ids = set(mf.custom_formats)
+    else:
+        scene = (mf.scene_name if mf and mf.scene_name else None) or current.name
+        size_bytes = current.stat().st_size if current.exists() else 0
+        facts = ReleaseFacts.from_title(scene, size_bytes=size_bytes, episode_count=max(ep_count, 1), quality=q)
+        matched_ids = {m.format_id for m in matcher.match_all(facts)}
+    return " ".join(cf.name for cf in matcher.formats if cf.include_in_rename and cf.id in matched_ids)
+
+
+def _preview_movie(m: models.Movie, include_folders: bool, db=None) -> dict | None:
     settings = get_settings()
     current = Path(m.file_path)
     if not current.exists():
@@ -47,6 +69,7 @@ def _preview_movie(m: models.Movie, include_folders: bool) -> dict | None:
         "resolution": q.quality.resolution.value if q.quality.weight else "", "source": q.quality.source.value if q.quality.weight else "",
         "codec": q.codec.value if q.codec.value != "unknown" else "", "imdbid": m.imdb_id, "tmdbid": m.tmdb_id,
         "releasegroup": parse_movie(current.name).release_group, "originalname": current.stem,
+        "customformats": _rename_custom_formats(db, current, q, 1),
     }
     folder = current.parent
     if include_folders:
@@ -62,7 +85,7 @@ def _preview_movie(m: models.Movie, include_folders: bool) -> dict | None:
     }
 
 
-def _preview_episode(ep: models.Episode, series: models.Series, include_folders: bool, siblings: dict[str, list[models.Episode]]) -> dict | None:
+def _preview_episode(ep: models.Episode, series: models.Series, include_folders: bool, siblings: dict[str, list[models.Episode]], db=None) -> dict | None:
     settings = get_settings()
     current = Path(ep.file_path)
     group = sorted(siblings.get(ep.file_path, [ep]), key=lambda e: e.episode_number)
@@ -79,7 +102,7 @@ def _preview_episode(ep: models.Episode, series: models.Series, include_folders:
         "airdate": ep.air_date, "quality": q.quality.name if q.quality.weight else "", "resolution": q.quality.resolution.value if q.quality.weight else "",
         "source": q.quality.source.value if q.quality.weight else "", "codec": q.codec.value if q.codec.value != "unknown" else "",
         "tvdbid": series.tvdb_id, "imdbid": series.imdb_id, "releasegroup": (parse_episode(current.name) or parse_movie(current.name)).release_group,
-        "originalname": current.stem,
+        "originalname": current.stem, "customformats": _rename_custom_formats(db, current, q, len(group)),
     }
     rel = render(settings.tv_format, values, EPISODE_TOKENS)
     if len(group) > 1:
@@ -104,7 +127,7 @@ def preview(media_type: str = "all", *, include_folders: bool = False, media_id:
                 stmt = stmt.where(models.Movie.id == media_id)
             for m in db.scalars(stmt):
                 try:
-                    p = _preview_movie(m, include_folders)
+                    p = _preview_movie(m, include_folders, db=db)
                     if p:
                         items.append(p)
                 except TemplateError as exc:
@@ -123,7 +146,7 @@ def preview(media_type: str = "all", *, include_folders: bool = False, media_id:
                     siblings.setdefault(e.file_path, []).append(e)
                 for e in eps:
                     try:
-                        p = _preview_episode(e, series, include_folders, siblings)
+                        p = _preview_episode(e, series, include_folders, siblings, db=db)
                         if p:
                             items.append(p)
                     except TemplateError as exc:
@@ -142,7 +165,7 @@ def execute(items: list[dict], *, dry_run: bool, include_folders: bool, actor: A
             with session_scope() as db:
                 if item["media_type"] == "movie":
                     m = db.get(models.Movie, int(item["media_id"]))
-                    proposal = _preview_movie(m, include_folders) if m and m.file_path else None
+                    proposal = _preview_movie(m, include_folders, db=db) if m and m.file_path else None
                 else:
                     ep = db.get(models.Episode, int(item["media_id"]))
                     if not ep or not ep.file_path:
@@ -150,7 +173,7 @@ def execute(items: list[dict], *, dry_run: bool, include_folders: bool, actor: A
                     else:
                         series = db.get(models.Series, ep.series_id)
                         group = list(db.scalars(select(models.Episode).where(models.Episode.file_path == ep.file_path)))
-                        proposal = _preview_episode(ep, series, include_folders, {ep.file_path: group})
+                        proposal = _preview_episode(ep, series, include_folders, {ep.file_path: group}, db=db)
                 if proposal is None:
                     skipped += 1
                     continue

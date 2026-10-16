@@ -223,8 +223,87 @@ def wanted_missing(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, m
     return page_response(page, [schemas.EpisodeOut.model_validate(e).model_dump() | {"series_title": titles.get(e.series_id)} for e in page.items])
 
 
+def _reconcile_cutoff_issues(db: DB) -> None:
+    from backend.domain.issues import IssueType
+    from backend.domain.quality import parse_quality
+    from backend.services.issue_service import IssueRecorder
+    from backend.services.quality_service import get_matcher, spec_for, to_spec
+    from backend.services.search_service import compute_file_format_score
+
+    profiles = {p.id: to_spec(p) for p in db.scalars(select(models.QualityProfile))}
+    matcher = get_matcher(db)
+    movie_rec = IssueRecorder(db, "movie")
+    for m in db.scalars(select(models.Movie).where(models.Movie.has_file.is_(True))):
+        movie_rec.touch(m.id, IssueType.UPGRADE_AVAILABLE)
+        if not m.monitored or m.quality_profile_id is None:
+            continue
+        profile = profiles.get(m.quality_profile_id) or spec_for(db, m.quality_profile_id)
+        if not profile or not profile.upgrade_allowed:
+            continue
+        q_below = not profile.cutoff_met(parse_quality(m.quality or m.file_path or "").quality)
+        if q_below:
+            movie_rec.report(
+                IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path or "",
+                f"{m.quality or 'Unknown'} is below the profile cutoff {profile.cutoff}",
+                data={"current": m.quality, "cutoff": profile.cutoff},
+            )
+        elif profile.format_scores:
+            current_fs, _ = compute_file_format_score(db, "movie", m.id, m.file_path, profile, matcher)
+            if current_fs is not None and current_fs < profile.upgrade_until_format_score:
+                movie_rec.report(
+                    IssueType.UPGRADE_AVAILABLE, "movie", m.id, m.file_path or "",
+                    f"Format score {current_fs} is below the profile cutoff {profile.upgrade_until_format_score}",
+                    data={
+                        "current": m.quality,
+                        "cutoff": profile.cutoff,
+                        "current_format_score": current_fs,
+                        "upgrade_until_format_score": profile.upgrade_until_format_score,
+                    },
+                )
+    movie_rec.finish()
+
+    tv_rec = IssueRecorder(db, "tv")
+    series_map = {s.id: (s.monitored, s.quality_profile_id) for s in db.scalars(select(models.Series))}
+    for ep in db.scalars(select(models.Episode).where(models.Episode.has_file.is_(True))):
+        tv_rec.touch(ep.series_id, IssueType.UPGRADE_AVAILABLE)
+        monitored, profile_id = series_map.get(ep.series_id, (False, 1))
+        if not (monitored and ep.monitored):
+            continue
+        profile = profiles.get(profile_id) or spec_for(db, profile_id)
+        if not profile or not profile.upgrade_allowed or not ep.quality or ep.quality == "Detected (File)":
+            continue
+        code = f"S{ep.season_number:02d}E{ep.episode_number:02d}"
+        q_below = not profile.cutoff_met(parse_quality(ep.quality).quality)
+        if q_below:
+            tv_rec.report(
+                IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path or "",
+                f"{code}: {ep.quality} is below the profile cutoff {profile.cutoff}",
+                data={"current": ep.quality, "cutoff": profile.cutoff},
+                episode_id=ep.id, discriminator=code,
+            )
+        elif profile.format_scores:
+            current_fs, _ = compute_file_format_score(
+                db, "tv", ep.series_id, ep.file_path, profile, matcher, episode_id=ep.id
+            )
+            if current_fs is not None and current_fs < profile.upgrade_until_format_score:
+                tv_rec.report(
+                    IssueType.UPGRADE_AVAILABLE, "tv", ep.series_id, ep.file_path or "",
+                    f"{code}: format score {current_fs} is below the profile cutoff {profile.upgrade_until_format_score}",
+                    data={
+                        "current": ep.quality,
+                        "cutoff": profile.cutoff,
+                        "current_format_score": current_fs,
+                        "upgrade_until_format_score": profile.upgrade_until_format_score,
+                    },
+                    episode_id=ep.id, discriminator=code,
+                )
+    tv_rec.finish()
+    db.commit()
+
+
 @router.get("/wanted/cutoff", tags=["wanted"])
 def wanted_cutoff(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging):
+    _reconcile_cutoff_issues(db)
     stmt = select(models.LibraryIssue).where(models.LibraryIssue.issue_type == "upgrade_available", models.LibraryIssue.status == "open")
 
     class _R(Repository[models.LibraryIssue]):

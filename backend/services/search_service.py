@@ -13,13 +13,15 @@ from backend.db.base import utcnow
 from backend.db.repositories import EpisodeRepository, MovieRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.availability import Availability, episode_availability, latest, movie_availability
-from backend.domain.parser import normalize_title, parse_episode, parse_movie
-from backend.domain.quality import get_quality, parse_quality
+from backend.domain.custom_formats import FormatMatcher, ReleaseFacts
+from backend.domain.custom_formats import score as score_formats
+from backend.domain.parser import normalize_title, parse_episode, parse_movie, release_group
+from backend.domain.quality import QualityProfileSpec, get_quality, parse_quality
 from backend.domain.types import ReleaseInfo, SearchCriteria
 from backend.services import download_service, indexer_service
 from backend.services.audit import SYSTEM, Actor
 from backend.services.decision_engine import Decision, Target, evaluate, rank, release_gate
-from backend.services.quality_service import spec_for
+from backend.services.quality_service import get_matcher, spec_for
 
 log = logging.getLogger("maniac.search")
 
@@ -66,24 +68,99 @@ def _air_map(episodes, now) -> dict[tuple[int, int], Availability]:
     return {(e.season_number, e.episode_number): episode_availability(air_date=e.air_date, air_date_utc=e.air_date_utc, now=now) for e in episodes}
 
 
+def compute_file_format_score(
+    db,
+    media_type: str,
+    media_id: int,
+    file_path: str | None,
+    profile: QualityProfileSpec,
+    matcher: FormatMatcher,
+    *,
+    episode_id: int | None = None,
+) -> tuple[int | None, str | None]:
+    """Compute (current_format_score, scene_name) for an existing file.
+    For scanned files (`source == 'scan'`), returns `current_fs=None` unless the name looks like
+    a scene name (contains a group), preventing infinite upgrade loops on renamed library files."""
+    from pathlib import Path
+
+    from backend.db.repositories import MediaFileRepository
+
+    mf = None
+    if file_path:
+        mf = MediaFileRepository(db).by_path(file_path)
+    if mf is None:
+        if media_type == "movie":
+            mfs = MediaFileRepository(db).for_movie(media_id)
+            mf = mfs[0] if mfs else None
+        elif episode_id is not None:
+            mfs = MediaFileRepository(db).for_episode(episode_id)
+            mf = mfs[0] if mfs else None
+
+    candidate_name: str | None = None
+    size_bytes = 0
+    ep_count = 1
+    is_scan = False
+    if mf is not None:
+        candidate_name = mf.scene_name or Path(mf.path).name
+        size_bytes = mf.size_bytes or 0
+        is_scan = mf.source == "scan"
+        if media_type == "tv":
+            ep_count = max(1, len(mf.episodes)) if mf.episodes else 1
+
+    if not candidate_name or (is_scan and not release_group(candidate_name)):
+        # Check last imported/upgraded history event for a source name fallback
+        hist = db.scalar(
+            select(models.History)
+            .where(
+                models.History.media_type == media_type,
+                models.History.media_id == media_id,
+                models.History.event_type.in_(("imported", "upgraded")),
+            )
+            .order_by(models.History.id.desc())
+            .limit(1)
+        )
+        if hist and isinstance(hist.data, dict) and hist.data.get("source"):
+            candidate_name = Path(str(hist.data["source"])).name
+            is_scan = False
+
+    if not candidate_name:
+        return None, None
+    if is_scan and not release_group(candidate_name):
+        return None, candidate_name
+
+    facts = ReleaseFacts.from_title(candidate_name, size_bytes=size_bytes, episode_count=ep_count)
+    matches = matcher.match(facts)
+    fs, _ = score_formats(matches, profile.format_scores)
+    return fs, candidate_name
+
+
 def build_target(media_type: str, media_id: int, season: int | None = None, episodes: list[int] | None = None) -> tuple[Target, SearchCriteria, set[str]]:
     with session_scope() as db:
+        matcher = get_matcher(db)
         if media_type == "movie":
             movie = db.get(models.Movie, media_id)
             if movie is None:
                 raise SearchError("Movie not found")
+            profile = spec_for(db, movie.quality_profile_id)
             current = parse_quality(movie.quality or movie.file_path or "") if movie.has_file else None
             if current and current.quality.name == "Unknown" and movie.quality:
                 current = parse_quality(get_quality(movie.quality).name)
-            target = Target("movie", movie.id, movie.title, movie.year, spec_for(db, movie.quality_profile_id),
-                            current_quality=current, has_file=movie.has_file, aliases=[movie.original_title or ""],
-                            minimum_seeders=_min_seeders(db), availability=movie_gate(movie))
+            current_fs, scene_name = (
+                compute_file_format_score(db, "movie", movie.id, movie.file_path, profile, matcher)
+                if movie.has_file
+                else (None, None)
+            )
+            target = Target("movie", movie.id, movie.title, movie.year, profile,
+                            current_quality=current, current_format_score=current_fs, current_scene_name=scene_name,
+                            has_file=movie.has_file, aliases=[movie.original_title or ""],
+                            minimum_seeders=_min_seeders(db), availability=movie_gate(movie), matcher=matcher)
             criteria = SearchCriteria("movie", movie.title, movie.year, imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id)
             return target, criteria, _blocklist(db, "movie", movie.id)
 
         series = db.get(models.Series, media_id)
         if series is None:
             raise SearchError("Series not found")
+        profile = spec_for(db, series.quality_profile_id)
         stmt = select(models.Episode).where(models.Episode.series_id == series.id)
         if season is not None:
             stmt = stmt.where(models.Episode.season_number == season)
@@ -93,9 +170,23 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
         with_files = [parse_quality(e.quality or e.file_path or "") for e in eps if e.has_file]
         all_have = bool(eps) and all(e.has_file for e in eps)
         worst = min(with_files, key=lambda q: q.quality.weight) if with_files and all_have else None
-        target = Target("tv", series.id, series.title, series.year, spec_for(db, series.quality_profile_id),
-                        season=season, episodes=list(episodes or []), current_quality=worst, has_file=all_have,
-                        aliases=[series.original_title or ""], minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()))
+        current_fs = None
+        scene_name = None
+        if all_have:
+            scores_and_names = [
+                compute_file_format_score(db, "tv", series.id, e.file_path, profile, matcher, episode_id=e.id)
+                for e in eps
+            ]
+            known_scores = [fs for fs, _ in scores_and_names if fs is not None]
+            if len(known_scores) == len(eps):
+                current_fs = min(known_scores)
+            if len(eps) == 1:
+                scene_name = scores_and_names[0][1]
+        target = Target("tv", series.id, series.title, series.year, profile,
+                        season=season, episodes=list(episodes or []), current_quality=worst,
+                        current_format_score=current_fs, current_scene_name=scene_name, has_file=all_have,
+                        aliases=[series.original_title or ""], minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()),
+                        matcher=matcher)
         criteria = SearchCriteria("tv", series.title, series.year, imdb_id=series.imdb_id, tvdb_id=series.tvdb_id,
                                   tvmaze_id=series.tvmaze_id, season=season, episode=episodes[0] if episodes and len(episodes) == 1 else None)
         return target, criteria, _blocklist(db, "tv", series.id)
@@ -179,7 +270,8 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
                 if best:
                     qid = await download_service.grab(best.release, media_type="tv", media_id=media_id, season=season,
                                                         episodes=best.episodes, actor=actor, retry_count=retry_count,
-                                                        release_gate=best.release_gate)
+                                                        release_gate=best.release_gate, custom_formats=best.custom_formats,
+                                                        format_score=best.format_score)
                     await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
                     return {"grabbed": best.release.title, "queue_id": qid}
             missing = await asyncio.to_thread(_missing_episode_numbers, media_id, season)
@@ -201,7 +293,8 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
             return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases)}
         qid = await download_service.grab(best.release, media_type=media_type, media_id=media_id, season=season if season is not None else best.season,
                                           episodes=episodes or best.episodes, actor=actor, retry_count=retry_count,
-                                          release_gate=best.release_gate)
+                                          release_gate=best.release_gate, custom_formats=best.custom_formats,
+                                          format_score=best.format_score)
         return {"grabbed": best.release.title, "queue_id": qid, "quality": best.quality.quality.name, "release_gate": best.release_gate}
 
 
@@ -307,7 +400,7 @@ async def rss_sync() -> dict:
         decision = evaluate(release, target, blocked)
         if decision.approved:
             tkey = key[:3]
-            if tkey not in best_per_target or decision.score > best_per_target[tkey].score:
+            if tkey not in best_per_target or decision.sort_key > best_per_target[tkey].sort_key:
                 best_per_target[tkey] = decision
     for (media_type, media_id, season), decision in best_per_target.items():
         try:
@@ -316,7 +409,8 @@ async def rss_sync() -> dict:
                 if await asyncio.to_thread(_already_queued, media_type, media_id, season, decision.episodes):
                     continue
                 await download_service.grab(decision.release, media_type=media_type, media_id=media_id, season=season, episodes=decision.episodes,
-                                            release_gate=decision.release_gate)
+                                            release_gate=decision.release_gate, custom_formats=decision.custom_formats,
+                                            format_score=decision.format_score)
                 grabbed += 1
         except Exception as exc:
             log.warning("RSS grab failed for %s: %s", decision.release.title, exc)
@@ -332,6 +426,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
     now = utcnow()
     out: dict[tuple, tuple[Target, set[str], ReleaseInfo]] = {}
     with session_scope() as db:
+        matcher = get_matcher(db)
         movies: dict[str, list[models.Movie]] = {}
         for m in db.scalars(select(models.Movie).where(models.Movie.monitored.is_(True))):
             movies.setdefault(normalize_title(m.title), []).append(m)
@@ -344,6 +439,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                 s = series.get(normalize_title(ep.series_title))
                 if not s:
                     continue
+                profile = spec_for(db, s.quality_profile_id)
                 season_eps = list(db.scalars(select(models.Episode).where(models.Episode.series_id == s.id, models.Episode.season_number == ep.season)))
                 air = _air_map(season_eps, now)
                 eps = [e for e in season_eps if e.monitored and (ep.full_season or e.episode_number in ep.episodes)
@@ -352,18 +448,38 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                     continue
                 have = [parse_quality(e.quality or e.file_path or "") for e in eps if e.has_file]
                 all_have = len(have) == len(eps)
-                target = Target("tv", s.id, s.title, s.year, spec_for(db, s.quality_profile_id), season=ep.season,
+                current_fs = None
+                scene_name = None
+                if all_have:
+                    scores_and_names = [
+                        compute_file_format_score(db, "tv", s.id, e.file_path, profile, matcher, episode_id=e.id)
+                        for e in eps
+                    ]
+                    known_scores = [fs for fs, _ in scores_and_names if fs is not None]
+                    if len(known_scores) == len(eps):
+                        current_fs = min(known_scores)
+                    if len(eps) == 1:
+                        scene_name = scores_and_names[0][1]
+                target = Target("tv", s.id, s.title, s.year, profile, season=ep.season,
                                 episodes=[] if ep.full_season else ep.episodes,
                                 current_quality=min(have, key=lambda q: q.quality.weight) if all_have and have else None,
-                                has_file=all_have, minimum_seeders=seeders, air=air)
+                                current_format_score=current_fs, current_scene_name=scene_name,
+                                has_file=all_have, minimum_seeders=seeders, air=air, matcher=matcher)
                 out[("tv", s.id, ep.season, tuple(ep.episodes), release.guid)] = (target, _blocklist(db, "tv", s.id), release)
                 continue
             pm = parse_movie(release.title)
             for m in movies.get(normalize_title(pm.title), []):
                 if pm.year and m.year and abs(pm.year - m.year) > 1:
                     continue
+                profile = spec_for(db, m.quality_profile_id)
                 current = parse_quality(m.quality or m.file_path or "") if m.has_file else None
-                target = Target("movie", m.id, m.title, m.year, spec_for(db, m.quality_profile_id), current_quality=current,
-                                has_file=m.has_file, minimum_seeders=seeders, availability=movie_gate(m))
+                current_fs, scene_name = (
+                    compute_file_format_score(db, "movie", m.id, m.file_path, profile, matcher)
+                    if m.has_file
+                    else (None, None)
+                )
+                target = Target("movie", m.id, m.title, m.year, profile, current_quality=current,
+                                current_format_score=current_fs, current_scene_name=scene_name,
+                                has_file=m.has_file, minimum_seeders=seeders, availability=movie_gate(m), matcher=matcher)
                 out[("movie", m.id, None, (), release.guid)] = (target, _blocklist(db, "movie", m.id), release)
     return out

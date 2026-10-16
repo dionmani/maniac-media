@@ -81,6 +81,8 @@ export interface MediaFile {
   edition?: string | null;
   is_primary: boolean;
   added_at?: string | null;
+  custom_formats?: number[] | null;
+  custom_format_score?: number | null;
   episodes?: { id: number; series_id?: number; season_number: number; episode_number: number; title: string }[];
 }
 
@@ -312,6 +314,17 @@ export interface DiscoverExclusion {
   created_at: string;
 }
 
+export interface ReleaseFormatMatch {
+  id: number;
+  name: string;
+  score: number;
+}
+
+export interface ScoreBreakdownItem {
+  label: string;
+  value: number;
+}
+
 export interface Release {
   guid: string;
   title: string;
@@ -326,9 +339,16 @@ export interface Release {
   codec: string;
   proper: boolean;
   hdr: boolean;
+  hdr_format?: string | null;
+  audio?: string | null;
+  audio_channels?: string | null;
+  streaming_service?: string | null;
   approved: boolean;
   rejections: string[];
   score: number;
+  custom_formats?: ReleaseFormatMatch[];
+  format_score?: number;
+  score_breakdown?: ScoreBreakdownItem[];
   season?: number | null;
   episodes: number[];
   /** the release/air date that cleared (or held back) this release */
@@ -405,7 +425,49 @@ export interface HistoryItem {
   quality?: string | null;
   details?: string | null;
   timestamp?: string | null;
-  data?: { analysis?: ImportFailureAnalysis } & Record<string, unknown> | null;
+  data?: {
+    analysis?: ImportFailureAnalysis;
+    formats?: string[];
+    format_score?: number;
+  } & Record<string, unknown> | null;
+}
+
+export interface CustomFormatSpec {
+  name: string;
+  kind: string;
+  value: unknown;
+  negate: boolean;
+  required: boolean;
+}
+
+export interface CustomFormat {
+  id: number;
+  name: string;
+  include_in_rename: boolean;
+  specifications: CustomFormatSpec[];
+  source?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CustomFormatTestResult {
+  facts: Record<string, unknown>;
+  matches: { id: number; name: string; score: number; matched_specs: string[] }[];
+  formats: {
+    format_id: number;
+    name: string;
+    matched: boolean;
+    matched_specs: string[];
+    score: number;
+    specifications: { name: string; kind: string; required: boolean; negate: boolean; disabled: boolean; passed: boolean }[];
+  }[];
+  total_score: number;
+  score_breakdown: ScoreBreakdownItem[];
+  adhoc?: {
+    matched: boolean;
+    specifications: { name: string; kind: string; required: boolean; negate: boolean; disabled: boolean; passed: boolean }[];
+    errors: string[];
+  } | null;
 }
 
 export interface QualityProfile {
@@ -419,6 +481,10 @@ export interface QualityProfile {
   min_size_mb: number;
   max_size_mb: number;
   prefer_proper: boolean;
+  format_scores?: Record<string, number>;
+  min_format_score?: number;
+  upgrade_until_format_score?: number;
+  min_format_upgrade_delta?: number;
 }
 
 export interface FieldSpec {

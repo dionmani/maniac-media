@@ -72,7 +72,7 @@ class Movie(Base):
     # v4 – ids into ``tags`` (set by request managers via the compat API)
     tags: Mapped[list[int] | None] = mapped_column(JSON)
 
-    files: Mapped[list["MediaFile"]] = relationship(
+    files: Mapped[list[MediaFile]] = relationship(
         back_populates="movie", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"
     )
 
@@ -117,11 +117,11 @@ class Series(Base):
     # v4 – ids into ``tags`` (set by request managers via the compat API)
     tags: Mapped[list[int] | None] = mapped_column(JSON)
 
-    seasons: Mapped[list["Season"]] = relationship(
+    seasons: Mapped[list[Season]] = relationship(
         back_populates="series", cascade="all, delete-orphan", order_by="Season.season_number"
     )
-    episodes: Mapped[list["Episode"]] = relationship(back_populates="series", cascade="all, delete-orphan")
-    files: Mapped[list["MediaFile"]] = relationship(
+    episodes: Mapped[list[Episode]] = relationship(back_populates="series", cascade="all, delete-orphan")
+    files: Mapped[list[MediaFile]] = relationship(
         back_populates="series", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"
     )
 
@@ -135,7 +135,7 @@ class Season(Base):
     monitored: Mapped[bool] = mapped_column(Boolean, default=True)
 
     series: Mapped[Series] = relationship(back_populates="seasons")
-    episodes: Mapped[list["Episode"]] = relationship(
+    episodes: Mapped[list[Episode]] = relationship(
         back_populates="season", cascade="all, delete-orphan", order_by="Episode.episode_number"
     )
 
@@ -169,10 +169,10 @@ class Episode(Base):
 
     series: Mapped[Series] = relationship(back_populates="episodes")
     season: Mapped[Season] = relationship(back_populates="episodes")
-    files: Mapped[list["MediaFile"]] = relationship(
+    files: Mapped[list[MediaFile]] = relationship(
         secondary="episode_files", back_populates="episodes", order_by="MediaFile.is_primary.desc()"
     )
-    episode_files: Mapped[list["EpisodeFile"]] = relationship(
+    episode_files: Mapped[list[EpisodeFile]] = relationship(
         cascade="all, delete-orphan", back_populates="episode", overlaps="files"
     )
 
@@ -229,7 +229,7 @@ class MediaFile(Base):
     movie: Mapped[Movie | None] = relationship(back_populates="files")
     series: Mapped[Series | None] = relationship(back_populates="files")
     episodes: Mapped[list[Episode]] = relationship(secondary="episode_files", back_populates="files", overlaps="episode_files")
-    episode_files: Mapped[list["EpisodeFile"]] = relationship(cascade="all, delete-orphan", back_populates="media_file", overlaps="episodes,files")
+    episode_files: Mapped[list[EpisodeFile]] = relationship(cascade="all, delete-orphan", back_populates="media_file", overlaps="episodes,files")
 
 
 class EpisodeFile(Base):
@@ -262,6 +262,23 @@ class QualityProfile(Base):
     min_size_mb: Mapped[int | None] = mapped_column(Integer, default=0)
     max_size_mb: Mapped[int | None] = mapped_column(Integer, default=0)
     prefer_proper: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    # v11 – custom formats
+    format_scores: Mapped[dict[str, int] | None] = mapped_column(JSON, default=dict)
+    min_format_score: Mapped[int | None] = mapped_column(Integer, default=0)
+    upgrade_until_format_score: Mapped[int | None] = mapped_column(Integer, default=10000)
+    min_format_upgrade_delta: Mapped[int | None] = mapped_column(Integer, default=1)
+
+
+class CustomFormat(Base):
+    __tablename__ = "custom_formats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    specifications: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    include_in_rename: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str | None] = mapped_column(String(64), default="user")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # --------------------------------------------------------------------------- integrations
@@ -423,7 +440,7 @@ class User(Base):
     last_login: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    api_keys: Mapped[list["ApiKey"]] = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
+    api_keys: Mapped[list[ApiKey]] = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
 
 
 class ApiKey(Base):

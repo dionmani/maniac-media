@@ -41,6 +41,7 @@ MOVIE_TOKENS = {
     "mediainfo_audiochannels": "e.g. 5.1",
     "mediainfo_hdr": "e.g. HDR10",
     "mediainfo_resolution": "e.g. 1080p",
+    "customformats": "Matched custom formats (e.g. DV HDR10 TrueHD Atmos)",
 }
 EPISODE_TOKENS = {
     "title": "Series title",
@@ -62,8 +63,9 @@ EPISODE_TOKENS = {
     "mediainfo_audiochannels": "e.g. 5.1",
     "mediainfo_hdr": "e.g. HDR10",
     "mediainfo_resolution": "e.g. 1080p",
+    "customformats": "Matched custom formats (e.g. DV HDR10)",
 }
-ALIASES = {"movietitle": "title", "seriestitle": "title", "episodename": "episodetitle", "group": "releasegroup"}
+ALIASES = {"movietitle": "title", "seriestitle": "title", "episodename": "episodetitle", "group": "releasegroup", "customformat": "customformats"}
 
 
 class TemplateError(ValueError):
@@ -147,12 +149,14 @@ def preview(template: str, kind: str) -> NamingPreview:
         allowed, sample = MOVIE_TOKENS, {
             "title": "Avatar", "year": 2009, "quality": "Bluray-2160p", "resolution": "2160p",
             "source": "BluRay", "codec": "H265", "imdbid": "tt0499549", "tmdbid": 19995, "releasegroup": "FRAMESTOR",
+            "customformats": "DV HDR10 TrueHD Atmos",
         }
     else:
         allowed, sample = EPISODE_TOKENS, {
             "title": "Breaking Bad", "year": 2008, "season": 1, "episode": 1, "episodetitle": "Pilot",
             "airdate": "2008-01-20", "quality": "Bluray-1080p", "resolution": "1080p", "source": "BluRay",
             "codec": "H264", "tvdbid": 81189, "imdbid": "tt0903747", "releasegroup": "DEMAND",
+            "customformats": "x264",
         }
     errors = validate(template, allowed)
     example = None if errors else render(template, sample, allowed)

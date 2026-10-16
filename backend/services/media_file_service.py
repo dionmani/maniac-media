@@ -7,8 +7,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -55,6 +55,31 @@ def _insert_or_get(db: Session, mf: models.MediaFile) -> models.MediaFile:
         return existing
 
 
+def _compute_file_formats(
+    db: Session,
+    title: str,
+    size_bytes: int,
+    episode_count: int,
+    quality: ParsedQuality | None,
+    profile_id: int | None,
+) -> tuple[list[int], int]:
+    from backend.domain.custom_formats import ReleaseFacts
+    from backend.domain.custom_formats import score as score_formats
+    from backend.services import quality_service
+
+    matcher = quality_service.get_matcher(db)
+    profile = quality_service.spec_for(db, profile_id)
+    facts = ReleaseFacts.from_title(
+        title,
+        size_bytes=size_bytes,
+        episode_count=max(episode_count, 1),
+        quality=quality,
+    )
+    matches = matcher.match(facts)
+    total_score, _ = score_formats(matches, profile.format_scores)
+    return [m.format_id for m in matches], total_score
+
+
 def attach_movie_file(
     db: Session,
     movie: models.Movie,
@@ -80,12 +105,14 @@ def attach_movie_file(
     except OSError:
         pass
 
-    q = quality if quality is not None else parse_quality(Path(path_str).name)
+    effective_scene = scene_name or Path(path_str).name
+    q = quality if quality is not None else parse_quality(effective_scene)
     quality_name = q.quality.name if q and q.quality and q.quality.weight else (movie.quality or "Unknown")
     codec_name = q.codec.value if q and q.codec and q.codec.value != "unknown" else None
     revision = 2 if (q and (q.proper or q.repack)) else 1
-    rel_grp = release_group(Path(path_str).name)
+    rel_grp = release_group(effective_scene)
     rel_path = _compute_relative_path(path_str, movie.root_folder, movie.path)
+    cf_ids, cf_score = _compute_file_formats(db, effective_scene, size_bytes, 1, q, movie.quality_profile_id)
 
     mf = db.scalar(select(models.MediaFile).where(models.MediaFile.path_hash == h))
     if mf is None:
@@ -102,10 +129,12 @@ def attach_movie_file(
             codec=codec_name,
             revision=revision,
             release_group=rel_grp,
-            scene_name=scene_name or Path(path_str).name,
+            scene_name=effective_scene,
             edition=edition,
             source=source,
             is_primary=make_primary,
+            custom_formats=cf_ids,
+            custom_format_score=cf_score,
             added_at=utcnow(),
             updated_at=utcnow(),
         )
@@ -117,6 +146,8 @@ def attach_movie_file(
             mf.path = path_str
             mf.size_bytes = size_bytes
             mf.mtime = mtime
+            mf.custom_formats = cf_ids
+            mf.custom_format_score = cf_score
             mf.updated_at = utcnow()
     else:
         mf.movie_id = movie.id
@@ -138,6 +169,8 @@ def attach_movie_file(
             mf.scene_name = scene_name
         if edition:
             mf.edition = edition
+        mf.custom_formats = cf_ids
+        mf.custom_format_score = cf_score
         mf.updated_at = utcnow()
 
     if make_primary:
@@ -189,12 +222,16 @@ def attach_episode_file(
     except OSError:
         pass
 
-    q = quality if quality is not None else parse_quality(Path(path_str).name)
+    effective_scene = scene_name or Path(path_str).name
+    q = quality if quality is not None else parse_quality(effective_scene)
     quality_name = q.quality.name if q and q.quality and q.quality.weight else "Unknown"
     codec_name = q.codec.value if q and q.codec and q.codec.value != "unknown" else None
     revision = 2 if (q and (q.proper or q.repack)) else 1
-    rel_grp = release_group(Path(path_str).name)
+    rel_grp = release_group(effective_scene)
     rel_path = _compute_relative_path(path_str, series.root_folder, series.path)
+    cf_ids, cf_score = _compute_file_formats(
+        db, effective_scene, size_bytes, len(episodes) if episodes else 1, q, series.quality_profile_id
+    )
 
     mf = db.scalar(select(models.MediaFile).where(models.MediaFile.path_hash == h))
     if mf is None:
@@ -211,9 +248,11 @@ def attach_episode_file(
             codec=codec_name,
             revision=revision,
             release_group=rel_grp,
-            scene_name=scene_name or Path(path_str).name,
+            scene_name=effective_scene,
             source=source,
             is_primary=make_primary,
+            custom_formats=cf_ids,
+            custom_format_score=cf_score,
             added_at=utcnow(),
             updated_at=utcnow(),
         )
@@ -224,6 +263,8 @@ def attach_episode_file(
             mf.path = path_str
             mf.size_bytes = size_bytes
             mf.mtime = mtime
+            mf.custom_formats = cf_ids
+            mf.custom_format_score = cf_score
             mf.updated_at = utcnow()
     else:
         mf.series_id = series.id
@@ -243,6 +284,8 @@ def attach_episode_file(
             mf.release_group = rel_grp
         if scene_name:
             mf.scene_name = scene_name
+        mf.custom_formats = cf_ids
+        mf.custom_format_score = cf_score
         mf.updated_at = utcnow()
 
     # Link episodes

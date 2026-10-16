@@ -6,9 +6,12 @@ understand *why* a release would not be grabbed automatically.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from backend.domain.availability import Availability, latest
-from backend.domain.parser import normalize_title, parse_episode, parse_movie
+from backend.domain.custom_formats import FormatMatcher, ReleaseFacts
+from backend.domain.custom_formats import score as score_formats
+from backend.domain.parser import normalize_title, parse_episode, parse_movie, release_group
 from backend.domain.quality import ParsedQuality, QualityProfileSpec, parse_quality
 from backend.domain.types import ReleaseInfo
 
@@ -23,12 +26,15 @@ class Target:
     season: int | None = None
     episodes: list[int] = field(default_factory=list)  # empty + season => season pack search
     current_quality: ParsedQuality | None = None  # worst current quality across target episodes
+    current_format_score: int | None = None
+    current_scene_name: str | None = None
     has_file: bool = False
     aliases: list[str] = field(default_factory=list)
     minimum_seeders: dict[int, int] = field(default_factory=dict)  # indexer id -> min seeders
     # release gate (domain/availability.py): the movie's, and every in-scope episode's by (season, episode)
     availability: Availability | None = None
     air: dict[tuple[int, int], Availability] = field(default_factory=dict)
+    matcher: FormatMatcher | None = None
 
 
 @dataclass
@@ -41,6 +47,10 @@ class Decision:
     season: int | None = None
     episodes: list[int] = field(default_factory=list)
     release_gate: str | None = None  # the reference date that let it through (or held it back)
+    custom_formats: list[dict[str, Any]] = field(default_factory=list)
+    format_score: int = 0
+    score_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    sort_key: tuple = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
         r = self.release
@@ -65,10 +75,18 @@ class Decision:
             "season": self.season,
             "episodes": self.episodes,
             "release_gate": self.release_gate,
+            "custom_formats": self.custom_formats,
+            "format_score": self.format_score,
+            "score_breakdown": self.score_breakdown,
         }
 
 
-def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = None) -> Decision:
+def evaluate(
+    release: ReleaseInfo,
+    target: Target,
+    blocklist: set[str] | None = None,
+    matcher: FormatMatcher | None = None,
+) -> Decision:
     rejections: list[str] = []
     quality = parse_quality(release.title)
     wanted_titles = {normalize_title(t) for t in [target.title, *target.aliases] if t}
@@ -123,15 +141,99 @@ def evaluate(release: ReleaseInfo, target: Target, blocklist: set[str] | None = 
     if gate is not None and not gate.available:
         rejections.append(f"Not released yet: {gate.reason}")
 
-    if target.has_file and not profile.is_upgrade(target.current_quality, quality):
-        rejections.append(
-            f"Existing file ({target.current_quality.quality.name if target.current_quality else 'unknown'}) is equal or better / cutoff met"
+    # Custom formats evaluation
+    active_matcher = matcher or target.matcher
+    custom_formats_out: list[dict[str, Any]] = []
+    fs = 0
+    format_breakdown: list[tuple[str, int]] = []
+    if active_matcher is not None:
+        facts = ReleaseFacts(
+            title=release.title,
+            group=release_group(release.title),
+            quality=quality,
+            size_bytes=release.size_bytes or 0,
+            episode_count=units,
+            indexer_id=release.indexer_id,
+            protocol=release.protocol,
         )
+        matches = active_matcher.match(facts)
+        fs, format_breakdown = score_formats(matches, profile.format_scores)
+        custom_formats_out = [
+            {
+                "id": m.format_id,
+                "name": m.name,
+                "score": int(profile.format_scores.get(m.format_id, 0)),
+            }
+            for m in matches
+        ]
 
-    score = profile.score(quality)
-    # tie-breakers: availability and freshness
-    score = score * 1000 + min(release.seeders or 0, 500) + (100 if release.protocol == "usenet" else 0) - min(release.age_days or 0, 99)
-    return Decision(release, quality, not rejections, rejections, score, season, episodes, gate.reason if gate else None)
+    if fs < profile.min_format_score:
+        rejections.append(f"Custom format score {fs} below minimum {profile.min_format_score}")
+
+    if target.has_file:
+        if target.current_scene_name and release.title.strip().lower() == target.current_scene_name.strip().lower():
+            rejections.append("Release matches existing file's scene name")
+        elif not profile.is_upgrade(target.current_quality, quality, current_fs=target.current_format_score, candidate_fs=fs):
+            rejections.append(
+                f"Existing file ({target.current_quality.quality.name if target.current_quality else 'unknown'}) is equal or better / cutoff met"
+            )
+
+    quality_rank = profile.rank(quality.quality) or 0
+    codec_sc = profile.codec_score(quality.codec)
+    revision = quality.revision if profile.prefer_proper else 1
+    protocol_pref = 1 if release.protocol == "usenet" else 0
+    capped_seeders = min(release.seeders or 0, 500)
+    age_days = release.age_days or 0
+
+    sort_key = (
+        not rejections,
+        quality_rank,
+        fs,
+        codec_sc,
+        revision,
+        protocol_pref,
+        capped_seeders,
+        -age_days,
+    )
+
+    score_breakdown: list[dict[str, Any]] = [
+        {"label": f"Quality ({quality.quality.name})", "value": quality_rank * 1000},
+    ]
+    for fmt_name, fmt_score in format_breakdown:
+        score_breakdown.append({"label": f"Format: {fmt_name}", "value": fmt_score})
+    if codec_sc:
+        score_breakdown.append({"label": f"Codec ({quality.codec.value})", "value": codec_sc * 10})
+    if quality.proper or quality.repack:
+        score_breakdown.append({"label": "PROPER / REPACK", "value": revision})
+    if release.protocol == "usenet":
+        score_breakdown.append({"label": "Usenet protocol", "value": 100})
+    elif release.seeders:
+        score_breakdown.append({"label": f"Seeders ({release.seeders})", "value": capped_seeders})
+    if age_days:
+        score_breakdown.append({"label": f"Age ({age_days}d)", "value": -min(age_days, 99)})
+
+    base_score = profile.score(quality)
+    display_score = (
+        base_score * 1000
+        + fs * 10
+        + capped_seeders
+        + (100 if release.protocol == "usenet" else 0)
+        - min(age_days, 99)
+    )
+    return Decision(
+        release=release,
+        quality=quality,
+        approved=not rejections,
+        rejections=rejections,
+        score=display_score,
+        season=season,
+        episodes=episodes,
+        release_gate=gate.reason if gate else None,
+        custom_formats=custom_formats_out,
+        format_score=fs,
+        score_breakdown=score_breakdown,
+        sort_key=sort_key,
+    )
 
 
 def release_gate(target: Target, season: int | None, episodes: list[int], full_season: bool) -> Availability | None:
@@ -154,4 +256,4 @@ def release_gate(target: Target, season: int | None, episodes: list[int], full_s
 
 
 def rank(decisions: list[Decision]) -> list[Decision]:
-    return sorted(decisions, key=lambda d: (d.approved, d.score), reverse=True)
+    return sorted(decisions, key=lambda d: d.sort_key or (d.approved, d.score), reverse=True)

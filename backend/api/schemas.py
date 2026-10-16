@@ -1,7 +1,7 @@
 """API contracts (Pydantic v2). Secrets are write-only: responses expose ``has_*`` flags instead."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field, field_validator, model_validator
@@ -52,7 +52,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: str
-    user: "UserOut"
+    user: UserOut
 
 
 class UserOut(BaseModel):
@@ -156,6 +156,8 @@ class MediaFileOut(BaseModel):
     audio_channels: int | None = None
     audio_languages: list[str] | None = None
     subtitle_languages: list[str] | None = None
+    custom_formats: list[int] | None = None
+    custom_format_score: int | None = None
 
 
 class EpisodeLinkOut(BaseModel):
@@ -316,7 +318,7 @@ class EpisodeOut(BaseModel):
     @property
     def aired(self) -> bool:
         """Out per the release gate (domain/availability.py) - the UI's Missing vs Unaired."""
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         return episode_availability(air_date=self.air_date, air_date_utc=self.air_date_utc, now=now).available
 
 
@@ -635,6 +637,42 @@ class IssueBulkRequest(BaseModel):
 
 
 # ------------------------------------------------------------------ settings & integrations
+class CustomFormatSpecSchema(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    kind: str
+    value: Any = ""
+    negate: bool = False
+    required: bool = False
+
+
+class CustomFormatIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    include_in_rename: bool = False
+    specifications: list[dict[str, Any]] = Field(min_length=1)
+    source: str | None = Field("user", max_length=64)
+    trash_id: str | None = Field(None, max_length=64)
+
+
+class CustomFormatOut(BaseModel):
+    model_config = ORM
+    id: int
+    name: str
+    include_in_rename: bool = False
+    specifications: list[dict[str, Any]] = []
+    source: str | None = "user"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CustomFormatTestRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=512)
+    size_bytes: int = Field(0, ge=0)
+    episode_count: int = Field(1, ge=1)
+    indexer_flags: list[str] = []
+    specifications: list[dict[str, Any]] | None = None
+    profile_id: int | None = None
+
+
 class QualityProfileIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     items: list[str] = Field(min_length=1)
@@ -645,12 +683,24 @@ class QualityProfileIn(BaseModel):
     min_size_mb: int = Field(0, ge=0)
     max_size_mb: int = Field(0, ge=0)
     prefer_proper: bool = True
+    format_scores: dict[str, int] = Field(default_factory=dict)
+    min_format_score: int = 0
+    upgrade_until_format_score: int = 10000
+    min_format_upgrade_delta: int = Field(1, ge=1)
 
 
 class QualityProfileOut(QualityProfileIn):
     model_config = ORM
     id: int
     items: list[str] = []
+    format_scores: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("format_scores", mode="before")
+    @classmethod
+    def _coerce_format_scores(cls, v: Any) -> dict[str, int]:
+        if not v or not isinstance(v, dict):
+            return {}
+        return {str(k): int(val) for k, val in v.items()}
 
 
 class IndexerIn(BaseModel):
