@@ -37,15 +37,17 @@ function useSettingsForm() {
 
 export function MediaManagement() {
   const { query, form, set, save } = useSettingsForm();
-  const canWrite = useAuth((s) => s.can)('settings:write');
-  if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
-  const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
-    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
-    'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct', 'inspect_before_import'];
+  const can = useAuth((s) => s.can);
+  const canWrite = can('settings:write');
+  const canSeeStatus = can('system:read');
+  const canScan = can('library:scan');
 
+  // All hooks run before the loading early-return below: hooks after it would change the hook
+  // count between renders and crash the tab ("Rendered more hooks than during the previous render").
   const statusQuery = useQuery({
     queryKey: ['system-status'],
     queryFn: () => get<{ ffprobe?: { found: boolean; path: string | null; version: string | null } }>('/system/status'),
+    enabled: canSeeStatus, // /system/status needs system:read; a 403 must not read as "ffprobe not found"
   });
 
   const inspectAll = useMutation({
@@ -58,6 +60,11 @@ export function MediaManagement() {
   useEffect(() => {
     if (form) setAudioLangs((form.preferred_audio_languages ?? []).join(', '));
   }, [form]);
+
+  if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
+  const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
+    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
+    'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct'];
 
   const editAudioLangs = (val: string) => {
     setAudioLangs(val);
@@ -130,6 +137,7 @@ export function MediaManagement() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Inspects files to measure actual resolution, HDR format, codecs, channels, audio/subtitle languages, and runtime.
         </Typography>
+        {canSeeStatus && statusQuery.isSuccess && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
           {ffprobeStatus?.found ? (
             <Chip size="small" color="success" label={`ffprobe found${ffprobeStatus.version ? ` (${ffprobeStatus.version})` : ''}: ${ffprobeStatus.path}`} />
@@ -137,6 +145,7 @@ export function MediaManagement() {
             <Chip size="small" color="error" label="ffprobe not found on host" />
           )}
         </Stack>
+        )}
         <Grid container spacing={2}>
           <Grid size={{ xs: 12, md: 8 }}>
             {text('ffprobe_path', 'Custom ffprobe path', 'Path to ffprobe binary. Leave empty to auto-detect from PATH')}
@@ -195,9 +204,8 @@ export function MediaManagement() {
         </Grid>
         <Stack sx={{ mt: 1 }}>
           {toggle('inspection_enabled', 'Enable media inspection via ffprobe')}
-          {toggle('inspect_before_import', 'Inspect downloaded files before import', 'Probe files while still in the download folder so {mediainfo_*} tokens populate and corrupt files are caught before moving')}
         </Stack>
-        {canWrite && (
+        {canScan && (
           <Box sx={{ mt: 2 }}>
             <Button
               variant="outlined"
