@@ -1,5 +1,6 @@
 # Runs tests, then (on push to main, a v*.*.* tag, or manual dispatch) builds and
 # publishes the Docker image to GitHub Container Registry (ghcr.io).
+# Pull requests into main run the test jobs only – nothing is published.
 #
 # Target: Unraid (linux/amd64) with an external PostgreSQL server.
 #
@@ -17,6 +18,8 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -102,6 +105,7 @@ jobs:
   publish:
     name: Build & push image
     needs: [backend, postgres-migration, e2e]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

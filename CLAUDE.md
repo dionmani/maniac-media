@@ -24,10 +24,11 @@ duplicate ARCHITECTURE.md's content from memory — go re-read the relevant sect
 pip install -r requirements-dev.txt        # includes requirements.txt + pytest/ruff
 python run.py                              # dev server, http://127.0.0.1:8000 (MANIAC_RELOAD=1 for autoreload)
 
-pytest                                     # unit + integration (e2e excluded by default via pyproject addopts)
+pytest                                     # unit + integration (e2e + benchmark excluded by default via pyproject addopts)
 pytest tests/unit/test_domain.py           # single file
 pytest tests/unit/test_domain.py -k parse  # single test by name
 pytest --cov=backend                       # with coverage (CI gate: --cov-fail-under=65)
+pytest -m benchmark                        # opt-in timing benchmarks (excluded by default, not run in CI)
 
 ruff check backend tests                   # lint (CI only checks --select E9,F63,F7,F82)
 
@@ -112,4 +113,7 @@ Key rules to preserve when editing:
   `test_databases.py` also runs against Postgres/MySQL/MSSQL when `MANIAC_TEST_POSTGRES_URL` etc.
   are set (CI provides a Postgres service for this).
 - `tests/e2e/` — Playwright against the built frontend; marked `e2e` and excluded by the default
-  pytest `addopts` (`-m 'not e2e'` in `pyproject.toml`), so `pytest` alone never runs them.
+  pytest `addopts` (`-m 'not e2e and not benchmark'` in `pyproject.toml`), so `pytest` alone never
+  runs them.
+- Wall-clock performance assertions are marked `benchmark` and are likewise opt-in
+  (`pytest -m benchmark`): shared CI runners are too slow and noisy for fixed time budgets.

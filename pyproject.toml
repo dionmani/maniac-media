@@ -6,9 +6,10 @@ requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers -m 'not e2e'"
+addopts = "--strict-markers -m 'not e2e and not benchmark'"
 markers = [
     "e2e: browser end-to-end tests (need Playwright + built frontend)",
+    "benchmark: wall-clock performance checks; opt-in (pytest -m benchmark), too noisy for shared CI runners",
     "ffprobe: tests requiring a real ffprobe binary on the host",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
