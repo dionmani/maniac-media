@@ -581,6 +581,30 @@ class LibraryIssueRepository(Repository[models.LibraryIssue]):
             stmt = stmt.where(models.LibraryIssue.media_id == media_id)
         return [row for row in self.db.scalars(stmt) if normalise_path_key(row.path) == key]
 
+    def open_missing_movies(self, movie_id: int | None = None) -> Sequence[models.LibraryIssue]:
+        """Open ``missing_file`` issues whose movie still has no file."""
+        stmt = (
+            select(models.LibraryIssue)
+            .join(models.Movie, models.Movie.id == models.LibraryIssue.media_id)
+            .where(models.LibraryIssue.media_type == "movie", models.LibraryIssue.issue_type == "missing_file",
+                   models.LibraryIssue.status == "open", models.Movie.has_file.is_(False))
+        )
+        if movie_id is not None:
+            stmt = stmt.where(models.LibraryIssue.media_id == movie_id)
+        return self.db.scalars(stmt).all()
+
+    def open_missing_episodes(self, series_id: int | None = None) -> list[tuple[models.LibraryIssue, models.Episode]]:
+        """Open ``missing_file`` issues whose episode still has no file, with that episode."""
+        stmt = (
+            select(models.LibraryIssue, models.Episode)
+            .join(models.Episode, models.Episode.id == models.LibraryIssue.episode_id)
+            .where(models.LibraryIssue.media_type == "tv", models.LibraryIssue.issue_type == "missing_file",
+                   models.LibraryIssue.status == "open", models.Episode.has_file.is_(False))
+        )
+        if series_id is not None:
+            stmt = stmt.where(models.LibraryIssue.media_id == series_id)
+        return [(issue, ep) for issue, ep in self.db.execute(stmt).all()]
+
 
 class MediaFileRepository(Repository[models.MediaFile]):
     model = models.MediaFile

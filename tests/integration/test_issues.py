@@ -124,6 +124,42 @@ def test_missing_file_auto_resolves_when_restored(database, library, make_video)
     assert len(missing) == 1 and missing[0].status == "resolved" and missing[0].resolution == "auto"
 
 
+def test_missing_file_names_the_file_and_stays_open_until_it_is_back(database, library, make_video):
+    folder = library["movies"] / "Drive (2011)"
+    f = make_video(folder / "Drive.2011.1080p.BluRay.mkv", _body(15))
+    scanner_service.scan("movies", incremental=False)
+    f.unlink()
+    scanner_service.scan("movies", incremental=False)
+    missing = _issues("Drive", "missing_file")
+    assert len(missing) == 1 and missing[0].status == "open" and missing[0].path == str(f)
+    issue_id = missing[0].id
+
+    # the movie is detached now; later scans must not close the issue while the file is still gone
+    scanner_service.scan("movies", incremental=False)
+    scanner_service.scan("movies", incremental=True)
+    missing = _issues("Drive", "missing_file")
+    assert [(i.id, i.status) for i in missing] == [(issue_id, "open")]
+
+    make_video(folder / "Drive.2011.1080p.BluRay.mkv", _body(15))
+    scanner_service.scan("movies", incremental=False)
+    missing = _issues("Drive", "missing_file")
+    assert len(missing) == 1 and missing[0].status == "resolved" and missing[0].resolution == "auto"
+
+
+def test_missing_episode_file_names_the_file_and_stays_open(database, library, make_video):
+    f = make_video(library["tv"] / "Fargo" / "Season 01" / "Fargo.S01E03.1080p.WEB.mkv", _body(16))
+    scanner_service.scan("tv", incremental=False)
+    f.unlink()
+    for _ in range(3):
+        scanner_service.scan("tv", incremental=False)
+    with session_scope() as db:
+        series = db.scalar(select(models.Series).where(models.Series.title == "Fargo"))
+        rows = list(db.scalars(select(models.LibraryIssue).where(models.LibraryIssue.issue_type == "missing_file",
+                                                                  models.LibraryIssue.media_id == series.id)))
+        assert [(r.status, r.path) for r in rows] == [("open", str(f))]
+        assert rows[0].episode_id is not None
+
+
 def test_tv_upgrade_issue_recorded_with_episode(database, library, make_video):
     make_video(library["tv"] / "Mindhunter" / "Season 01" / "Mindhunter.S01E02.DVDRip.mkv", _body(7))
     scanner_service.scan("tv", incremental=False)
