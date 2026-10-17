@@ -49,6 +49,7 @@ npm ci
 npm run dev         # Vite dev server on :3000, proxies /api to :8000
 npm run build        # tsc --noEmit + vite build -> frontend/dist (backend serves this in prod)
 npm run typecheck    # tsc --noEmit only
+npm run lint         # eslint, React hooks rules only (CI fails on rules-of-hooks errors)
 ```
 
 ### Docker / release

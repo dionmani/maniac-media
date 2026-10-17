@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit -p . && vite build",
     "typecheck": "tsc --noEmit -p .",
+    "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -21,9 +22,13 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@babel/eslint-parser": "^8.0.7",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "typescript": "^7.0.2",
     "vite": "^6.0.7"
   }
