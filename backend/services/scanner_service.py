@@ -25,7 +25,7 @@ from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
-from backend.db.repositories import MediaFileRepository
+from backend.db.repositories import LibraryIssueRepository, MediaFileRepository
 from backend.db.session import session_scope
 from backend.domain.issues import IssueType
 from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title
@@ -137,12 +137,13 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None, medi
             recorder.touch_all(*pass_types)
         for m in db.scalars(movie_stmt):
             if not m.file_path or not os.path.exists(fileops.long_path(m.file_path)):
-                mf = MediaFileRepository(db).by_path(m.file_path) if m.file_path else None
+                path = m.file_path  # detach_file clears it
+                mf = MediaFileRepository(db).by_path(path) if path else None
                 if mf:
                     media_file_service.detach_file(db, mf, reason="missing")
                 else:
                     m.has_file = False
-                recorder.report(IssueType.MISSING_FILE, "movie", m.id, m.file_path or "", "File referenced by the library no longer exists")
+                recorder.report(IssueType.MISSING_FILE, "movie", m.id, path or "", "File referenced by the library no longer exists")
                 stats["missing"] += 1
             elif m.quality_profile_id is not None:
                 from backend.services.quality_service import get_matcher
@@ -172,6 +173,9 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None, medi
                                 },
                             )
                             stats["upgrades"] += 1
+        # once detached, the movie is out of the has_file pass above; keep its issue open until a file is back
+        for issue in LibraryIssueRepository(db).open_missing_movies(media_id):
+            recorder.report(IssueType.MISSING_FILE, "movie", issue.media_id, issue.path, issue.details)
         recorder.finish()
     if progress:
         progress(100, "Movie scan complete")
@@ -231,12 +235,13 @@ def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stat
                 db, movie, Path(extra.path), extra_parsed, scene_name=Path(extra.name).name, source="scan", make_primary=False
             )
     elif movie.has_file and movie.file_path and not os.path.exists(movie.file_path):
-        mf = MediaFileRepository(db).by_path(movie.file_path)
+        path = movie.file_path  # detach_file clears it
+        mf = MediaFileRepository(db).by_path(path)
         if mf:
             media_file_service.detach_file(db, mf, reason="missing")
         else:
             movie.has_file = False
-        recorder.report(IssueType.MISSING_FILE, "movie", movie.id, movie.file_path, "File referenced by the library no longer exists")
+        recorder.report(IssueType.MISSING_FILE, "movie", movie.id, path, "File referenced by the library no longer exists")
         stats["missing"] += 1
 
 
@@ -294,12 +299,13 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
         for ep in db.scalars(ep_stmt):
             code = f"S{ep.season_number:02d}E{ep.episode_number:02d}"
             if not ep.file_path or not os.path.exists(fileops.long_path(ep.file_path)):
-                mf = MediaFileRepository(db).by_path(ep.file_path) if ep.file_path else None
+                path = ep.file_path  # detach_file clears it
+                mf = MediaFileRepository(db).by_path(path) if path else None
                 if mf:
                     media_file_service.detach_file(db, mf, reason="missing")
                 else:
                     ep.has_file, ep.status = False, "missing"
-                recorder.report(IssueType.MISSING_FILE, "tv", ep.series_id, ep.file_path or "", f"{code} file no longer exists",
+                recorder.report(IssueType.MISSING_FILE, "tv", ep.series_id, path or "", f"{code} file no longer exists",
                                 episode_id=ep.id, discriminator=code)
                 stats["missing"] += 1
                 continue
@@ -333,6 +339,10 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
                                 episode_id=ep.id, discriminator=code,
                             )
                             stats["upgrades"] += 1
+        # once detached, the episode is out of the has_file pass above; keep its issue open until a file is back
+        for issue, ep in LibraryIssueRepository(db).open_missing_episodes(media_id):
+            recorder.report(IssueType.MISSING_FILE, "tv", issue.media_id, issue.path, issue.details, episode_id=ep.id,
+                            discriminator=f"S{ep.season_number:02d}E{ep.episode_number:02d}")
         recorder.finish()
     if progress:
         progress(100, "TV scan complete")
