@@ -191,6 +191,18 @@ def test_issue_api(client, admin_headers, database, library, make_video):
     assert client.post("/api/v1/library/issues/bulk", json={"ids": list(range(1, 502)), "action": "dismiss"}, headers=admin_headers).status_code == 422
 
 
+def test_issue_list_names_the_movie_or_series(client, admin_headers, database, library, make_video):
+    make_video(library["movies"] / "Thief (1981)" / "Thief.1981.1080p.BluRay.mkv", _body(12))
+    make_video(library["movies"] / "Thief (1981)" / "Thief.1981.720p.WEB.mkv", _body(13, 9000))
+    make_video(library["tv"] / "Severance" / "Season 01" / "Severance.S01E01.DVDRip.mkv", _body(14))
+    scanner_service.scan("movies", incremental=False)
+    scanner_service.scan("tv", incremental=False)
+
+    items = client.get("/api/v1/library/issues", params={"page_size": 500}, headers=admin_headers).json()["items"]
+    titles = {(i["media_type"], i["title"]) for i in items}
+    assert {("movie", "Thief"), ("tv", "Severance")} <= titles
+
+
 def _alembic(engine, revision: str) -> None:
     from alembic import command
 

@@ -12,6 +12,7 @@ a scan *reconciles* what it finds against what is already stored instead of rebu
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from backend.core.observability import LIBRARY_ISSUES_OPEN
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
-from backend.db.repositories import MediaFileRepository
+from backend.db.repositories import MediaFileRepository, MovieRepository, SeriesRepository
 from backend.domain.issues import REGISTRY, Status, default_severity, fingerprint, spec_for
 from backend.services import fileops, media_file_service
 from backend.services.audit import Actor, audit
@@ -199,18 +200,27 @@ def publish_changed(db: Session, stats: RecorderStats | None = None, media_type:
     bus.publish(EventType.ISSUES_CHANGED, **payload)
 
 
-def serialize(issue: models.LibraryIssue) -> dict:
+def serialize(issue: models.LibraryIssue, title: str | None = None) -> dict:
     spec = spec_for(issue.issue_type)
     first = issue.first_detected_at or issue.detected_at
     return {
         "id": issue.id, "issue_type": issue.issue_type,
         "label": spec.label if spec else issue.issue_type.replace("_", " ").capitalize(),
-        "media_type": issue.media_type, "media_id": issue.media_id, "episode_id": issue.episode_id, "path": issue.path,
+        "media_type": issue.media_type, "media_id": issue.media_id, "title": title, "episode_id": issue.episode_id, "path": issue.path,
         "details": issue.details, "data": issue.data, "severity": issue.severity, "status": issue.status,
         "detected_at": first, "first_detected_at": first, "last_seen_at": issue.last_seen_at,
         "resolved_at": issue.resolved_at, "resolution": issue.resolution,
         "actions": list(spec.allowed_actions()) if spec else ["dismiss", "reopen"],
     }
+
+
+def serialize_page(db: Session, issues: Sequence[models.LibraryIssue]) -> list[dict]:
+    """``serialize`` for a page of issues, with movie / series titles fetched in one query per media type."""
+    titles = {
+        "movie": MovieRepository(db).titles([i.media_id for i in issues if i.media_type == "movie" and i.media_id is not None]),
+        "tv": SeriesRepository(db).titles([i.media_id for i in issues if i.media_type == "tv" and i.media_id is not None]),
+    }
+    return [serialize(i, titles.get(i.media_type, {}).get(i.media_id)) for i in issues]
 
 
 # --------------------------------------------------------------------------- resolve actions

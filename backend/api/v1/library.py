@@ -57,7 +57,7 @@ def issues(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, issue_typ
     if severity:
         stmt = stmt.where(models.LibraryIssue.severity == severity)
     page = _IssueRepo(db).paginate(stmt, page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
-    return page_response(page, [issue_service.serialize(i) for i in page.items])
+    return page_response(page, issue_service.serialize_page(db, page.items))
 
 
 @router.get("/library/issues/summary")

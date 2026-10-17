@@ -141,6 +141,19 @@ def test_naming_preview_rejects_unknown_tokens(server, page):
     page.wait_for_selector("text=Example: Avatar (2009)")
 
 
+def test_issues_filters_come_from_the_url(server, page):
+    """The dashboard's issue pills link to /issues?type=…; the page must open already filtered."""
+    _login(page, server)
+    page.goto(server + "/issues?type=duplicate_file&status=dismissed")
+    page.wait_for_selector("text=Nothing dismissed matches these filters.")
+    assert page.get_by_role("tab", name="Dismissed").get_attribute("aria-selected") == "true"
+    assert page.get_by_role("combobox", name="Type").inner_text().strip() == "Duplicate files"
+    page.get_by_role("tab", name="Open").click()
+    page.wait_for_url("**/issues?type=duplicate_file")
+    page.wait_for_selector("text=Nothing open matches these filters.")
+    assert not page.errors
+
+
 def test_demo_pipeline_through_ui(server, page):
     token = httpx.post(f"{server}/api/v1/auth/login", json={"username": "admin", "password": PASSWORD}).json()["access_token"]
     h = {"Authorization": f"Bearer {token}"}
