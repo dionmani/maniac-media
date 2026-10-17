@@ -58,7 +58,8 @@ Pull requests into `main` run `.github/workflows/ci.yml`'s test jobs: backend te
 Python 3.13 – the same as the Docker image), a Postgres migration-wizard job, frontend lint + build,
 and Playwright e2e against the built SPA. A push to `main` or a `v*.*.*` tag runs the same jobs and,
 if they pass, publishes a `linux/amd64` image to `ghcr.io/dionmani/maniac-media` (`:latest` from
-`main`). PRs never publish.
+`main`). PRs never publish. Changes touching only `docs/**`, `*.md` or `LICENSE` skip CI entirely
+(trigger it manually via workflow_dispatch if one needs a rebuild); tag pushes always run.
 
 ```bash
 docker compose up -d                       # SQLite (requires .env with MANIAC_MASTER_KEY)

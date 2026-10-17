@@ -14,12 +14,23 @@
 #  or add GHCR credentials to Unraid.)
 name: CI
 
+# Changes that touch only these paths skip CI entirely (no tests, no image rebuild). A change that
+# also touches anything else still runs everything. Tag pushes always run: GitHub doesn't apply
+# path filters to tags. Run it manually (workflow_dispatch) if a docs-only change needs a rebuild.
 on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
   workflow_dispatch:
 
 concurrency:
