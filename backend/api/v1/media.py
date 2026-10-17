@@ -159,15 +159,18 @@ def _bulk_changes(req: schemas.BulkEditRequest, db, fields: tuple[str, ...]) -> 
 def list_series(
     db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging,
     search: str | None = Query(None, max_length=200), status: str | None = None, monitored: bool | None = None, network: str | None = None,
+    video_resolution: str | None = None, hdr_format: str | None = None, video_codec: str | None = None, audio_codec: str | None = None,
 ):
     repo = SeriesRepository(db)
-    page = repo.paginate(repo.query(search=search, status=status, monitored=monitored, network=network),
-                         page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
-    stats = repo.episode_stats([s.id for s in page.items])
+    stmt = repo.query(search=search, status=status, monitored=monitored, network=network, video_resolution=video_resolution,
+                      hdr_format=hdr_format, video_codec=video_codec, audio_codec=audio_codec)
+    page = repo.paginate(stmt, page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
+    ids = [s.id for s in page.items]
+    stats, media = repo.episode_stats(ids), repo.media_summary(ids)
     items = []
     for s in page.items:
         out = schemas.SeriesSummary.model_validate(s)
-        for k, v in stats.get(s.id, {}).items():
+        for k, v in (*stats.get(s.id, {}).items(), *media.get(s.id, {}).items()):
             setattr(out, k, v)
         items.append(out)
     return page_response(page, items)

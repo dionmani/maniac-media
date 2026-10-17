@@ -219,6 +219,11 @@ export interface SeriesSummary {
   missing_count: number;
   size_on_disk: number;
   added_date?: string | null;
+  /** distinct ffprobe-measured facts across the series' inspected episode files, best resolution first */
+  video_resolutions: string[];
+  hdr_formats: string[];
+  video_codecs: string[];
+  audio_codecs: string[];
 }
 
 export interface DeleteEpisodesResult {

@@ -95,10 +95,9 @@ export default function LibraryPage() {
   if (filter === 'monitored') params.monitored = true;
   if (filter === 'unmonitored') params.monitored = false;
   if (filter === 'continuing' || filter === 'ended') params.status = filter;
-  if (mode === 'movie') {
-    if (resFilter !== 'all') params.video_resolution = resFilter;
-    if (hdrFilter !== 'all') params.hdr_format = hdrFilter;
-  }
+  // series: matches when any episode file matches
+  if (resFilter !== 'all') params.video_resolution = resFilter;
+  if (hdrFilter !== 'all') params.hdr_format = hdrFilter;
 
   const query = useQuery({
     queryKey: [mode === 'movie' ? 'movies' : 'series', 'all', params],
@@ -189,26 +188,22 @@ export default function LibraryPage() {
                 variant={filter === f.value ? 'filled' : 'outlined'} />
             ))}
           </Stack>
-          {mode === 'movie' && (
-            <>
-              <TextField select size="small" label="Resolution" value={resFilter} onChange={(e) => setResFilter(e.target.value)} sx={{ minWidth: 120 }}>
-                <MenuItem value="all">All Res</MenuItem>
-                <MenuItem value="2160p">2160p</MenuItem>
-                <MenuItem value="1080p">1080p</MenuItem>
-                <MenuItem value="720p">720p</MenuItem>
-                <MenuItem value="SD">SD</MenuItem>
-              </TextField>
-              <TextField select size="small" label="HDR" value={hdrFilter} onChange={(e) => setHdrFilter(e.target.value)} sx={{ minWidth: 120 }}>
-                <MenuItem value="all">All HDR</MenuItem>
-                <MenuItem value="ANY_HDR">Any HDR</MenuItem>
-                <MenuItem value="DV">Dolby Vision</MenuItem>
-                <MenuItem value="HDR10+">HDR10+</MenuItem>
-                <MenuItem value="HDR10">HDR10</MenuItem>
-                <MenuItem value="HLG">HLG</MenuItem>
-                <MenuItem value="SDR">SDR</MenuItem>
-              </TextField>
-            </>
-          )}
+          <TextField select size="small" label="Resolution" value={resFilter} onChange={(e) => setResFilter(e.target.value)} sx={{ minWidth: 120 }}>
+            <MenuItem value="all">All Res</MenuItem>
+            <MenuItem value="2160p">2160p</MenuItem>
+            <MenuItem value="1080p">1080p</MenuItem>
+            <MenuItem value="720p">720p</MenuItem>
+            <MenuItem value="SD">SD</MenuItem>
+          </TextField>
+          <TextField select size="small" label="HDR" value={hdrFilter} onChange={(e) => setHdrFilter(e.target.value)} sx={{ minWidth: 120 }}>
+            <MenuItem value="all">All HDR</MenuItem>
+            <MenuItem value="ANY_HDR">Any HDR</MenuItem>
+            <MenuItem value="DV">Dolby Vision</MenuItem>
+            <MenuItem value="HDR10+">HDR10+</MenuItem>
+            <MenuItem value="HDR10">HDR10</MenuItem>
+            <MenuItem value="HLG">HLG</MenuItem>
+            <MenuItem value="SDR">SDR</MenuItem>
+          </TextField>
           <TextField select size="small" label="Sort" value={sort} onChange={(e) => setSort(e.target.value)} sx={{ minWidth: 140 }}>
             {SORTS[mode].map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
           </TextField>
@@ -247,8 +242,8 @@ export default function LibraryPage() {
                 <TableCell>Title</TableCell>
                 <TableCell>Year</TableCell>
                 <TableCell>{mode === 'movie' ? 'Quality' : 'Network'}</TableCell>
-                {mode === 'movie' && <TableCell>Actual / HDR</TableCell>}
-                {mode === 'movie' && <TableCell>Audio</TableCell>}
+                <TableCell>Actual / HDR</TableCell>
+                <TableCell>Audio</TableCell>
                 <TableCell>{mode === 'movie' ? 'Size' : 'Episodes'}</TableCell>
                 <TableCell>Status</TableCell>
               </TableRow>
@@ -331,6 +326,8 @@ function JumpBar({ available }: { available: Map<string, number> }) {
 
 type CardProps = { item: Item; onOpen: (i: Item) => void; selecting: boolean; selected: boolean; anchor?: string };
 
+const FACT_CHIP = { height: 20, fontSize: '0.7rem' } as const;
+
 const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, selected, anchor }: CardProps) {
   const series = isSeries(i);
   const mismatch = !series ? claimedResolutionMismatch(i.quality, i.video_resolution) : null;
@@ -343,33 +340,36 @@ const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, select
       <TableCell sx={{ fontWeight: 600 }}>{i.title}</TableCell>
       <TableCell>{i.year || '—'}</TableCell>
       <TableCell>{series ? i.network ?? '—' : <QualityChip quality={i.quality} />}</TableCell>
-      {!series && (
-        <TableCell>
-          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
-            {i.video_resolution ? (
-              <Tooltip title={mismatch ? `Labelled ${mismatch}, but ffprobe measured ${i.video_resolution}` : ''}>
-                <Chip size="small" color={mismatch ? 'warning' : 'default'} variant="outlined" label={i.video_resolution} sx={{ height: 20, fontSize: '0.7rem' }} />
-              </Tooltip>
-            ) : null}
-            {i.hdr_format && (
-              <Chip size="small" color="secondary" label={i.hdr_format} sx={{ height: 20, fontSize: '0.7rem' }} />
-            )}
-            {i.video_codec && (
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.72rem' }}>
-                {i.video_codec.toUpperCase()}
-              </Typography>
-            )}
-            {!i.video_resolution && !i.hdr_format && !i.video_codec && '—'}
-          </Stack>
-        </TableCell>
-      )}
-      {!series && (
-        <TableCell sx={{ whiteSpace: 'nowrap' }}>
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
-            {[i.audio_codec?.toUpperCase(), formatChannels(i.audio_channels), i.audio_languages?.[0]].filter(Boolean).join(' · ') || '—'}
-          </Typography>
-        </TableCell>
-      )}
+      <TableCell>
+        <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+          {series ? (
+            <>
+              {i.video_resolutions.map((r) => <Chip key={r} size="small" variant="outlined" label={r} sx={FACT_CHIP} />)}
+              {i.hdr_formats.map((h) => <Chip key={h} size="small" color="secondary" label={h} sx={FACT_CHIP} />)}
+              {i.video_codecs.length > 0 && <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.72rem' }}>{i.video_codecs.map((c) => c.toUpperCase()).join(' / ')}</Typography>}
+              {!i.video_resolutions.length && !i.hdr_formats.length && !i.video_codecs.length && '—'}
+            </>
+          ) : (
+            <>
+              {i.video_resolution ? (
+                <Tooltip title={mismatch ? `Labelled ${mismatch}, but ffprobe measured ${i.video_resolution}` : ''}>
+                  <Chip size="small" color={mismatch ? 'warning' : 'default'} variant="outlined" label={i.video_resolution} sx={FACT_CHIP} />
+                </Tooltip>
+              ) : null}
+              {i.hdr_format && <Chip size="small" color="secondary" label={i.hdr_format} sx={FACT_CHIP} />}
+              {i.video_codec && <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.72rem' }}>{i.video_codec.toUpperCase()}</Typography>}
+              {!i.video_resolution && !i.hdr_format && !i.video_codec && '—'}
+            </>
+          )}
+        </Stack>
+      </TableCell>
+      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+        <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+          {series
+            ? i.audio_codecs.map((c) => c.toUpperCase()).join(' / ') || '—'
+            : [i.audio_codec?.toUpperCase(), formatChannels(i.audio_channels), i.audio_languages?.[0]].filter(Boolean).join(' · ') || '—'}
+        </Typography>
+      </TableCell>
       <TableCell>
         {series ? (
           <Stack direction="row" spacing={1} alignItems="center">

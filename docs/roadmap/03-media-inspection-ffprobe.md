@@ -1,6 +1,6 @@
 # 03 – Media inspection via ffprobe
 
-> **Status: MVP in progress – milestones 1–4 and 6 done; 5 partial; 7 (later) only stubbed (2026-10-16)** · Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
+> **Status: MVP in progress – MVP milestones 1–6 done; 7 (later) only stubbed (2026-10-16)** · Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
 
 ## 1. Summary & user value
 
@@ -309,8 +309,9 @@ the Renamer (post-inspection). Validation warns if they're used in the import fo
 2. [x] **Service + safe subprocess + health check + settings**, with the protocol-whitelist test.
 3. [x] **Migration + persistence + post-import job + backlog task.**
 4. [x] **Findings → issues** (F2 recorder), plus the auto-resolve on re-inspect path.
-5. [ ] **API + UI panels + library filters.** API, Technical info panels and Issues renderers are
-   done. Library filters and columns exist for **movies only**; the TV library has none yet.
+5. [x] **API + UI panels + library filters.** Movies and TV share one filter implementation
+   (`repositories.media_file_filter`); a series matches when any of its episode files matches, and
+   its row lists the distinct measured resolutions/HDR/codecs across its inspected files.
 6. [x] **Docker ffprobe** (multi-arch) and docs in the README.
 7. [ ] *(Later)* `inspect_before_import`, MediaInfo naming tokens in import formats, and the quick
    decode test. So far only the `inspect_before_import` setting and the naming-preview warning

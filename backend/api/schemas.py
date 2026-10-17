@@ -356,6 +356,11 @@ class SeriesSummary(_ArtMixin):
     missing_count: int = 0
     size_on_disk: int = 0
     added_date: datetime | None = None
+    # distinct measured facts across the series' inspected episode files (best resolution first)
+    video_resolutions: list[str] = []
+    hdr_formats: list[str] = []
+    video_codecs: list[str] = []
+    audio_codecs: list[str] = []
 
 
 class SeriesOut(SeriesSummary):

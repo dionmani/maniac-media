@@ -316,14 +316,79 @@ def test_manual_reinspect_is_not_folded_into_a_queued_post_import_job(movie_file
 ])
 def test_movie_hdr_filter(movie_files, hdr, stored, expected):
     from backend.db import models
+    from backend.db.base import utcnow
     from backend.db.repositories import MovieRepository
     from backend.db.session import session_scope
 
     with session_scope() as db:
-        db.get(models.MediaFile, movie_files["ok"]).hdr_format = stored
+        mf = db.get(models.MediaFile, movie_files["ok"])
+        mf.hdr_format, mf.inspected_at = stored, utcnow()
         db.flush()
         ids = [m.id for m in db.scalars(MovieRepository(db).query(hdr_format=hdr))]
         assert (movie_files["movie"] in ids) is expected
+
+
+def test_sdr_filter_excludes_uninspected_files(movie_files):
+    """hdr_format is NULL both for measured SDR and for never-inspected files; only the former is SDR."""
+    from backend.db import models
+    from backend.db.repositories import MovieRepository
+    from backend.db.session import session_scope
+
+    with session_scope() as db:
+        mf = db.get(models.MediaFile, movie_files["ok"])
+        mf.hdr_format, mf.inspected_at = None, None
+        db.flush()
+        assert movie_files["movie"] not in [m.id for m in db.scalars(MovieRepository(db).query(hdr_format="SDR"))]
+
+
+def test_series_list_filters_and_summarises_measured_episode_files(client, admin_headers, tmp_path):
+    """A series matches when any episode file matches; the list shows distinct facts across its files."""
+    from backend.db import models
+    from backend.db.base import utcnow
+    from backend.db.session import session_scope
+    from backend.services import media_file_service
+
+    files = {"e1": tmp_path / "Show.S01E01.1080p.mkv", "e2": tmp_path / "Show.S01E02.720p.mkv"}
+    for f in files.values():
+        f.write_bytes(b"\x1a\x45\xdf\xa3" + b"0" * 64)
+    with session_scope() as db:
+        series = models.Series(title="Filterable Show", year=2020, monitored=True)
+        db.add(series)
+        db.flush()
+        season = models.Season(series_id=series.id, season_number=1, monitored=True)
+        db.add(season)
+        db.flush()
+        eps = [models.Episode(series_id=series.id, season_id=season.id, season_number=1, episode_number=n, title=f"Ep {n}", monitored=True)
+               for n in (1, 2)]
+        db.add_all(eps)
+        db.flush()
+        measured = {"e1": ("1080p", "DV HDR10", "hevc", "eac3"), "e2": ("720p", None, "h264", "aac")}
+        for ep, key in zip(eps, ("e1", "e2")):
+            mf = media_file_service.attach_episode_file(db, series, [ep], files[key], None)
+            mf.video_resolution, mf.hdr_format, mf.video_codec, mf.audio_codec = measured[key]
+            mf.inspected_at = utcnow()
+        sid = series.id
+
+    def ids(**params):
+        r = client.get("/api/v1/series", params={"page_size": 200, **params}, headers=admin_headers)
+        assert r.status_code == 200
+        return {i["id"]: i for i in r.json()["items"]}
+
+    try:
+        item = ids()[sid]
+        assert item["video_resolutions"] == ["1080p", "720p"]  # best first
+        assert item["hdr_formats"] == ["DV HDR10"] and item["video_codecs"] == ["h264", "hevc"]
+        assert item["audio_codecs"] == ["aac", "eac3"]
+
+        assert sid in ids(video_resolution="720p") and sid in ids(video_resolution="1080p")
+        assert sid not in ids(video_resolution="2160p")
+        assert sid in ids(hdr_format="DV") and sid in ids(hdr_format="SDR")  # one DV file, one measured SDR file
+        assert sid not in ids(hdr_format="HLG")
+        assert sid in ids(video_codec="HEVC") and sid not in ids(video_codec="av1")
+        assert sid in ids(audio_codec="aac")
+    finally:
+        with session_scope() as db:
+            db.delete(db.get(models.Series, sid))
 
 
 @pytest.mark.ffprobe
