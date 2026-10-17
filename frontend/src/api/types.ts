@@ -71,6 +71,16 @@ export interface MovieSummary {
   audio_codec?: string | null;
   audio_channels?: number | null;
   audio_languages?: string[] | null;
+  release_date?: string | null;
+  digital_release_date?: string | null;
+  physical_release_date?: string | null;
+  production_status?: string | null;
+  /** where it stands against the server's release gate: 'released' (no file = really missing), 'in_theaters',
+   *  'coming_soon', a TMDB pre-release stage ('post_production', 'in_production', 'planned', 'rumored'),
+   *  'announced' or 'canceled' */
+  release_state?: string | null;
+  /** the gate's reason, naming the date it was based on */
+  release_note?: string | null;
 }
 
 export interface MediaInfoVideo {
@@ -159,9 +169,6 @@ export interface Movie extends MovieSummary {
   overview?: string | null;
   tagline?: string | null;
   backdrop_path?: string | null;
-  release_date?: string | null;
-  digital_release_date?: string | null;
-  physical_release_date?: string | null;
   votes?: number | null;
   original_title?: string | null;
   cast_members?: Cast[] | null;

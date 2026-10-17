@@ -8,6 +8,7 @@ from backend.domain.availability import (
     episode_availability,
     latest,
     movie_availability,
+    movie_release_state,
     wants_air_times,
 )
 from backend.domain.quality import QualityProfileSpec
@@ -57,6 +58,32 @@ def test_back_catalogue_fallback_and_switching_it_off():
 def test_movie_without_any_date_is_held():
     assert movie() == Availability(False, "No release date on record", None)
     assert not movie(year=0).available
+
+
+def test_future_first_release_is_worded_as_due():
+    assert movie(release_date="2027-05-01").reason == "No digital or physical release date yet (first release due 2027-05-01)"
+
+
+def test_release_state_says_why_a_movie_is_not_out():
+    def state(production_status=None, **kw):
+        return movie_release_state(movie(**kw), production_status=production_status, release_date=kw.get("release_date"), today=TODAY)
+
+    # out per the gate: no file there means really missing, whatever TMDB's stage says
+    assert state(digital="2026-10-01", release_date="2026-08-01") == "released"
+    assert state("post_production", release_date="1999-03-31", year=1999) == "released"
+    # first released, waiting for its home release
+    assert state("released", digital="2026-11-20", release_date="2026-09-01") == "in_theaters"
+    assert state(release_date="2026-10-06") == "in_theaters"
+    # a stale pre-release stage loses to a theatrical date that has passed
+    assert state("post_production", release_date="2026-09-01") == "in_theaters"
+    assert state("in_production", release_date="2027-05-01") == "in_production"
+    assert state("planned") == "planned"
+    assert state("rumored") == "rumored"
+    assert state("canceled", release_date="2026-09-01") == "canceled"
+    # no stage on record (other provider, or not refreshed since the column was added)
+    assert state(release_date="2027-05-01") == "coming_soon"
+    assert state("released", release_date="2026-10-07") == "coming_soon"
+    assert state() == "announced"
 
 
 # ------------------------------------------------------------------ episodes

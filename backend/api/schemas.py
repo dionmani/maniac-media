@@ -1,12 +1,13 @@
 """API contracts (Pydantic v2). Secrets are write-only: responses expose ``has_*`` flags instead."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, computed_field, field_validator, model_validator
 
-from backend.domain.availability import episode_availability
+from backend.core.settings import get_settings
+from backend.domain.availability import episode_availability, movie_availability, movie_release_state
 
 ORM = ConfigDict(from_attributes=True)
 
@@ -190,7 +191,33 @@ class MediaFileDetailOut(MediaFileOut):
     mediainfo: dict[str, Any] | None = None
 
 
-class MovieOut(_ArtMixin):
+class _ReleaseMixin(BaseModel):
+    """Release dates plus where the movie stands against the release gate (domain/availability.py):
+    the UI's Missing vs In theaters / In production / ... Pass ``context={"catalog_days": n}`` when
+    validating many movies to skip a settings read per row."""
+
+    year: int
+    release_date: str | None = None
+    digital_release_date: str | None = None
+    physical_release_date: str | None = None
+    production_status: str | None = None
+    release_state: str | None = None
+    release_note: str | None = None  # the gate's reason, naming the date it was based on
+
+    @model_validator(mode="after")
+    def _release(self, info: ValidationInfo):
+        catalog_days = (info.context or {}).get("catalog_days")
+        if catalog_days is None:
+            catalog_days = get_settings().release_gate_catalog_days
+        today = date.today()
+        gate = movie_availability(digital=self.digital_release_date, physical=self.physical_release_date, release_date=self.release_date,
+                                  year=self.year, today=today, catalog_days=catalog_days)
+        self.release_state = movie_release_state(gate, production_status=self.production_status, release_date=self.release_date, today=today)
+        self.release_note = gate.reason
+        return self
+
+
+class MovieOut(_ArtMixin, _ReleaseMixin):
     model_config = ORM
     id: int
     title: str
@@ -230,7 +257,7 @@ class MovieOut(_ArtMixin):
     requested_by: list[str] = []  # users whose request-manager tags are on it (filled by the detail endpoint)
 
 
-class MovieSummary(_ArtMixin):
+class MovieSummary(_ArtMixin, _ReleaseMixin):
     model_config = ORM
     id: int
     title: str

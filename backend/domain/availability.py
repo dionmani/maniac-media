@@ -64,8 +64,28 @@ def movie_availability(*, digital: str | None, physical: str | None, release_dat
         day, kind = home[0]
         return Availability(False, f"{kind} release is {day}", day)
     if release_date:
-        return Availability(False, f"No digital or physical release date yet (first released {release_date[:10]})", None)
+        day = release_date[:10]
+        when = "first released" if day <= t else "first release due"
+        return Availability(False, f"No digital or physical release date yet ({when} {day})", None)
     return Availability(False, "No release date on record", None)
+
+
+PRE_RELEASE_STAGES = frozenset({"rumored", "planned", "in_production", "post_production"})
+
+
+def movie_release_state(gate: Availability, *, production_status: str | None, release_date: str | None, today: date) -> str:
+    """Where a movie stands, for the library badge: ``released`` (out per ``gate``, so no file means
+    really missing), ``canceled``, ``in_theaters`` (first released, home release still to come), a
+    TMDB pre-release stage, ``coming_soon`` (dated, stage unknown) or ``announced`` (nothing known)."""
+    if gate.available:
+        return "released"
+    if production_status == "canceled":
+        return "canceled"
+    if release_date and release_date[:10] <= today.isoformat():
+        return "in_theaters"
+    if production_status in PRE_RELEASE_STAGES:
+        return production_status
+    return "coming_soon" if release_date else "announced"
 
 
 def date_only_cutoff(now: datetime) -> str:

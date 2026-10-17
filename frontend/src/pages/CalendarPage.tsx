@@ -21,7 +21,7 @@ export default function CalendarPage() {
   const days = Array.from({ length: 14 }, (_, i) => { const d = new Date(start); d.setDate(d.getDate() + i); return iso(d); });
   const { data, isLoading, error } = useQuery({
     queryKey: ['calendar', days[0]],
-    queryFn: () => get<{ episodes: (Episode & { series_title: string })[]; movies: (MovieSummary & { release_date?: string; digital_release_date?: string })[] }>(
+    queryFn: () => get<{ episodes: (Episode & { series_title: string })[]; movies: MovieSummary[] }>(
       '/calendar', { start: days[0], end: days[13] }),
   });
   const today = iso(new Date());

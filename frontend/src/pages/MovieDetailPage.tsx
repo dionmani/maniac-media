@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post } from '../api/client';
 import type { HistoryItem, Movie, Page, QualityProfile } from '../api/types';
-import { ErrorAlert, Loading, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
+import { ErrorAlert, Loading, MovieStatusChip, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
 import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
@@ -74,7 +74,7 @@ export default function MovieDetailPage() {
         overline={['Movie', m.certification, m.runtime_minutes ? `${m.runtime_minutes} min` : null, m.studio].filter(Boolean).join(' · ')}
         chips={
           <>
-            {m.has_file ? <Chip color="success" size="small" label="On disk" /> : <Chip color="error" size="small" label="Missing" variant="outlined" />}
+            <MovieStatusChip movie={m} />
             {m.quality && <QualityChip quality={m.quality} />}
             {m.rating ? <Chip size="small" label={`★ ${m.rating.toFixed(1)}`} /> : null}
             {requestedByChip(m.requested_by)}

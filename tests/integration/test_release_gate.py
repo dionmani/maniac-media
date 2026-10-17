@@ -55,11 +55,14 @@ def test_movie_sql_matches_domain(database, catalog_days):
             db.add(m)
             db.flush()
             ids.append(m.id)
-        sql = set(db.scalars(select(models.Movie.id).where(models.Movie.id.in_(ids), MovieRepository.released(TODAY, catalog_days))))
+        released = MovieRepository.released(TODAY, catalog_days)
+        sql = set(db.scalars(select(models.Movie.id).where(models.Movie.id.in_(ids), released)))
+        held = set(db.scalars(select(models.Movie.id).where(models.Movie.id.in_(ids), ~released)))
         domain = {m.id for m in db.scalars(select(models.Movie).where(models.Movie.id.in_(ids)))
                   if movie_availability(digital=m.digital_release_date, physical=m.physical_release_date, release_date=m.release_date,
                                         year=m.year, today=TODAY, catalog_days=catalog_days).available}
         assert sql == domain
+        assert held == set(ids) - domain  # NULL dates must not drop rows from the negation
         db.rollback()
 
 

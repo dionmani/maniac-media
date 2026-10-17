@@ -96,6 +96,37 @@ def test_movie_crud_pagination_filtering(client, admin_headers, monkeypatch):
     assert client.get(f"{API}/movies/{movie['id']}", headers=admin_headers).status_code == 404
 
 
+def test_movie_list_splits_missing_from_not_out_yet(client, admin_headers):
+    from datetime import date, timedelta
+
+    from backend.db import models
+    from backend.db.session import session_scope
+
+    soon = (date.today() + timedelta(days=200)).isoformat()
+    with session_scope() as db:
+        rows = [
+            models.Movie(title="Gate List Released", year=1999, release_date="1999-03-31", has_file=False),
+            models.Movie(title="Gate List Filming", year=date.today().year + 1, release_date=soon, production_status="in_production", has_file=False),
+            models.Movie(title="Gate List Undated", year=date.today().year + 1, has_file=False),
+        ]
+        db.add_all(rows)
+        db.flush()
+        ids = [m.id for m in rows]
+    try:
+        def listed(**params):
+            page = client.get(f"{API}/movies", params={"search": "Gate List", "has_file": False, **params}, headers=admin_headers).json()
+            return {m["title"]: m["release_state"] for m in page["items"]}
+
+        assert listed(released=True) == {"Gate List Released": "released"}
+        assert listed(released=False) == {"Gate List Filming": "in_production", "Gate List Undated": "announced"}
+        detail = client.get(f"{API}/movies/{ids[1]}", headers=admin_headers).json()
+        assert detail["release_state"] == "in_production" and soon in detail["release_note"]
+    finally:
+        with session_scope() as db:
+            for movie_id in ids:
+                db.delete(db.get(models.Movie, movie_id))
+
+
 def test_series_add_with_episodes_and_monitoring(client, admin_headers, monkeypatch):
     from sqlalchemy import update
 

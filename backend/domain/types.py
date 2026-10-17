@@ -50,6 +50,7 @@ class MediaMetadata:
     votes: int | None = None
     certification: str | None = None
     status: str | None = None
+    production_status: str | None = None  # movies: rumored | planned | in_production | post_production | released | canceled
     studio: str | None = None  # movies: studio, series: network
     release_date: str | None = None
     digital_release_date: str | None = None

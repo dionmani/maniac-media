@@ -72,7 +72,7 @@ All v1 tables are preserved (additive migration only):
 
 | Table | Purpose | Notable columns |
 |---|---|---|
-| `movies` | Movie library | ids (tmdb unique, imdb idx), file info, `quality`, cast/crew JSON, release dates, `metadata_source`, `last_metadata_refresh`, `last_search_at` |
+| `movies` | Movie library | ids (tmdb unique, imdb idx), file info, `quality`, cast/crew JSON, release dates, `production_status` (TMDB stage, for the library badge), `metadata_source`, `last_metadata_refresh`, `last_search_at` |
 | `series`, `seasons`, `episodes` | TV library | tvdb/tvmaze/imdb ids, `monitor_new_seasons`; episodes indexed by `(series_id, season_number, episode_number)`, `air_date` plus `air_date_utc` (exact air time when a provider knows it, for the release gate) |
 | `quality_profiles` | Ranking | `items` (allowed qualities, best first), `cutoff`, codec preferences/rejections, size limits |
 | `indexers`, `download_clients` | Integrations | **encrypted** `api_key`/`password`; health, failure counters, circuit-breaker `disabled_until`, remote path mapping |
@@ -114,7 +114,11 @@ convention on `MetaData` gives deterministic constraint names across engines.
   touching an indexer. The decision engine rejects releases covering anything unreleased (a season
   pack needs the whole season aired), so interactive search shows the reason and a user can still
   override. A grab's history/audit entry records the date that cleared it. `MovieRepository.released`
-  / `EpisodeRepository.aired` are the SQL forms (wanted lists, counts), kept in step by a parity test.
+  / `EpisodeRepository.aired` are the SQL forms (wanted lists, counts), kept in step by a parity test;
+  `released` never evaluates to NULL, so its negation selects exactly the movies still held. The UI
+  uses the same gate: a movie without a file is *Missing* only once it is out; otherwise
+  `movie_release_state` says why not (in theaters, a TMDB production stage, coming soon, announced,
+  canceled) and the library's *Upcoming* filter lists those.
   TMDB/TVDB only give episode dates, so a TMDB-first series refresh borrows TVmaze's `airstamp`s when
   it has recent or upcoming episodes (matched on season, episode *and* date).
 

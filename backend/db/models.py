@@ -71,6 +71,8 @@ class Movie(Base):
     last_search_at: Mapped[datetime | None] = mapped_column(DateTime)
     # v4 – ids into ``tags`` (set by request managers via the compat API)
     tags: Mapped[list[int] | None] = mapped_column(JSON)
+    # rumored | planned | in_production | post_production | released | canceled (TMDB; None until refreshed)
+    production_status: Mapped[str | None] = mapped_column(String(32))
 
     files: Mapped[list[MediaFile]] = relationship(
         back_populates="movie", cascade="all, delete-orphan", order_by="MediaFile.is_primary.desc()"

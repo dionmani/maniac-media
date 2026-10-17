@@ -33,11 +33,13 @@ def list_movies(
     hdr_format: str | None = None,
     video_codec: str | None = None,
     audio_codec: str | None = None,
+    released: bool | None = None,  # out per the release gate (domain/availability.py), or not yet
 ):
     repo = MovieRepository(db)
+    catalog_days = get_settings().release_gate_catalog_days
     stmt = repo.query(
-        search=search, status=status, monitored=monitored, has_file=has_file, genre=genre,
-        year_from=year_from, year_to=year_to, quality_profile_id=quality_profile_id,
+        search=search, status=status, monitored=monitored, has_file=has_file, released=released, catalog_days=catalog_days,
+        genre=genre, year_from=year_from, year_to=year_to, quality_profile_id=quality_profile_id,
         video_resolution=video_resolution, hdr_format=hdr_format,
         video_codec=video_codec, audio_codec=audio_codec,
     )
@@ -53,7 +55,7 @@ def list_movies(
                 primary_files[mf.movie_id] = mf
     items = []
     for m in page.items:
-        out = schemas.MovieSummary.model_validate(m)
+        out = schemas.MovieSummary.model_validate(m, context={"catalog_days": catalog_days})
         pf = primary_files.get(m.id)
         if pf is not None:
             out.video_resolution = pf.video_resolution
@@ -521,7 +523,7 @@ def calendar(db: DB, _: Requires(Permission.MEDIA_READ), start: str = Query(...,
     return {
         "episodes": [{**schemas.EpisodeOut.model_validate(e).model_dump(), "series_title": t, "poster": schemas.public_art("tv", e.series_id, p)}
                      for e, t, p in rows],
-        "movies": [schemas.MovieSummary.model_validate(m).model_dump() | {"release_date": m.release_date, "digital_release_date": m.digital_release_date} for m in movies],
+        "movies": [schemas.MovieSummary.model_validate(m).model_dump() for m in movies],
     }
 
 

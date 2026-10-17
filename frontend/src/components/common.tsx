@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import type { ChipProps } from '@mui/material';
 import { useState, type ReactNode } from 'react';
+import type { MovieSummary } from '../api/types';
 import { palette } from '../theme';
 import { useUi } from '../store/ui';
 
@@ -93,6 +94,29 @@ const STATUS_COLORS: Record<string, ChipProps['color']> = {
 
 export function StatusChip({ status, label }: { status: string; label?: string }) {
   return <Chip size="small" label={(label ?? status).replace(/_/g, ' ')} color={STATUS_COLORS[status] ?? 'default'} variant="outlined" />;
+}
+
+// A movie without a file is only really missing once it's out (release gate); otherwise say why it isn't yet.
+const RELEASE_STATES: Record<string, { label: string; color: string }> = {
+  released: { label: 'Missing', color: palette.red },
+  in_theaters: { label: 'In theaters', color: palette.cyan },
+  coming_soon: { label: 'Coming soon', color: palette.purple },
+  post_production: { label: 'Post-production', color: palette.amber },
+  in_production: { label: 'In production', color: palette.amber },
+  planned: { label: 'Planned', color: palette.purple },
+  announced: { label: 'Announced', color: palette.purple },
+  rumored: { label: 'Rumored', color: palette.dim },
+  canceled: { label: 'Canceled', color: palette.dim },
+};
+
+export function releaseBadge(state?: string | null) {
+  return RELEASE_STATES[state ?? 'released'] ?? RELEASE_STATES.released;
+}
+
+export function MovieStatusChip({ movie }: { movie: Pick<MovieSummary, 'has_file' | 'release_state' | 'release_note'> }) {
+  if (movie.has_file) return <Chip size="small" color="success" label="On disk" />;
+  const badge = releaseBadge(movie.release_state);
+  return <Chip size="small" variant="outlined" label={badge.label} title={movie.release_note ?? undefined} sx={{ color: badge.color, borderColor: badge.color }} />;
 }
 
 export function QualityChip({ quality }: { quality?: string | null }) {

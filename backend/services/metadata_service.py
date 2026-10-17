@@ -227,6 +227,8 @@ def apply_movie(db: Session, movie: models.Movie, meta: MediaMetadata, *, overwr
         movie.crew = meta.crew
     if meta.status:
         movie.status = meta.status
+    if meta.production_status:
+        movie.production_status = meta.production_status
     if meta.imdb_id:
         movie.imdb_id = meta.imdb_id
     if meta.tmdb_id and movie.tmdb_id != meta.tmdb_id:

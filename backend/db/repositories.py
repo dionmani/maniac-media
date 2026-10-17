@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from backend.db import models
 from backend.db.base import Base, utcnow
-from backend.domain.availability import catalog_cutoff, date_only_cutoff
+from backend.domain.availability import DEFAULT_CATALOG_DAYS, catalog_cutoff, date_only_cutoff
 from backend.domain.parser import normalise_path_key
 
 T = TypeVar("T", bound=Base)
@@ -122,6 +122,8 @@ class MovieRepository(Repository[models.Movie]):
         status: str | None = None,
         monitored: bool | None = None,
         has_file: bool | None = None,
+        released: bool | None = None,
+        catalog_days: int = DEFAULT_CATALOG_DAYS,
         genre: str | None = None,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -142,6 +144,9 @@ class MovieRepository(Repository[models.Movie]):
             conds.append(models.Movie.monitored.is_(monitored))
         if has_file is not None:
             conds.append(models.Movie.has_file.is_(has_file))
+        if released is not None:
+            out = self.released(date.today(), catalog_days)
+            conds.append(out if released else ~out)
         if genre:
             conds.append(models.Movie.genres.ilike(f"%{genre}%"))
         if year_from:
@@ -166,14 +171,16 @@ class MovieRepository(Repository[models.Movie]):
 
     @staticmethod
     def released(today: date, catalog_days: int):
-        """SQL form of ``domain.availability.movie_availability`` - keep the two in step."""
+        """SQL form of ``domain.availability.movie_availability`` - keep the two in step.
+
+        Never NULL (missing dates compare as ''), so ``~released(...)`` selects exactly the rest."""
         m, t = models.Movie, today.isoformat()
-        conds = [and_(m.digital_release_date != "", m.digital_release_date <= t),
-                 and_(m.physical_release_date != "", m.physical_release_date <= t)]
+        conds = [and_(func.coalesce(m.digital_release_date, "") != "", m.digital_release_date <= t),
+                 and_(func.coalesce(m.physical_release_date, "") != "", m.physical_release_date <= t)]
         cutoff = catalog_cutoff(today, catalog_days)
         if cutoff:
-            conds += [and_(m.release_date != "", m.release_date <= cutoff.isoformat()),
-                      and_(or_(m.release_date.is_(None), m.release_date == ""), m.year > 0, m.year < cutoff.year)]
+            conds += [and_(func.coalesce(m.release_date, "") != "", m.release_date <= cutoff.isoformat()),
+                      and_(func.coalesce(m.release_date, "") == "", func.coalesce(m.year, 0) > 0, m.year < cutoff.year)]
         return or_(*conds)
 
     def ids_by_external(self, tmdb_ids: Sequence[int], imdb_ids: Sequence[str]) -> tuple[dict[int, int], dict[str, int]]:

@@ -31,6 +31,8 @@ TV_NOISE_GENRES = frozenset({10763, 10766, 10767})
 DISCOVER_PAGES = {"announced": 2, "in_theaters": 2, "streaming": 2, "new_series": 2, "new_seasons": 3}
 DETAIL_CONCURRENCY = 8
 RELEASE_TYPES = {2: "limited", 3: "theatrical", 4: "digital", 5: "physical"}
+PRODUCTION_STATUS = {"Rumored": "rumored", "Planned": "planned", "In Production": "in_production",
+                     "Post Production": "post_production", "Released": "released", "Canceled": "canceled"}
 
 
 def _img(path: str | None, size: str) -> str | None:
@@ -131,6 +133,7 @@ class TmdbProvider(MetadataProvider):
             status={"Released": "released", "In Production": "announced", "Post Production": "announced", "Planned": "announced"}.get(
                 m.get("status", ""), "released"
             ),
+            production_status=PRODUCTION_STATUS.get(m.get("status", "")),
         )
         if m.get("production_companies"):
             meta.studio = m["production_companies"][0].get("name")

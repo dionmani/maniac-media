@@ -30,7 +30,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { MovieSummary, Page, QualityProfile, SeriesSummary } from '../api/types';
-import { Empty, ErrorAlert, Loading, PageHeader, Poster, QualityChip } from '../components/common';
+import { Empty, ErrorAlert, Loading, MovieStatusChip, PageHeader, Poster, QualityChip, releaseBadge } from '../components/common';
 import { claimedResolutionMismatch, formatChannels } from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
 import { toast, useUi } from '../store/ui';
@@ -45,6 +45,7 @@ const FILTERS = {
     { value: 'all', label: 'All' },
     { value: 'has_file', label: 'On disk' },
     { value: 'missing', label: 'Missing' },
+    { value: 'upcoming', label: 'Upcoming' },
     { value: 'monitored', label: 'Monitored' },
     { value: 'unmonitored', label: 'Unmonitored' },
   ],
@@ -91,7 +92,8 @@ export default function LibraryPage() {
 
   const params: Record<string, string | number | boolean | undefined> = { sort, order, search: debounced || undefined };
   if (filter === 'has_file') params.has_file = true;
-  if (filter === 'missing') params.has_file = false;
+  // Missing = out per the release gate with no file; Upcoming = not out yet (in theaters, in production, ...)
+  if (filter === 'missing' || filter === 'upcoming') { params.has_file = false; params.released = filter === 'missing'; }
   if (filter === 'monitored') params.monitored = true;
   if (filter === 'unmonitored') params.monitored = false;
   if (filter === 'continuing' || filter === 'ended') params.status = filter;
@@ -380,7 +382,7 @@ const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, select
       </TableCell>
       <TableCell>
         {series ? <Chip size="small" label={i.status ?? 'continuing'} variant="outlined" />
-          : i.has_file ? <Chip size="small" color="success" label="On disk" /> : <Chip size="small" color="error" label="Missing" variant="outlined" />}
+          : <MovieStatusChip movie={i} />}
       </TableCell>
     </TableRow>
   );
@@ -447,16 +449,16 @@ const PosterCard = memo(function PosterCard({ item, onOpen, selecting, selected,
   // 0/0 means nothing is wanted (all unmonitored or unaired), so nothing is missing either
   const progress = series ? (item.aired_episode_count ? (item.episode_file_count / item.aired_episode_count) * 100 : 100) : item.has_file ? 100 : 0;
   const ended = series && (item.status ?? '').toLowerCase() === 'ended';
-  const badge = series
+  const badge: { label: string; color: string; tip?: string | null } = series
     ? { label: `${item.episode_file_count}/${item.aired_episode_count}`, color: progress >= 100 ? palette.green : progress > 0 ? palette.amber : palette.red }
-    : item.has_file ? { label: item.quality ?? 'On disk', color: palette.green } : { label: 'Missing', color: palette.red };
+    : item.has_file ? { label: item.quality ?? 'On disk', color: palette.green } : { ...releaseBadge(item.release_state), tip: item.release_note };
   return (
     // content-visibility lets the browser skip layout/paint for off-screen cards when the whole library is rendered.
     <Card id={anchor ? anchorId(anchor) : undefined} sx={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px', scrollMarginTop: SCROLL_MARGIN, transition: 'all .2s', ...(selected && { borderColor: palette.cyan, boxShadow: `0 0 0 2px ${palette.cyan}` }), '&:hover': { transform: 'translateY(-4px)', borderColor: palette.purple, boxShadow: `0 0 24px ${palette.purple}26` } }}>
       <CardActionArea onClick={() => onOpen(item)}>
         <Box sx={{ position: 'relative', aspectRatio: '2 / 3', bgcolor: '#181a2e', '& > *': { width: '100% !important', height: '100% !important', borderRadius: '0 !important' } }}>
           <Poster src={item.poster_path} title={item.title} height={240} />
-          <Chip size="small" label={badge.label} sx={{ position: 'absolute', top: 8, right: 8, width: 'auto !important', height: '22px !important',
+          <Chip size="small" label={badge.label} title={badge.tip ?? undefined} sx={{ position: 'absolute', top: 8, right: 8, width: 'auto !important', height: '22px !important',
             bgcolor: `${badge.color}d9`, color: '#fff', backdropFilter: 'blur(6px)', borderRadius: '11px !important' }} />
           {series && (
             <Box title={ended ? 'Ended series' : 'Continuing series'} sx={{ position: 'absolute', top: 8, left: 8, width: '26px !important', height: '26px !important', display: 'flex', alignItems: 'center', justifyContent: 'center',
