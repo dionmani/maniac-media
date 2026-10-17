@@ -4,16 +4,18 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from backend.db import models
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
 from backend.services import download_service, import_service, media_service, renamer_service, scanner_service, search_service
-from backend.services.audit import SYSTEM
+from backend.services.audit import SYSTEM, history
 
 
 def _add_movie(title: str, year: int) -> int:
@@ -132,6 +134,69 @@ def test_move_import_removes_the_emptied_release_folder(database, library, make_
     item = {"path": str(copied), "media_type": "movie", "media_id": _add_movie("Prisoners", 2013)}
     assert import_service.manual_import([item], "copy", SYSTEM).imported
     assert copied.exists()  # a copy leaves the download as it was
+
+
+def _queue_item(movie_id: int, release: Path, status: str) -> int:
+    with session_scope() as db:
+        q = models.DownloadQueueItem(title=release.name, media_type="movie", media_id=movie_id, release_title=release.name,
+                                     status=status, download_path=str(release), protocol="usenet")
+        db.add(q)
+        db.flush()
+        return q.id
+
+
+def test_import_crash_after_claim_releases_the_row(database, library, make_video, monkeypatch):
+    release = make_video(library["downloads"] / "Gattaca.1997.1080p.BluRay.x264-GRP" / "gattaca.mkv").parent
+    queue_id = _queue_item(_add_movie("Gattaca", 1997), release, "completed")
+
+    def crash(*_args):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(import_service, "_import_claimed", crash)
+    with pytest.raises(RuntimeError):
+        import_service.import_queue_item(queue_id)
+    with session_scope() as db:
+        q = db.get(models.DownloadQueueItem, queue_id)
+        assert q.status == "import_failed" and "database is locked" in q.error_message  # retryable, not stuck importing
+
+    def crash_after_import(qid, *_args):
+        with session_scope() as db:
+            q = db.get(models.DownloadQueueItem, qid)
+            history(db, "movie", q.media_id, q.title, "imported", download_id=qid)
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(import_service, "_import_claimed", crash_after_import)
+    with pytest.raises(RuntimeError):
+        import_service.import_queue_item(queue_id)
+    with session_scope() as db:
+        assert db.get(models.DownloadQueueItem, queue_id).status == "imported"  # the file made it; don't report a failure
+
+
+def test_imports_interrupted_by_a_restart_are_recovered(database, library, make_video):
+    from backend.main import app
+
+    pool = getattr(app.state, "pool", None)
+    was_paused = pool.paused if pool else False
+    if pool is not None:
+        pool.paused = True  # keep live workers from importing the re-queued item mid-test
+    try:
+        movie_id = _add_movie("Zodiac", 2007)
+        done = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.1080p" / "z.mkv").parent, "importing")
+        pending = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.2160p" / "z.mkv").parent, "importing")
+        with session_scope() as db:
+            history(db, "movie", movie_id, "Zodiac", "imported", download_id=done)
+            stale = history(db, "movie", movie_id, "Zodiac", "imported", download_id=pending)  # an earlier row with the same id
+            stale.timestamp = db.get(models.DownloadQueueItem, pending).added_at - timedelta(days=3)
+
+        assert import_service.recover_interrupted_imports() >= 2
+        with session_scope() as db:
+            assert db.get(models.DownloadQueueItem, done).status == "imported"
+            assert db.get(models.DownloadQueueItem, pending).status == "completed"
+            jobs = db.scalars(select(models.Job).where(models.Job.name == "import_download", models.Job.status == "queued"))
+            assert any(j.payload.get("queue_id") == pending for j in jobs)
+    finally:
+        if pool is not None:
+            pool.paused = was_paused
 
 
 def test_housekeeping_removes_old_empty_download_folders(database, library):

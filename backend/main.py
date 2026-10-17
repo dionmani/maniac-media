@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     paths.ensure_dirs()
     from backend.plugins import registry
-    from backend.services import notification_service
+    from backend.services import import_service, notification_service
     from backend.workers import tasks  # noqa: F401  (registers job handlers)
     from backend.workers.queue import WorkerPool, job_queue
     from backend.workers.scheduler import scheduler
@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
     bus.bind_loop(asyncio.get_running_loop())
     notification_service.install()
 
+    await asyncio.to_thread(import_service.recover_interrupted_imports)  # before the workers claim the re-queued jobs
     pool = WorkerPool(job_queue, size=4)
     await pool.start()
     scheduler.start()

@@ -521,7 +521,6 @@ _CANDIDATE_STATE_REASONS: dict[str, ImportFailureReason] = {
 
 
 def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
-    settings = get_settings()
     result = ImportResult()
     allowed_statuses = ["completed", "import_failed"] + (["importing"] if force else [])
     with session_scope() as db:
@@ -541,8 +540,70 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
             return result
         info = (q.download_path, q.media_type, q.media_id, q.season_num, q.episode_numbers or ([q.ep_num] if q.ep_num else []), q.protocol, q.release_title)
     bus.publish(EventType.QUEUE_CHANGED)
-    download_path, media_type, media_id, season, episodes, protocol, release_title = info
+    try:
+        return _import_claimed(queue_id, force, *info)
+    except Exception as exc:
+        # Nothing else moves a row out of "importing" (a re-run can't claim it), so whatever escaped,
+        # release the claim rather than leave the row showing as importing for good.
+        _release_claim(queue_id, f"Unexpected error: {exc}")
+        raise
 
+
+def _import_recorded(db: Session, q: models.DownloadQueueItem) -> bool:
+    """Whether any of this download's files reached the library – an interrupted import may have
+    committed its file work before it could mark the row imported."""
+    stmt = select(models.History.id).where(models.History.download_id == q.id,
+                                           models.History.event_type.in_(("imported", "upgraded")))
+    if q.added_at is not None:  # SQLite can reuse a deleted row's id; ignore an earlier owner's history
+        stmt = stmt.where(models.History.timestamp >= q.added_at)
+    return db.scalar(stmt.limit(1)) is not None
+
+
+def _release_claim(queue_id: int, error: str) -> None:
+    try:
+        with session_scope() as db:
+            q = db.get(models.DownloadQueueItem, queue_id)
+            if q is None or q.status != "importing":
+                return
+            if _import_recorded(db, q):
+                q.status = "imported"
+            else:
+                q.status, q.error_message = "import_failed", error
+                q.failure_reason = q.failure_signature = ImportFailureReason.UNKNOWN.value
+    except Exception:
+        log.exception("Could not release the import claim on queue item %s", queue_id)
+        return
+    bus.publish(EventType.QUEUE_CHANGED)
+
+
+def recover_interrupted_imports() -> int:
+    """Settle queue items a restart left in "importing": the re-queued job can't claim them again.
+
+    Runs at startup before the workers, so no import is genuinely in flight. Items whose files made it
+    into the library are marked imported; the rest go back to completed and are imported again.
+    """
+    from backend.workers.queue import job_queue
+
+    retry: list[int] = []
+    with session_scope() as db:
+        stuck = list(db.scalars(select(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "importing")))
+        for q in stuck:
+            if _import_recorded(db, q):
+                q.status = "imported"
+            else:
+                q.status = "completed"
+                retry.append(q.id)
+    for qid in retry:
+        job_queue.enqueue("import_download", {"queue_id": qid}, trigger="event", dedupe_key=str(qid))
+    if stuck:
+        log.warning("Recovered %d import(s) interrupted by a restart (%d re-queued)", len(stuck), len(retry))
+    return len(stuck)
+
+
+def _import_claimed(queue_id: int, force: bool, download_path, media_type, media_id, season, episodes, protocol,
+                    release_title) -> ImportResult:
+    settings = get_settings()
+    result = ImportResult()
     failure = None
     fail_reason = ImportFailureReason.UNKNOWN
     fail_evidence: dict = {}
@@ -942,5 +1003,6 @@ __all__ = [
     "manual_import",
     "manual_scan",
     "prune_download_folder",
+    "recover_interrupted_imports",
     "scan_download_folder",
 ]
