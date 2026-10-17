@@ -44,22 +44,12 @@ def test_full_download_and_import_pipeline(database, library):
         asyncio.run(download_service.sync_clients())
         with session_scope() as db:
             status = db.get(models.DownloadQueueItem, queue_id).status
-        if status in ("completed", "imported"):
+        if status == "completed":
             break
         time.sleep(1)
-    assert status in ("completed", "imported")
-    if status == "completed":  # a live worker pool may already have auto-imported it
-        outcome = import_service.import_queue_item(queue_id)
-        if not outcome.imported:  # lost the race: the worker imported between our status read and this call
-            for _ in range(20):
-                with session_scope() as db:
-                    if db.get(models.DownloadQueueItem, queue_id).status == "imported":
-                        break
-                time.sleep(0.5)
-            with session_scope() as db:
-                assert db.get(models.DownloadQueueItem, queue_id).status == "imported", outcome
-        else:
-            assert outcome.imported == ["Interstellar (2014)"], outcome
+    assert status == "completed"  # no worker pool in tests, so nothing imports it behind our back
+    outcome = import_service.import_queue_item(queue_id)
+    assert outcome.imported == ["Interstellar (2014)"], outcome
     with session_scope() as db:
         movie = db.get(models.Movie, movie_id)
         assert movie.has_file and Path(movie.file_path).exists()
@@ -173,30 +163,20 @@ def test_import_crash_after_claim_releases_the_row(database, library, make_video
 
 
 def test_imports_interrupted_by_a_restart_are_recovered(database, library, make_video):
-    from backend.main import app
+    movie_id = _add_movie("Zodiac", 2007)
+    done = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.1080p" / "z.mkv").parent, "importing")
+    pending = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.2160p" / "z.mkv").parent, "importing")
+    with session_scope() as db:
+        history(db, "movie", movie_id, "Zodiac", "imported", download_id=done)
+        stale = history(db, "movie", movie_id, "Zodiac", "imported", download_id=pending)  # an earlier row with the same id
+        stale.timestamp = db.get(models.DownloadQueueItem, pending).added_at - timedelta(days=3)
 
-    pool = getattr(app.state, "pool", None)
-    was_paused = pool.paused if pool else False
-    if pool is not None:
-        pool.paused = True  # keep live workers from importing the re-queued item mid-test
-    try:
-        movie_id = _add_movie("Zodiac", 2007)
-        done = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.1080p" / "z.mkv").parent, "importing")
-        pending = _queue_item(movie_id, make_video(library["downloads"] / "Zodiac.2007.2160p" / "z.mkv").parent, "importing")
-        with session_scope() as db:
-            history(db, "movie", movie_id, "Zodiac", "imported", download_id=done)
-            stale = history(db, "movie", movie_id, "Zodiac", "imported", download_id=pending)  # an earlier row with the same id
-            stale.timestamp = db.get(models.DownloadQueueItem, pending).added_at - timedelta(days=3)
-
-        assert import_service.recover_interrupted_imports() >= 2
-        with session_scope() as db:
-            assert db.get(models.DownloadQueueItem, done).status == "imported"
-            assert db.get(models.DownloadQueueItem, pending).status == "completed"
-            jobs = db.scalars(select(models.Job).where(models.Job.name == "import_download", models.Job.status == "queued"))
-            assert any(j.payload.get("queue_id") == pending for j in jobs)
-    finally:
-        if pool is not None:
-            pool.paused = was_paused
+    assert import_service.recover_interrupted_imports() >= 2
+    with session_scope() as db:
+        assert db.get(models.DownloadQueueItem, done).status == "imported"
+        assert db.get(models.DownloadQueueItem, pending).status == "completed"
+        jobs = db.scalars(select(models.Job).where(models.Job.name == "import_download", models.Job.status == "queued"))
+        assert any(j.payload.get("queue_id") == pending for j in jobs)
 
 
 def test_housekeeping_removes_old_empty_download_folders(database, library):
@@ -265,14 +245,15 @@ def test_scanner_and_renamer(database, library, make_video):
     assert after["movies"]["missing"] >= 1
 
 
+def test_tests_run_without_background_workers(client):
+    """A job one test queues must never run behind a later one (conftest sets MANIAC_BACKGROUND_WORKERS=0)."""
+    assert client.app.state.pool is None
+
+
 def test_job_queue_persists_and_recovers(database):
-    from backend.main import app
     from backend.workers import tasks  # noqa: F401
     from backend.workers.queue import job_queue
 
-    pool = getattr(app.state, "pool", None)
-    if pool is not None:
-        pool.paused = True  # keep live workers from racing this test
     job_id = job_queue.enqueue("cleanup", trigger="manual")
     assert job_queue.enqueue("cleanup", trigger="manual") == job_id  # deduplicated
     claimed = job_queue.claim()

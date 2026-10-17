@@ -79,6 +79,7 @@ cd frontend && npm run dev                # Vite on :3000, proxies /api to :8000
 | `MANIAC_HOST` / `MANIAC_PORT` | bind address (default `127.0.0.1:8000`) |
 | `MANIAC_LOG_FORMAT` | `console` or `json` |
 | `MANIAC_LOG_LEVEL` | `INFO`, `DEBUG`, … |
+| `MANIAC_BACKGROUND_WORKERS` | `0` serves the API without running jobs, schedules or the folder watcher (used by the test suite) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | enable OpenTelemetry tracing |
 
 Optional database drivers: `pip install -r requirements-optional.txt`.

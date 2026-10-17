@@ -41,6 +41,9 @@ Test isolation: `tests/conftest.py` sets `MANIAC_DATA_DIR` to a fresh temp dir a
 never touch a real `./data`. Fixtures are session-scoped and build on each other: `library` →
 `database` (runs `bootstrap_database()`) → `client` (FastAPI `TestClient`) → `admin_headers` (does
 first-run `/auth/setup`, falls back to `/auth/login` if already set up).
+It also sets `MANIAC_BACKGROUND_WORKERS=0`, so the `TestClient` app starts no job workers, scheduler or
+folder watcher: a job a test queues stays `queued` instead of running behind later tests. Run the work you
+want to test directly (call the service or the task function); the e2e server turns workers back on.
 
 ### Frontend (`frontend/`)
 

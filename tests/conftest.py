@@ -13,6 +13,9 @@ from pathlib import Path
 _DATA = Path(tempfile.mkdtemp(prefix="maniac-test-"))
 os.environ["MANIAC_DATA_DIR"] = str(_DATA)
 os.environ["MANIAC_MASTER_KEY"] = "pytest-master-key-passphrase"
+# no job workers, scheduler or folder watcher: a job one test queues must not run in the background of later
+# tests (it once grabbed a release while test_release_gate had download_service.grab patched)
+os.environ["MANIAC_BACKGROUND_WORKERS"] = "0"
 os.environ.setdefault("MANIAC_LOG_LEVEL", "WARNING")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -34,7 +37,7 @@ def library(data_dir: Path) -> dict[str, Path]:
     settings_manager.update(
         media_root_movies=str(dirs["movies"]), media_root_tv=str(dirs["tv"]), download_folder=str(dirs["downloads"]),
         recycle_bin=str(dirs["recycle"]), watch_download_folder=False,
-        search_missing_files=False,  # scans would queue searches that run in the background of later tests
+        search_missing_files=False,  # keep scans from queueing searches that nothing in the test session runs
         metadata_providers={
             "tmdb": {"enabled": False}, "tvdb": {"enabled": False}, "tvmaze": {"enabled": False}, "imdb": {"enabled": False},
         },

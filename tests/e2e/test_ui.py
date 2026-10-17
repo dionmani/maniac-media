@@ -44,7 +44,8 @@ def server():
         '{"media_root_movies": "%s", "media_root_tv": "%s", "download_folder": "%s", "watch_download_folder": false}'
         % tuple(str(lib / d).replace("\\", "\\\\") for d in ("movies", "tv", "downloads"))
     )
-    env = {**os.environ, "MANIAC_DATA_DIR": str(data), "MANIAC_MASTER_KEY": "e2e-master-key", "MANIAC_PORT": str(port), "MANIAC_LOG_LEVEL": "WARNING"}
+    env = {**os.environ, "MANIAC_DATA_DIR": str(data), "MANIAC_MASTER_KEY": "e2e-master-key", "MANIAC_PORT": str(port), "MANIAC_LOG_LEVEL": "WARNING",
+           "MANIAC_BACKGROUND_WORKERS": "1"}  # conftest turns them off for in-process tests; the real server needs them
     proc = subprocess.Popen([sys.executable, "run.py"], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     base = f"http://127.0.0.1:{port}"
     for _ in range(60):
