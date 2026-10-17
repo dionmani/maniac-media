@@ -243,7 +243,7 @@ def test_relabel_action_resolves_quality_mismatch(movie_files, monkeypatch):
 
 def test_inspection_api_endpoints(stub_ffprobe, movie_files, client, admin_headers, monkeypatch):
     from backend.services import inspection_service
-    monkeypatch.setattr(inspection_service, "ffprobe_version", lambda: "7.0.2")
+    monkeypatch.setattr(inspection_service, "ffprobe_version", lambda binary=None: "7.0.2")
 
     # GET /system/status
     res = client.get("/api/v1/system/status", headers=admin_headers)
@@ -252,6 +252,16 @@ def test_inspection_api_endpoints(stub_ffprobe, movie_files, client, admin_heade
     assert "ffprobe" in data
     assert data["ffprobe"]["found"] is True
     assert data["ffprobe"]["version"] == "7.0.2"
+    assert data["ffprobe"]["enabled"] is True
+
+    # disabling inspection must not make an installed binary read as missing
+    from backend.core.settings import settings_manager
+    settings_manager.update(inspection_enabled=False)
+    try:
+        off = client.get("/api/v1/system/status", headers=admin_headers).json()["ffprobe"]
+    finally:
+        settings_manager.update(inspection_enabled=True)
+    assert off["enabled"] is False and off["found"] is True and off["path"] == "/usr/bin/ffprobe"
 
     # POST /media-files/{id}/inspect
     post_res = client.post(f"/api/v1/media-files/{movie_files['ok']}/inspect", headers=admin_headers)

@@ -35,14 +35,13 @@ STARTED_AT = datetime.now()
 @router.get("/system/status")
 def status(_: Requires(Permission.SYSTEM_READ)):
     settings = get_settings()
-    ffprobe_info = {"found": False, "path": None, "version": None}
-    if settings.inspection_enabled:
-        from backend.services.inspection_service import ffprobe_path, ffprobe_version
-        path = ffprobe_path()
-        if path:
-            ffprobe_info["found"] = True
-            ffprobe_info["path"] = path
-            ffprobe_info["version"] = ffprobe_version()
+    # Always look for the binary: "is inspection switched on" and "is ffprobe installed" are separate
+    # facts, and reporting found=False while disabled read as a missing binary in Settings.
+    from backend.services.inspection_service import ffprobe_path, ffprobe_version
+
+    path = ffprobe_path()
+    ffprobe_info = {"enabled": settings.inspection_enabled, "found": bool(path), "path": path,
+                    "version": ffprobe_version(path) if path else None}
 
     return {
         "app_name": "Maniac Media",

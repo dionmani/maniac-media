@@ -46,7 +46,7 @@ export function MediaManagement() {
   // count between renders and crash the tab ("Rendered more hooks than during the previous render").
   const statusQuery = useQuery({
     queryKey: ['system-status'],
-    queryFn: () => get<{ ffprobe?: { found: boolean; path: string | null; version: string | null } }>('/system/status'),
+    queryFn: () => get<{ ffprobe?: { enabled: boolean; found: boolean; path: string | null; version: string | null } }>('/system/status'),
     enabled: canSeeStatus, // /system/status needs system:read; a 403 must not read as "ffprobe not found"
   });
 
@@ -142,8 +142,10 @@ export function MediaManagement() {
           {ffprobeStatus?.found ? (
             <Chip size="small" color="success" label={`ffprobe found${ffprobeStatus.version ? ` (${ffprobeStatus.version})` : ''}: ${ffprobeStatus.path}`} />
           ) : (
-            <Chip size="small" color="error" label="ffprobe not found on host" />
+            <Chip size="small" color="error" label="ffprobe not found – install ffmpeg or set its path below" />
           )}
+          {/* the live switch, not the saved value, so it updates as soon as it's toggled */}
+          {!form.inspection_enabled && <Chip size="small" variant="outlined" label="Inspection disabled" />}
         </Stack>
         )}
         <Grid container spacing={2}>
@@ -181,9 +183,9 @@ export function MediaManagement() {
               size="small"
               type="number"
               label="Movie runtime tolerance (%)"
-              value={form.runtime_tolerance_movie_pct ?? 20}
+              value={form.runtime_tolerance_movie_pct ?? 15}
               inputProps={{ min: 5, max: 90 }}
-              helperText="Tolerance before flagging runtime mismatch (default 20%)"
+              helperText="Tolerance before flagging runtime mismatch (default 15%)"
               onChange={(e) => set('runtime_tolerance_movie_pct', Number(e.target.value))}
               disabled={!canWrite}
             />
@@ -194,9 +196,9 @@ export function MediaManagement() {
               size="small"
               type="number"
               label="Episode runtime tolerance (%)"
-              value={form.runtime_tolerance_episode_pct ?? 30}
+              value={form.runtime_tolerance_episode_pct ?? 25}
               inputProps={{ min: 5, max: 90 }}
-              helperText="Tolerance before flagging runtime mismatch (default 30%)"
+              helperText="Tolerance before flagging runtime mismatch (default 25%)"
               onChange={(e) => set('runtime_tolerance_episode_pct', Number(e.target.value))}
               disabled={!canWrite}
             />
@@ -217,7 +219,7 @@ export function MediaManagement() {
           </Box>
         )}
       </Section>
-      {canWrite && <Box><Button variant="contained" startIcon={<Save size={16} />} onClick={() => save.mutate(keys)} disabled={save.isPending}>Save</Button></Box>}
+      {canWrite && <Box><Button variant="contained" startIcon={<Save size={16} />} onClick={() => save.mutate(keys, { onSuccess: () => { if (canSeeStatus) statusQuery.refetch(); } })} disabled={save.isPending}>Save</Button></Box>}
     </Stack>
   );
 }
