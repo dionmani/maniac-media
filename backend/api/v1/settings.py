@@ -59,8 +59,13 @@ def update_general(req: schemas.GeneralSettings, db: DB, user: Requires(Permissi
 
 @router.post("/settings/naming/preview")
 def naming_preview(req: schemas.NamingPreviewRequest, _: Requires(Permission.SETTINGS_READ)):
-    p = naming.preview(req.template, req.kind)
-    return {"example": p.example, "errors": p.errors, "tokens": naming.MOVIE_TOKENS if req.kind == "movie" else naming.EPISODE_TOKENS}
+    p = naming.preview(req.template, req.kind, inspect_before_import=get_settings().inspect_before_import)
+    return {
+        "example": p.example,
+        "errors": p.errors,
+        "warnings": p.warnings,
+        "tokens": naming.MOVIE_TOKENS if req.kind == "movie" else naming.EPISODE_TOKENS,
+    }
 
 
 # ------------------------------------------------------------------ quality

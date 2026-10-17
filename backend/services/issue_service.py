@@ -71,6 +71,7 @@ class IssueRecorder:
     media_type: str
     _reported: dict[str, _Reported] = field(default_factory=dict)
     _touched: dict[str, set[int]] = field(default_factory=dict)  # issue type (or ALL) -> media ids
+    _touched_paths: dict[str, set[str]] = field(default_factory=dict)  # issue type (or ALL) -> normalised path keys
     _touched_all: set[str] = field(default_factory=set)  # issue types (or ALL) reconciled for every media
 
     def report(self, issue_type: str, media_type: str | None, media_id: int | None, path: str | None, details: str | None = None, *,
@@ -88,13 +89,28 @@ class IssueRecorder:
         for t in map(str, issue_types or (ALL,)):
             self._touched.setdefault(t, set()).add(media_id)
 
+    def touch_path(self, path: str, *issue_types: str) -> None:
+        """Declare that ``path`` was fully inspected for ``issue_types`` (default: all)."""
+        from backend.domain.parser import normalise_path_key
+
+        norm = normalise_path_key(path)
+        for t in map(str, issue_types or (ALL,)):
+            self._touched_paths.setdefault(t, set()).add(norm)
+
     def touch_all(self, *issue_types: str) -> None:
         """Declare that a whole-library detector ran for ``issue_types`` (default: all)."""
         self._touched_all.update(map(str, issue_types or (ALL,)))
 
     def _in_scope(self, row: models.LibraryIssue) -> bool:
+        from backend.domain.parser import normalise_path_key
+
+        norm_path = normalise_path_key(row.path) if row.path else None
         for key in (ALL, row.issue_type):
-            if key in self._touched_all or (row.media_id is not None and row.media_id in self._touched.get(key, ())):
+            if key in self._touched_all:
+                return True
+            if row.media_id is not None and row.media_id in self._touched.get(key, ()):
+                return True
+            if norm_path and norm_path in self._touched_paths.get(key, ()):
                 return True
         return False
 
@@ -298,8 +314,41 @@ def _match(db, issue, params, actor) -> str:
     return "Open the Import page to match this folder"  # UI-only action; no state change
 
 
+def _relabel(db, issue, params, actor) -> str:
+    from backend.domain.quality import QUALITIES, Resolution, parse_quality
+
+    if not issue.path:
+        raise IssueActionError("Issue has no file to relabel")
+    mf = MediaFileRepository(db).by_path(issue.path)
+    if mf is None:
+        raise IssueActionError("Media file record not found")
+    actual_str = (issue.data or {}).get("actual") or mf.video_resolution
+    if not actual_str:
+        raise IssueActionError("Actual resolution is unknown")
+    try:
+        target_res = Resolution(actual_str)
+    except ValueError:
+        raise IssueActionError(f"Unrecognised resolution: {actual_str}")
+
+    current_q = parse_quality(mf.quality or "").quality
+    matched = next((q for q in QUALITIES if q.resolution == target_res and q.source == current_q.source), None)
+    if matched is None:
+        matched = next((q for q in QUALITIES if q.resolution == target_res and q.weight > 0), None)
+    new_label = matched.name if matched else actual_str
+    mf.quality = new_label
+    mf.quality_locked = True  # a rescan re-parses the filename; don't let it undo the relabel
+    if mf.media_type == "movie" and mf.movie:
+        media_file_service.sync_legacy(db, mf.movie)
+    elif mf.media_type == "tv":
+        for ef in db.scalars(select(models.EpisodeFile).where(models.EpisodeFile.media_file_id == mf.id)):
+            if ef.episode:
+                media_file_service.sync_legacy(db, ef.episode)
+    _close(issue, RESOLVED, "relabel")
+    return f"Relabelled quality to {new_label}"
+
+
 _DISPATCH = {
     "dismiss": _dismiss, "reopen": _reopen, "search": _search, "rescan": _rescan,
-    "unmonitor": _unmonitor, "delete_file": _delete_file, "match": _match,
+    "unmonitor": _unmonitor, "delete_file": _delete_file, "match": _match, "relabel": _relabel,
 }
 assert {a for s in REGISTRY.values() for a in s.actions} <= set(_DISPATCH), "registry action without a handler"

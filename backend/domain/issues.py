@@ -24,7 +24,21 @@ class IssueType(StrEnum):
     MISSING_AUDIO = "missing_audio"
     LANGUAGE_MISSING = "language_missing"
     MISSING_SUBTITLES = "missing_subtitles"
+    # ffprobe findings. Deliberately separate from CORRUPT_FILE, which belongs to the scanner's
+    # header-magic check: each detector auto-resolves only the types it owns.
+    TRUNCATED_FILE = "truncated_file"
+    INVALID_MEDIA = "invalid_media"
     STORAGE_CANDIDATE = "storage_optimization_candidate"
+
+
+# Issue types raised by ffprobe inspection (and therefore auto-resolved by it).
+INSPECTION_ISSUE_TYPES: tuple[str, ...] = tuple(t.value for t in (
+    IssueType.QUALITY_MISMATCH, IssueType.RUNTIME_MISMATCH, IssueType.TRUNCATED_FILE,
+    IssueType.INVALID_MEDIA, IssueType.MISSING_AUDIO, IssueType.LANGUAGE_MISSING,
+))
+# Issues that describe one file's contents: they follow the file when it is moved/renamed and close
+# when its record is removed. Media-level types (missing_file, upgrade_available, …) are not here.
+FILE_SCOPED_ISSUE_TYPES: tuple[str, ...] = (*INSPECTION_ISSUE_TYPES, IssueType.CORRUPT_FILE.value)
 
 
 class Severity(StrEnum):
@@ -74,8 +88,10 @@ REGISTRY: dict[IssueType, IssueTypeSpec] = dict([
     _spec(IssueType.DUPLICATE_FILE, "Duplicate files", Severity.WARNING, (), "duplicates"),  # keep_* actions arrive with 05
     _spec(IssueType.UPGRADE_AVAILABLE, "Upgrade available", Severity.INFO, ("search",), "quality"),
     _spec(IssueType.UNMATCHED_FOLDER, "Unmatched folder", Severity.WARNING, ("match",), "completeness"),  # `match` opens the Import page (UI-only, no state change)
-    _spec(IssueType.QUALITY_MISMATCH, "Quality mismatch", Severity.WARNING, ("search",), "integrity"),
-    _spec(IssueType.RUNTIME_MISMATCH, "Runtime mismatch", Severity.WARNING, ("search",), "integrity"),
+    _spec(IssueType.QUALITY_MISMATCH, "Quality mismatch", Severity.WARNING, ("search", "relabel"), "integrity"),
+    _spec(IssueType.RUNTIME_MISMATCH, "Runtime mismatch", Severity.WARNING, ("search", "match"), "integrity"),
+    _spec(IssueType.TRUNCATED_FILE, "Truncated file", Severity.ERROR, ("search", "delete_file"), "integrity"),
+    _spec(IssueType.INVALID_MEDIA, "Invalid media", Severity.ERROR, ("search", "delete_file"), "integrity"),
     _spec(IssueType.MISSING_AUDIO, "Missing audio", Severity.ERROR, ("search", "delete_file"), "integrity"),
     _spec(IssueType.LANGUAGE_MISSING, "Language missing", Severity.INFO, ("search",), "quality"),
     _spec(IssueType.MISSING_SUBTITLES, "Missing subtitles", Severity.INFO, (), "completeness"),

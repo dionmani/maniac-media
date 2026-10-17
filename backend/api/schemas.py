@@ -248,6 +248,12 @@ class MovieSummary(_ArtMixin):
     genres: str | None = None
     certification: str | None = None
     added_date: datetime | None = None
+    video_resolution: str | None = None
+    hdr_format: str | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    audio_channels: int | None = None
+    audio_languages: list[str] | None = None
 
 
 class MovieUpdate(BaseModel):
@@ -845,6 +851,18 @@ class GeneralSettings(BaseModel):
     job_retention_days: int | None = Field(None, ge=1)
     history_retention_days: int | None = Field(None, ge=1)
     audit_retention_days: int | None = Field(None, ge=30)
+    ffprobe_path: str | None = None
+    inspection_enabled: bool | None = None
+    inspection_concurrency: int | None = Field(None, ge=1, le=8)
+    preferred_audio_languages: list[str] | None = None
+    runtime_tolerance_episode_pct: int | None = Field(None, ge=5, le=90)
+    runtime_tolerance_movie_pct: int | None = Field(None, ge=5, le=90)
+    inspect_before_import: bool | None = None
+
+
+class LibraryInspectRequest(BaseModel):
+    scope: Literal["movies", "tv", "all"] = "all"
+    only_uninspected: bool = True
 
 
 class MetadataProviderUpdate(BaseModel):

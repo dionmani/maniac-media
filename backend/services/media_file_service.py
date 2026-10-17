@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from backend.db import models
 from backend.db.base import utcnow
+from backend.db.repositories import LibraryIssueRepository
+from backend.domain.issues import FILE_SCOPED_ISSUE_TYPES, Status, fingerprint
 from backend.domain.parser import normalise_path_key, release_group
 from backend.domain.quality import ParsedQuality, parse_quality
 
@@ -154,12 +156,13 @@ def attach_movie_file(
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
             mf.inspected_at = None
             mf.inspection_error = None
-            
+            mf.quality_locked = False  # new content: a relabel of the old file no longer applies
+
         mf.path = path_str
         mf.relative_path = rel_path
         mf.size_bytes = size_bytes
         mf.mtime = mtime
-        if quality_name and quality_name != "Unknown":
+        if quality_name and quality_name != "Unknown" and not mf.quality_locked:
             mf.quality = quality_name
         if codec_name:
             mf.codec = codec_name
@@ -271,12 +274,13 @@ def attach_episode_file(
         if mf.size_bytes != size_bytes or mf.mtime != mtime:
             mf.inspected_at = None
             mf.inspection_error = None
-            
+            mf.quality_locked = False  # new content: a relabel of the old file no longer applies
+
         mf.path = path_str
         mf.relative_path = rel_path
         mf.size_bytes = size_bytes
         mf.mtime = mtime
-        if quality_name and quality_name != "Unknown":
+        if quality_name and quality_name != "Unknown" and not mf.quality_locked:
             mf.quality = quality_name
         if codec_name:
             mf.codec = codec_name
@@ -327,6 +331,7 @@ def attach_episode_file(
 def move_file(db: Session, media_file: models.MediaFile, new_path: Path | str) -> None:
     """Update file path, hash, relative path and legacy columns upon rename or move."""
     path_str = str(new_path)
+    _rekey_file_issues(db, media_file, media_file.path, path_str)
     media_file.path = path_str
     media_file.path_hash = hashlib.sha256(normalise_path_key(path_str).encode()).hexdigest()
 
@@ -352,9 +357,50 @@ def move_file(db: Session, media_file: models.MediaFile, new_path: Path | str) -
             sync_legacy(db, ep)
 
 
+def _owner_id(media_file: models.MediaFile) -> int | None:
+    return media_file.movie_id if media_file.media_type == "movie" else media_file.series_id
+
+
+def retire_file_issues(db: Session, media_file: models.MediaFile) -> int:
+    """Auto-resolve the open file-scoped issues of a file whose record is going away.
+
+    Nothing re-inspects a removed path, so without this its quality/runtime/corrupt issues would
+    stay open forever (e.g. the old episode file after an upgrade).
+    """
+    rows = LibraryIssueRepository(db).for_file(media_file.media_type, _owner_id(media_file), media_file.path,
+                                               FILE_SCOPED_ISSUE_TYPES, (Status.OPEN.value,))
+    now = utcnow()
+    for row in rows:
+        row.status, row.resolved, row.resolved_at, row.resolution = Status.RESOLVED.value, True, now, "auto"
+    return len(rows)
+
+
+def _rekey_file_issues(db: Session, media_file: models.MediaFile, old_path: str, new_path: str) -> None:
+    """Carry a file's open/dismissed file-scoped issues over to its new path on rename/move.
+
+    A move keeps size and mtime, so the file is never re-inspected; without re-keying, its issues
+    would point at a path that no longer exists and never be resolved by a later inspection.
+    """
+    if not old_path or normalise_path_key(old_path) == normalise_path_key(new_path):
+        return
+    repo = LibraryIssueRepository(db)
+    statuses = (Status.OPEN.value, Status.DISMISSED.value)
+    owner = _owner_id(media_file)
+    taken = {row.fingerprint for row in repo.for_file(media_file.media_type, owner, new_path, FILE_SCOPED_ISSUE_TYPES, statuses)}
+    now = utcnow()
+    for row in repo.for_file(media_file.media_type, owner, old_path, FILE_SCOPED_ISSUE_TYPES, statuses):
+        fp = fingerprint(row.issue_type, row.media_type, row.media_id, new_path)
+        if fp in taken:  # the new path already carries this finding: the old row is redundant
+            row.status, row.resolved, row.resolved_at, row.resolution = Status.RESOLVED.value, True, now, "auto"
+            continue
+        row.path, row.fingerprint = new_path[:1024], fp
+        taken.add(fp)
+
+
 def detach_file(db: Session, media_file: models.MediaFile, *, reason: str) -> None:
     """Detach/delete a media file record and recompute legacy columns on the owners."""
     log.info("Detaching file %s (reason: %s)", media_file.path, reason)
+    retire_file_issues(db, media_file)
     movie = media_file.movie if media_file.media_type == "movie" else None
     episodes = list(media_file.episodes) if media_file.media_type == "tv" else []
     was_primary = media_file.is_primary

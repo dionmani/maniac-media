@@ -206,6 +206,9 @@ class MediaFile(Base):
     added_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     source: Mapped[str] = mapped_column(String(16), default="scan")  # import | scan | manual
+    # set by the "relabel" issue action: `quality` was corrected from the measured resolution, so
+    # re-parsing the filename on scan must not overwrite it. Cleared when the file content changes.
+    quality_locked: Mapped[bool] = mapped_column(Boolean, default=False)
     # inspection
     inspected_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     inspected_size: Mapped[int | None] = mapped_column(BigInteger)

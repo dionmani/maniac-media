@@ -269,6 +269,8 @@ def remove_episodes(db: Session, series: models.Series, episodes: list[models.Ep
     }
     if not apply:
         return result
+    from backend.services import media_file_service
+
     recycle_root = Path(get_settings().recycle_bin)
     recycled = 0
     doomed = []
@@ -278,6 +280,7 @@ def remove_episodes(db: Session, series: models.Series, episodes: list[models.Ep
         if delete_files and exists:
             fileops.recycle(Path(mf.path), recycle_root)
             recycled += 1
+        media_file_service.retire_file_issues(db, mf)
         doomed.append(mf.id)
     # drop the link rows in one statement so the ORM doesn't also try to delete them via both relationships
     db.execute(sa_delete(models.EpisodeFile).where(models.EpisodeFile.episode_id.in_(ids)))

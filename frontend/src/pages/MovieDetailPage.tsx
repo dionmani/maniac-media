@@ -9,6 +9,7 @@ import { ErrorAlert, Loading, QualityChip, Section, StatusChip, useConfirm } fro
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
 import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
+import TechnicalInfoPanel from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
 import { bytes, errorMessage, relative } from '../utils/format';
@@ -22,6 +23,7 @@ export default function MovieDetailPage() {
   const [search, setSearch] = useState<SearchTarget | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [link, setLink] = useState<LinkTarget | null>(null);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
 
   const movie = useQuery({ queryKey: ['movie', id], queryFn: () => get<Movie>(`/movies/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -120,51 +122,78 @@ export default function MovieDetailPage() {
             ) : null}
           </Section>
           <Section title="Cast" sx={{ mb: 2 }}><CastList cast={m.cast_members} /></Section>
-          {m.files && m.files.length > 0 && (
-            <Section
-              title={
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <span>Files</span>
-                  {m.files.length > 1 && (
-                    <Chip size="small" color="secondary" label={`+${m.files.length - 1} other files`} />
-                  )}
-                </Stack>
-              }
-              sx={{ mb: 2 }}
-            >
-              <Table size="small">
-                <TableBody>
-                  {m.files.map((file) => (
-                    <TableRow key={file.id}>
-                      <TableCell sx={{ width: 90 }}>
-                        {file.is_primary ? (
-                          <Chip size="small" color="primary" label="Primary" />
-                        ) : (
-                          <Chip size="small" variant="outlined" label="Duplicate" />
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                          {file.path}
-                        </Typography>
-                        {file.scene_name && file.scene_name !== file.path && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                            Release: {file.scene_name}
-                          </Typography>
-                        )}
-                      </TableCell>
-                      <TableCell sx={{ whiteSpace: 'nowrap', width: 120 }}>
-                        <QualityChip quality={file.quality ?? 'Unknown'} />
-                      </TableCell>
-                      <TableCell sx={{ whiteSpace: 'nowrap', width: 100, color: 'text.secondary' }}>
-                        {bytes(file.size_bytes)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Section>
-          )}
+          {m.files && m.files.length > 0 && (() => {
+            const activeFile = m.files.find((f) => f.id === selectedFileId) ?? m.files.find((f) => f.is_primary) ?? m.files[0];
+            return (
+              <Section
+                title={
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <span>Files</span>
+                    {m.files.length > 1 && (
+                      <Chip size="small" color="secondary" label={`+${m.files.length - 1} other files`} />
+                    )}
+                  </Stack>
+                }
+                sx={{ mb: 2 }}
+              >
+                <Table size="small" sx={{ mb: 2 }}>
+                  <TableBody>
+                    {m.files.map((file) => {
+                      const isSelected = file.id === activeFile.id;
+                      return (
+                        <TableRow
+                          key={file.id}
+                          hover
+                          selected={isSelected}
+                          onClick={() => setSelectedFileId(file.id)}
+                          sx={{ cursor: m.files && m.files.length > 1 ? 'pointer' : 'default' }}
+                        >
+                          <TableCell sx={{ width: 90 }}>
+                            {file.is_primary ? (
+                              <Chip size="small" color="primary" label="Primary" />
+                            ) : (
+                              <Chip size="small" variant="outlined" label="Duplicate" />
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                              {file.path}
+                            </Typography>
+                            {file.scene_name && file.scene_name !== file.path && (
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Release: {file.scene_name}
+                              </Typography>
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ whiteSpace: 'nowrap', width: 140 }}>
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <QualityChip quality={file.quality ?? 'Unknown'} />
+                              {file.video_resolution && (
+                                <Chip size="small" variant="outlined" label={file.video_resolution} sx={{ height: 20, fontSize: '0.7rem' }} />
+                              )}
+                              {file.hdr_format && (
+                                <Chip size="small" color="secondary" label={file.hdr_format} sx={{ height: 20, fontSize: '0.7rem' }} />
+                              )}
+                            </Stack>
+                          </TableCell>
+                          <TableCell sx={{ whiteSpace: 'nowrap', width: 100, color: 'text.secondary' }}>
+                            {bytes(file.size_bytes)}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                {activeFile && (
+                  <TechnicalInfoPanel
+                    file={activeFile}
+                    expectedRuntimeMinutes={m.runtime_minutes}
+                    canInspect={can('media:write')}
+                  />
+                )}
+              </Section>
+            );
+          })()}
           <Section title="History">
             {history.data?.items.length ? (
               <Table size="small">

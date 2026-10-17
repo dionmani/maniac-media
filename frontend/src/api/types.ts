@@ -65,6 +65,52 @@ export interface MovieSummary {
   genres?: string | null;
   certification?: string | null;
   added_date?: string | null;
+  video_resolution?: string | null;
+  hdr_format?: string | null;
+  video_codec?: string | null;
+  audio_codec?: string | null;
+  audio_channels?: number | null;
+  audio_languages?: string[] | null;
+}
+
+export interface MediaInfoVideo {
+  codec: string;
+  profile?: string | null;
+  width: number;
+  height: number;
+  bit_depth?: number | null;
+  hdr_format?: string | null;
+  frame_rate?: number | null;
+  bitrate?: number | null;
+}
+
+export interface MediaInfoAudio {
+  codec: string;
+  profile?: string | null;
+  channels: number;
+  channel_layout?: string | null;
+  language?: string | null;
+  title?: string | null;
+  default?: boolean;
+  commentary?: boolean;
+}
+
+export interface MediaInfoSubtitle {
+  codec: string;
+  language?: string | null;
+  title?: string | null;
+  forced?: boolean;
+  hearing_impaired?: boolean;
+}
+
+export interface MediaInfoPayload {
+  container?: string | null;
+  duration_seconds?: number | null;
+  overall_bitrate?: number | null;
+  video?: MediaInfoVideo | null;
+  audio?: MediaInfoAudio[];
+  subtitles?: MediaInfoSubtitle[];
+  chapters?: number;
 }
 
 export interface MediaFile {
@@ -81,6 +127,22 @@ export interface MediaFile {
   edition?: string | null;
   is_primary: boolean;
   added_at?: string | null;
+  inspected_at?: string | null;
+  inspection_error?: string | null;
+  container?: string | null;
+  duration_seconds?: number | null;
+  overall_bitrate?: number | null;
+  video_codec?: string | null;
+  video_width?: number | null;
+  video_height?: number | null;
+  video_resolution?: string | null;
+  video_bit_depth?: number | null;
+  hdr_format?: string | null;
+  audio_codec?: string | null;
+  audio_channels?: number | null;
+  audio_languages?: string[] | null;
+  subtitle_languages?: string[] | null;
+  mediainfo?: MediaInfoPayload | null;
   custom_formats?: number[] | null;
   custom_format_score?: number | null;
   episodes?: { id: number; series_id?: number; season_number: number; episode_number: number; title: string }[];

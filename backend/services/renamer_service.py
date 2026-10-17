@@ -58,6 +58,35 @@ def _rename_custom_formats(db, current: Path, q, ep_count: int = 1) -> str:
     return " ".join(cf.name for cf in matcher.formats if cf.include_in_rename and cf.id in matched_ids)
 
 
+_VIDEO_CODEC_LABELS = {"hevc": "x265", "h264": "x264", "av1": "AV1", "mpeg2video": "MPEG2", "vc1": "VC1"}
+_AUDIO_CODEC_LABELS = {"truehd": "TrueHD", "eac3": "EAC3", "ac3": "AC3", "dts": "DTS", "aac": "AAC", "flac": "FLAC", "opus": "Opus"}
+_CHANNEL_LABELS = {8: "7.1", 7: "6.1", 6: "5.1", 5: "5.0", 4: "4.0", 3: "2.1", 2: "2.0", 1: "1.0"}
+
+
+def _mediainfo_tokens(db, current: Path) -> dict[str, str]:
+    empty = {
+        "mediainfo_videocodec": "",
+        "mediainfo_audiocodec": "",
+        "mediainfo_audiochannels": "",
+        "mediainfo_hdr": "",
+        "mediainfo_resolution": "",
+    }
+    if db is None:
+        return empty
+    mf = MediaFileRepository(db).by_path(current)
+    if mf is None or mf.inspected_at is None:
+        return empty
+    vcodec = (mf.video_codec or "").lower()
+    acodec = (mf.audio_codec or "").lower()
+    return {
+        "mediainfo_videocodec": _VIDEO_CODEC_LABELS.get(vcodec, mf.video_codec.upper() if mf.video_codec else ""),
+        "mediainfo_audiocodec": _AUDIO_CODEC_LABELS.get(acodec, mf.audio_codec.upper() if mf.audio_codec else ""),
+        "mediainfo_audiochannels": _CHANNEL_LABELS.get(mf.audio_channels, str(mf.audio_channels)) if mf.audio_channels else "",
+        "mediainfo_hdr": mf.hdr_format or "",
+        "mediainfo_resolution": mf.video_resolution or "",
+    }
+
+
 def _preview_movie(m: models.Movie, include_folders: bool, db=None) -> dict | None:
     settings = get_settings()
     current = Path(m.file_path)
@@ -70,6 +99,7 @@ def _preview_movie(m: models.Movie, include_folders: bool, db=None) -> dict | No
         "codec": q.codec.value if q.codec.value != "unknown" else "", "imdbid": m.imdb_id, "tmdbid": m.tmdb_id,
         "releasegroup": parse_movie(current.name).release_group, "originalname": current.stem,
         "customformats": _rename_custom_formats(db, current, q, 1),
+        **_mediainfo_tokens(db, current),
     }
     folder = current.parent
     if include_folders:
@@ -103,6 +133,7 @@ def _preview_episode(ep: models.Episode, series: models.Series, include_folders:
         "source": q.quality.source.value if q.quality.weight else "", "codec": q.codec.value if q.codec.value != "unknown" else "",
         "tvdbid": series.tvdb_id, "imdbid": series.imdb_id, "releasegroup": (parse_episode(current.name) or parse_movie(current.name)).release_group,
         "originalname": current.stem, "customformats": _rename_custom_formats(db, current, q, len(group)),
+        **_mediainfo_tokens(db, current),
     }
     rel = render(settings.tv_format, values, EPISODE_TOKENS)
     if len(group) > 1:

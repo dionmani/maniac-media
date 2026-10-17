@@ -219,3 +219,132 @@ def test_migration_backfills_status_and_fingerprint(tmp_path):
     assert rows[0].fingerprint == rows[1].fingerprint and len(rows[0].fingerprint) == 64
     assert rows[0].first_detected_at == rows[0].last_seen_at is not None
     assert rows[2].resolution == "auto"
+
+
+def test_scan_and_inspection_do_not_resolve_each_others_issues(database, library, make_video):
+    """corrupt_file belongs to the scanner's header check; truncated_file/invalid_media to ffprobe inspection."""
+    from backend.services.inspection_service import _IssueBatch, _reconcile
+
+    good = make_video(library["movies"] / "Sicario (2015)" / "Sicario.2015.1080p.BluRay.mkv", _body(6))
+    bad = make_video(library["movies"] / "Arrival (2016)" / "Arrival.2016.1080p.BluRay.mkv", b"\x00" * 10000)
+    scanner_service.scan("movies", incremental=False)
+    assert len(_issues("Arrival", "corrupt_file", "open")) == 1
+
+    with session_scope() as db:
+        sicario = db.scalar(select(models.Movie).where(models.Movie.title == "Sicario")).id
+        arrival = db.scalar(select(models.Movie).where(models.Movie.title == "Arrival")).id
+    _reconcile(_IssueBatch(reports=[{"issue_type": "truncated_file", "media_type": "movie", "media_id": sicario,
+                                     "path": str(good), "details": "File appears truncated"}]))
+
+    # a full scan of a file with a valid header must not close ffprobe's finding
+    scanner_service.scan("movies", incremental=False)
+    assert len(_issues("Sicario", "truncated_file", "open")) == 1
+
+    # a clean inspection pass closes its own finding but leaves the scanner's corrupt_file alone
+    _reconcile(_IssueBatch(touched=[("movie", sicario), ("movie", arrival)],
+                           touched_paths=[("movie", str(good)), ("movie", str(bad))]))
+    assert _issues("Sicario", "truncated_file")[0].status == "resolved"
+    assert len(_issues("Arrival", "corrupt_file", "open")) == 1
+
+
+def test_migration_moves_inspection_findings_off_corrupt_file(tmp_path):
+    engine = create_db_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    _alembic(engine, "0011_custom_formats")
+    with engine.begin() as conn:
+        conn.execute(sa.text(
+            "INSERT INTO media_files (media_type, path, path_hash, size_bytes, revision, inspected_at, inspection_error) VALUES "
+            "('movie','/m/trunc.mkv','h1',1,1,'2026-01-01 00:00:00',NULL),"
+            "('movie','/m/bad.mkv','h2',1,1,NULL,'ffprobe failed: Invalid data found when processing input'),"
+            "('movie','/m/header.mkv','h3',1,1,'2026-01-01 00:00:00',NULL)"))
+        conn.execute(sa.text(
+            "INSERT INTO library_issues (issue_type, media_type, media_id, path, details, status, resolved, severity, detected_at) VALUES "
+            "('corrupt_file','movie',1,'/m/trunc.mkv','File appears truncated: duration is 10.0 min, expected 100 min','open',0,'error','2026-01-01'),"
+            "('corrupt_file','movie',3,'/m/header.mkv','Missing container header','open',0,'error','2026-01-01')"))
+    _alembic(engine, "head")
+    with engine.connect() as conn:
+        issues = {r.path: r for r in conn.execute(sa.text("SELECT path, status, resolution FROM library_issues"))}
+        files = {r.path: r for r in conn.execute(sa.text("SELECT path, inspected_at, inspection_error FROM media_files"))}
+    assert issues["/m/trunc.mkv"].status == "resolved" and issues["/m/trunc.mkv"].resolution == "auto"
+    assert issues["/m/header.mkv"].status == "open"  # the scanner's own finding is untouched
+    assert files["/m/trunc.mkv"].inspected_at is None  # re-queued for re-inspection under the new rules
+    assert files["/m/bad.mkv"].inspection_error is None
+    assert files["/m/header.mkv"].inspected_at is not None
+
+
+def _report(movie_title: str, issue_type: str, path, data: dict | None = None) -> int:
+    from backend.services.inspection_service import _IssueBatch, _reconcile
+
+    with session_scope() as db:
+        movie_id = db.scalar(select(models.Movie).where(models.Movie.title == movie_title)).id
+    _reconcile(_IssueBatch(reports=[{"issue_type": issue_type, "media_type": "movie", "media_id": movie_id,
+                                     "path": str(path), "details": "test", "data": data}]))
+    return _issues(movie_title, issue_type, "open")[0].id
+
+
+def test_relabel_survives_rescan_until_the_file_changes(database, library, make_video):
+    from backend.db.repositories import MediaFileRepository
+
+    video = make_video(library["movies"] / "Dune (2021)" / "Dune.2021.1080p.BluRay.mkv", _body(7))
+    scanner_service.scan("movies", incremental=False)
+    issue_id = _report("Dune", "quality_mismatch", video, {"claimed": "1080p", "actual": "720p"})
+
+    with session_scope() as db:
+        assert "720p" in issue_service.resolve(db, db.get(models.LibraryIssue, issue_id), "relabel", None, SYSTEM)
+
+    scanner_service.scan("movies", incremental=False)  # re-parses "1080p" from the filename
+    with session_scope() as db:
+        mf = MediaFileRepository(db).by_path(video)
+        assert mf.quality == "Bluray-720p" and mf.quality_locked is True
+        assert db.get(models.Movie, mf.movie_id).quality == "Bluray-720p"
+
+    video.write_bytes(_body(8, 12000))  # replaced content: the relabel no longer applies
+    scanner_service.scan("movies", incremental=False)
+    with session_scope() as db:
+        mf = MediaFileRepository(db).by_path(video)
+        assert mf.quality == "Bluray-1080p" and mf.quality_locked is False
+
+
+def test_detached_file_retires_its_file_scoped_issues(database, library, make_video):
+    from backend.db.repositories import MediaFileRepository
+    from backend.services import media_file_service
+
+    video = make_video(library["movies"] / "Tenet (2020)" / "Tenet.2020.1080p.BluRay.mkv", _body(9))
+    scanner_service.scan("movies", incremental=False)
+    _report("Tenet", "runtime_mismatch", video)
+    _report("Tenet", "upgrade_available", video)  # media-level, not about this file's contents
+
+    with session_scope() as db:
+        media_file_service.detach_file(db, MediaFileRepository(db).by_path(video), reason="upgraded")
+    runtime = _issues("Tenet", "runtime_mismatch")[0]
+    assert runtime.status == "resolved" and runtime.resolution == "auto"
+    assert _issues("Tenet", "upgrade_available")[0].status == "open"
+
+
+def test_moved_file_carries_its_issues_to_the_new_path(database, library, make_video):
+    from backend.db.repositories import MediaFileRepository
+    from backend.domain.issues import fingerprint
+    from backend.services import media_file_service
+    from backend.services.inspection_service import _IssueBatch, _reconcile
+
+    folder = library["movies"] / "Nope (2022)"
+    video = make_video(folder / "Nope.2022.1080p.BluRay.mkv", _body(10))
+    scanner_service.scan("movies", incremental=False)
+    _report("Nope", "quality_mismatch", video)
+    with session_scope() as db:
+        dismissed = db.get(models.LibraryIssue, _report("Nope", "language_missing", video))
+        issue_service.resolve(db, dismissed, "dismiss", None, SYSTEM)
+
+    renamed = folder / "Nope (2022) Bluray-1080p.mkv"
+    video.rename(renamed)
+    with session_scope() as db:
+        mf = MediaFileRepository(db).by_path(video)
+        media_file_service.move_file(db, mf, renamed)
+
+    moved = {r.issue_type: r for r in _issues("Nope")}
+    assert moved["quality_mismatch"].path == str(renamed) and moved["quality_mismatch"].status == "open"
+    assert moved["quality_mismatch"].fingerprint == fingerprint("quality_mismatch", "movie", moved["quality_mismatch"].media_id, str(renamed))
+    assert moved["language_missing"].path == str(renamed) and moved["language_missing"].status == "dismissed"
+
+    # a clean re-inspection at the new path now resolves it (before, it was stranded on the old path)
+    _reconcile(_IssueBatch(touched_paths=[("movie", str(renamed))]))
+    assert _issues("Nope", "quality_mismatch")[0].status == "resolved"

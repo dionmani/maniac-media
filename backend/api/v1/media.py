@@ -29,12 +29,41 @@ def list_movies(
     search: str | None = Query(None, max_length=200), status: str | None = None, monitored: bool | None = None,
     has_file: bool | None = None, genre: str | None = None, year_from: int | None = None, year_to: int | None = None,
     quality_profile_id: int | None = None,
+    video_resolution: str | None = None,
+    hdr_format: str | None = None,
+    video_codec: str | None = None,
+    audio_codec: str | None = None,
 ):
     repo = MovieRepository(db)
-    stmt = repo.query(search=search, status=status, monitored=monitored, has_file=has_file, genre=genre,
-                      year_from=year_from, year_to=year_to, quality_profile_id=quality_profile_id)
+    stmt = repo.query(
+        search=search, status=status, monitored=monitored, has_file=has_file, genre=genre,
+        year_from=year_from, year_to=year_to, quality_profile_id=quality_profile_id,
+        video_resolution=video_resolution, hdr_format=hdr_format,
+        video_codec=video_codec, audio_codec=audio_codec,
+    )
     page = repo.paginate(stmt, page=paging.page, page_size=paging.page_size, sort=paging.sort, order=paging.order)
-    return page_response(page, [schemas.MovieSummary.model_validate(m) for m in page.items])
+    movie_ids = [m.id for m in page.items]
+    primary_files: dict[int, models.MediaFile] = {}
+    if movie_ids:
+        for mf in db.scalars(
+            select(models.MediaFile)
+            .where(models.MediaFile.movie_id.in_(movie_ids), models.MediaFile.is_primary.is_(True))
+        ):
+            if mf.movie_id is not None:
+                primary_files[mf.movie_id] = mf
+    items = []
+    for m in page.items:
+        out = schemas.MovieSummary.model_validate(m)
+        pf = primary_files.get(m.id)
+        if pf is not None:
+            out.video_resolution = pf.video_resolution
+            out.hdr_format = pf.hdr_format
+            out.video_codec = pf.video_codec
+            out.audio_codec = pf.audio_codec
+            out.audio_channels = pf.audio_channels
+            out.audio_languages = pf.audio_languages
+        items.append(out)
+    return page_response(page, items)
 
 
 @router.get("/movies/lookup", tags=["movies"])
@@ -256,6 +285,14 @@ def add_season(series_id: int, req: schemas.AddSeasonRequest, db: DB, user: Requ
         raise HTTPException(409, str(exc))
     db.commit()
     return schemas.Message(message=f"Season {req.season_number} added")
+
+
+@router.get("/series/{series_id}/episodes", response_model=list[schemas.EpisodeOut], tags=["series"])
+def list_series_episodes(series_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
+    if db.get(models.Series, series_id) is None:
+        raise HTTPException(404, "Series not found")
+    from backend.db.repositories import EpisodeRepository
+    return list(EpisodeRepository(db).for_series(series_id))
 
 
 @router.post("/series/{series_id}/episodes", response_model=schemas.EpisodeOut, status_code=201, tags=["series"])
@@ -510,6 +547,10 @@ def get_media_file(media_file_id: int, db: DB, _: Requires(Permission.MEDIA_READ
 
 
 @router.post("/media-files/{media_file_id}/inspect", tags=["media-files"])
-def inspect_media_file(media_file_id: int, user: Requires(Permission.MEDIA_WRITE)):
-    job = job_queue.enqueue("inspect_file", {"media_file_id": media_file_id, "force": True}, dedupe_key=f"file:{media_file_id}")
+def inspect_media_file(media_file_id: int, db: DB, user: Requires(Permission.MEDIA_WRITE)):
+    if db.get(models.MediaFile, media_file_id) is None:
+        raise HTTPException(404, "Media file not found")
+    # own dedupe key: sharing the post-import job's "file:{id}" would fold this into a queued
+    # non-forced job and silently drop force=True
+    job = job_queue.enqueue("inspect_file", {"media_file_id": media_file_id, "force": True}, dedupe_key=f"file:{media_file_id}:force")
     return {"job_id": job}

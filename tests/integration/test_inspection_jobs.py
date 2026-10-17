@@ -117,3 +117,241 @@ def test_backlog_does_not_requeue_forever_when_a_changed_file_fails(stub_ffprobe
     stats = asyncio.run(tasks.media_inspection(FakeCtx()))
     assert stats["status"] == "complete" and requeued == []
     assert asyncio.run(tasks.media_inspection(FakeCtx()))["processed"] == 0
+
+
+def test_import_quality_mismatch_and_auto_resolve(movie_files, monkeypatch):
+    """File claiming 1080p produces quality_mismatch when fixture is 720p; auto-resolves when fixed."""
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.services import inspection_service
+    from backend.workers import tasks
+    from sqlalchemy import select
+
+    mismatch_payload = {
+        "format": {"format_name": "matroska", "duration": "5400", "bit_rate": "4000000"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720},
+            {"codec_type": "audio", "codec_name": "ac3", "channels": 6, "tags": {"language": "eng"}},
+        ],
+    }
+    corrected_payload = {
+        "format": {"format_name": "matroska", "duration": "5400", "bit_rate": "8000000"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080},
+            {"codec_type": "audio", "codec_name": "ac3", "channels": 6, "tags": {"language": "eng"}},
+        ],
+    }
+
+    current_payload = mismatch_payload
+
+    async def fake_probe(path, timeout=30):
+        return current_payload
+
+    monkeypatch.setattr(inspection_service, "ffprobe_path", lambda: "/usr/bin/ffprobe")
+    monkeypatch.setattr(inspection_service, "probe", fake_probe)
+
+    with session_scope() as db:
+        mf = db.get(models.MediaFile, movie_files["ok"])
+        mf.quality = "WEBDL-1080p"
+
+    # Step 1: inspect with 720p probe -> generates quality_mismatch issue
+    res1 = asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": True})))
+    assert res1["status"] == "inspected"
+
+    with session_scope() as db:
+        issue = db.scalar(
+            select(models.LibraryIssue).where(
+                models.LibraryIssue.media_type == "movie",
+                models.LibraryIssue.media_id == movie_files["movie"],
+                models.LibraryIssue.issue_type == "quality_mismatch",
+            )
+        )
+        assert issue is not None
+        assert issue.status == "open"
+        assert issue.data.get("actual") == "720p"
+
+    # Step 2: corrected probe -> re-inspect auto-resolves the issue
+    current_payload = corrected_payload
+    res2 = asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": True})))
+    assert res2["status"] == "inspected"
+
+    with session_scope() as db:
+        issue = db.scalar(
+            select(models.LibraryIssue).where(
+                models.LibraryIssue.media_type == "movie",
+                models.LibraryIssue.media_id == movie_files["movie"],
+                models.LibraryIssue.issue_type == "quality_mismatch",
+            )
+        )
+        assert issue is not None
+        assert issue.status == "resolved"
+
+
+def test_unchanged_mtime_skips_reinspection(stub_ffprobe, movie_files):
+    from backend.workers import tasks
+    # First inspection
+    r1 = asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": True})))
+    assert r1["status"] == "inspected"
+
+    # Second inspection without force -> skipped
+    r2 = asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": False})))
+    assert r2["status"] == "skipped"
+
+
+def test_relabel_action_resolves_quality_mismatch(movie_files, monkeypatch):
+    """Applying 'relabel' action updates MediaFile.quality and resolves the issue."""
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.services import inspection_service, issue_service
+    from backend.services.audit import Actor
+    from backend.workers import tasks
+    from sqlalchemy import delete, select
+
+    mismatch_payload = {
+        "format": {"format_name": "matroska", "duration": "5400", "bit_rate": "4000000"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720},
+            {"codec_type": "audio", "codec_name": "ac3", "channels": 6, "tags": {"language": "eng"}},
+        ],
+    }
+    monkeypatch.setattr(inspection_service, "ffprobe_path", lambda: "/usr/bin/ffprobe")
+    monkeypatch.setattr(inspection_service, "probe", lambda path, timeout=30: asyncio.sleep(0, result=mismatch_payload))
+
+    with session_scope() as db:
+        db.execute(delete(models.LibraryIssue).where(models.LibraryIssue.media_id == movie_files["movie"]))
+        mf = db.get(models.MediaFile, movie_files["ok"])
+        mf.quality = "WEBDL-1080p"
+
+    asyncio.run(tasks.inspect_file(FakeCtx({"media_file_id": movie_files["ok"], "force": True})))
+
+    with session_scope() as db:
+        issue = db.scalar(
+            select(models.LibraryIssue).where(
+                models.LibraryIssue.media_id == movie_files["movie"],
+                models.LibraryIssue.issue_type == "quality_mismatch",
+            )
+        )
+        assert issue is not None and issue.status == "open"
+        msg = issue_service.resolve(db, issue, "relabel", {}, Actor.system())
+        assert "Relabelled" in msg
+        assert issue.status == "resolved"
+        db.flush()
+
+        mf = db.get(models.MediaFile, movie_files["ok"])
+        assert "720p" in mf.quality
+
+
+def test_inspection_api_endpoints(stub_ffprobe, movie_files, client, admin_headers, monkeypatch):
+    from backend.services import inspection_service
+    monkeypatch.setattr(inspection_service, "ffprobe_version", lambda: "7.0.2")
+
+    # GET /system/status
+    res = client.get("/api/v1/system/status", headers=admin_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "ffprobe" in data
+    assert data["ffprobe"]["found"] is True
+    assert data["ffprobe"]["version"] == "7.0.2"
+
+    # POST /media-files/{id}/inspect
+    post_res = client.post(f"/api/v1/media-files/{movie_files['ok']}/inspect", headers=admin_headers)
+    assert post_res.status_code == 200
+    assert "job_id" in post_res.json()
+
+    # POST /media-files/9999999/inspect -> 404
+    missing_res = client.post("/api/v1/media-files/9999999/inspect", headers=admin_headers)
+    assert missing_res.status_code == 404
+
+    # POST /library/inspect
+    lib_res = client.post("/api/v1/library/inspect", json={"scope": "movies", "only_uninspected": True}, headers=admin_headers)
+    assert lib_res.status_code == 200
+    assert "job_id" in lib_res.json()
+
+    # GET /movies with video_resolution filter
+    movies_res = client.get("/api/v1/movies?video_resolution=1080p", headers=admin_headers)
+    assert movies_res.status_code == 200
+
+
+def test_full_reinspect_continuation_does_not_reset_again(stub_ffprobe, movie_files, monkeypatch):
+    """only_uninspected=False resets once; the continuation must not reset again or it re-probes batch 1 forever."""
+    from backend.services import inspection_service
+    from backend.workers import tasks
+    from backend.workers.queue import job_queue
+
+    monkeypatch.setattr(inspection_service, "_pending_ids", lambda limit, scope="all": [movie_files["ok"]])  # always "more"
+    requeued = []
+    monkeypatch.setattr(job_queue, "enqueue", lambda name, payload, **kw: requeued.append(payload))
+
+    asyncio.run(tasks.media_inspection(FakeCtx({"scope": "movies", "only_uninspected": False})))
+    assert requeued == [{"scope": "movies", "only_uninspected": True}]
+
+
+def test_manual_reinspect_is_not_folded_into_a_queued_post_import_job(movie_files, client, admin_headers):
+    from sqlalchemy import select
+
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.workers.queue import job_queue
+
+    mf_id = movie_files["ok"]
+    post_import = job_queue.enqueue("inspect_file", {"media_file_id": mf_id}, dedupe_key=f"file:{mf_id}")
+    try:
+        res = client.post(f"/api/v1/media-files/{mf_id}/inspect", headers=admin_headers)
+        assert res.status_code == 200
+        forced = res.json()["job_id"]
+        assert forced != post_import
+        with session_scope() as db:
+            assert db.get(models.Job, forced).payload["force"] is True
+    finally:
+        with session_scope() as db:
+            for job in db.scalars(select(models.Job).where(models.Job.name == "inspect_file", models.Job.status == "queued")):
+                db.delete(job)
+
+
+@pytest.mark.parametrize("hdr, stored, expected", [
+    ("DV", "DV", True), ("DV", "DV HDR10", True), ("DV", "Dolby Vision", True), ("DV", "HDR10", False),
+    ("HDR10", "HDR10", True), ("HDR10", "DV HDR10", True), ("HDR10", "HDR10+", False),
+    ("HDR10+", "HDR10+", True), ("HDR10+", "DV HDR10+", True), ("HDR10+", "HDR10", False),
+    ("SDR", None, True), ("SDR", "HLG", False), ("ANY_HDR", "HLG", True),
+])
+def test_movie_hdr_filter(movie_files, hdr, stored, expected):
+    from backend.db import models
+    from backend.db.repositories import MovieRepository
+    from backend.db.session import session_scope
+
+    with session_scope() as db:
+        db.get(models.MediaFile, movie_files["ok"]).hdr_format = stored
+        db.flush()
+        ids = [m.id for m in db.scalars(MovieRepository(db).query(hdr_format=hdr))]
+        assert (movie_files["movie"] in ids) is expected
+
+
+@pytest.mark.ffprobe
+def test_real_ffprobe_binary(tmp_path):
+    """Optional real-binary test when ffmpeg and ffprobe are installed on host."""
+    import shutil
+    import subprocess
+    from backend.services.inspection_service import probe, parse_ffprobe
+
+    ffprobe = shutil.which("ffprobe")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffprobe or not ffmpeg:
+        pytest.skip("ffmpeg or ffprobe not installed on host")
+
+    test_file = tmp_path / "test_sample.mkv"
+    cmd = [
+        ffmpeg, "-y",
+        "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=24",
+        "-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
+        "-c:v", "libx264", "-c:a", "aac",
+        str(test_file),
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+    raw = asyncio.run(probe(test_file))
+    parsed = parse_ffprobe(raw)
+    assert parsed.video.width == 320
+    assert parsed.video.height == 240
+    assert parsed.video.codec in ("h264", "libx264")
+    assert len(parsed.audio) >= 1
+

@@ -172,6 +172,10 @@ async def rename(req: schemas.RenameRequest, user: Requires(Permission.RENAME)):
 
 
 @router.post("/library/inspect")
-def inspect_library(user: Requires(Permission.LIBRARY_SCAN)):
-    job = job_queue.enqueue("media_inspection", {}, dedupe_key="backlog")
+def inspect_library(
+    user: Requires(Permission.LIBRARY_SCAN),
+    req: schemas.LibraryInspectRequest | None = None,
+):
+    payload = (req or schemas.LibraryInspectRequest()).model_dump()
+    job = job_queue.enqueue("media_inspection", payload, dedupe_key="backlog")
     return {"job_id": job}

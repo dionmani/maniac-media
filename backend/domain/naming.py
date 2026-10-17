@@ -14,15 +14,23 @@ Empty tokens collapse surrounding brackets and separators: "Movie [{Edition}]" -
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-TOKEN_RX = re.compile(r"\{(?P<name>[A-Za-z][A-Za-z ]*?)(?::(?P<fmt>0?\d{0,2}d))?\}")
+TOKEN_RX = re.compile(r"\{(?P<name>[A-Za-z][A-Za-z0-9_ ]*?)(?::(?P<fmt>0?\d{0,2}d))?\}")
 ILLEGAL_CHARS = re.compile(r'[<>"/\\|?*\x00-\x1f]')
 RESERVED_WINDOWS = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+
+MEDIAINFO_TOKENS = frozenset({
+    "mediainfo_videocodec",
+    "mediainfo_audiocodec",
+    "mediainfo_audiochannels",
+    "mediainfo_hdr",
+    "mediainfo_resolution",
+})
 
 MOVIE_TOKENS = {
     "title": "Movie title",
@@ -65,7 +73,18 @@ EPISODE_TOKENS = {
     "mediainfo_resolution": "e.g. 1080p",
     "customformats": "Matched custom formats (e.g. DV HDR10)",
 }
-ALIASES = {"movietitle": "title", "seriestitle": "title", "episodename": "episodetitle", "group": "releasegroup", "customformat": "customformats"}
+ALIASES = {
+    "movietitle": "title",
+    "seriestitle": "title",
+    "episodename": "episodetitle",
+    "group": "releasegroup",
+    "customformat": "customformats",
+    "mediainfovideocodec": "mediainfo_videocodec",
+    "mediainfoaudiocodec": "mediainfo_audiocodec",
+    "mediainfoaudiochannels": "mediainfo_audiochannels",
+    "mediainfohdr": "mediainfo_hdr",
+    "mediainforesolution": "mediainfo_resolution",
+}
 
 
 class TemplateError(ValueError):
@@ -75,6 +94,10 @@ class TemplateError(ValueError):
 def _key(name: str) -> str:
     k = name.replace(" ", "").lower()
     return ALIASES.get(k, k)
+
+
+def uses_mediainfo_tokens(template: str) -> bool:
+    return any(_key(m.group("name")) in MEDIAINFO_TOKENS for m in TOKEN_RX.finditer(template))
 
 
 def sanitize_segment(value: str) -> str:
@@ -142,13 +165,16 @@ class NamingPreview:
     template: str
     example: str | None
     errors: list[str]
+    warnings: list[str] = field(default_factory=list)
 
 
-def preview(template: str, kind: str) -> NamingPreview:
+def preview(template: str, kind: str, *, inspect_before_import: bool = False) -> NamingPreview:
     if kind == "movie":
         allowed, sample = MOVIE_TOKENS, {
             "title": "Avatar", "year": 2009, "quality": "Bluray-2160p", "resolution": "2160p",
             "source": "BluRay", "codec": "H265", "imdbid": "tt0499549", "tmdbid": 19995, "releasegroup": "FRAMESTOR",
+            "mediainfo_videocodec": "x265", "mediainfo_audiocodec": "TrueHD", "mediainfo_audiochannels": "7.1",
+            "mediainfo_hdr": "DV HDR10", "mediainfo_resolution": "2160p",
             "customformats": "DV HDR10 TrueHD Atmos",
         }
     else:
@@ -156,8 +182,13 @@ def preview(template: str, kind: str) -> NamingPreview:
             "title": "Breaking Bad", "year": 2008, "season": 1, "episode": 1, "episodetitle": "Pilot",
             "airdate": "2008-01-20", "quality": "Bluray-1080p", "resolution": "1080p", "source": "BluRay",
             "codec": "H264", "tvdbid": 81189, "imdbid": "tt0903747", "releasegroup": "DEMAND",
+            "mediainfo_videocodec": "x264", "mediainfo_audiocodec": "EAC3", "mediainfo_audiochannels": "5.1",
+            "mediainfo_hdr": "HDR10", "mediainfo_resolution": "1080p",
             "customformats": "x264",
         }
     errors = validate(template, allowed)
+    warnings: list[str] = []
+    if uses_mediainfo_tokens(template) and not inspect_before_import:
+        warnings.append("MediaInfo tokens are only populated in the Renamer (post-inspection) while inspect_before_import is disabled")
     example = None if errors else render(template, sample, allowed)
-    return NamingPreview(template, example, errors)
+    return NamingPreview(template, example, errors, warnings)

@@ -1,6 +1,6 @@
 # 03 – Media inspection via ffprobe
 
-> Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
+> **Status: MVP in progress – milestones 1–4 and 6 done; 5 partial; 7 (later) only stubbed (2026-10-16)** · Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
 
 ## 1. Summary & user value
 
@@ -51,7 +51,7 @@ rules like "only when audio isn't English" (10), and storage savings estimates (
 - Post-import inspection job.
 - Backlog inspection task.
 - Mismatch detection recorded as issues (`quality_mismatch`, `runtime_mismatch`,
-  `missing_audio`, `language_missing`, `corrupt_file`).
+  `missing_audio`, `language_missing`, `truncated_file`, `invalid_media`).
 - A "Technical info" panel.
 - Naming tokens for MediaInfo.
 
@@ -119,7 +119,7 @@ def compare(claimed: ParsedQuality, actual: MediaInspection, *, expected_runtime
 
 @dataclass(frozen=True)
 class Finding:
-    kind: str       # quality_mismatch | runtime_mismatch | missing_audio | language_missing | truncated
+    kind: str       # quality_mismatch | runtime_mismatch | missing_audio | language_missing | truncated_file | invalid_media
     severity: str
     message: str
     data: dict
@@ -153,8 +153,15 @@ the height: 1920×800 is still 1080p, and 3840×1600 is 2160p.
   intros and runtime metadata are noisy) and 15 % for movies (theatrical vs extended cuts are
   legitimately longer, so only *shorter* counts toward a mismatch unless it's > +40 %). Episodes
   shorter than 5 minutes are skipped.
-- **truncated**: duration < 50 % of expected *and* file size well below the quality's typical
-  bitrate range. That's evidence of an incomplete file, and it maps to `corrupt_file`.
+- **truncated_file**: duration < 50 % of expected *and* file size < 50 % of a low-end bitrate floor
+  for the *measured* resolution × expected runtime (SD 0.5, 720p 1, 1080p 2, 2160p 6 Mbps). That's
+  evidence of an incomplete file. A short file at a normal size is reported as `runtime_mismatch`
+  instead, since it's more likely the wrong episode or noisy runtime metadata. With no size known,
+  truncation is never reported.
+- **invalid_media**: no video stream, or ffprobe reports invalid data.
+- These are deliberately **not** `corrupt_file`: that type belongs to the scanner's header-magic
+  check, and each detector auto-resolves only the types it owns. Sharing a type let every library
+  scan close ffprobe's findings.
 - **missing_audio**: no audio streams at all.
 - **language_missing**: preferred audio languages are configured and none of the tagged audio
   languages match. Untagged (`und`) audio **doesn't** count as missing, only "unknown".
@@ -215,7 +222,7 @@ reads headers, which on rclone mounts triggers downloads.
 2. Probe → `parse_ffprobe` → update the columns.
 3. `evaluate_findings` → report through the F2 `IssueRecorder` scoped to this file (so fixed
    issues auto-resolve on re-inspection).
-4. Probe failure: set `inspection_error`, and report `corrupt_file` if ffprobe reports invalid
+4. Probe failure: set `inspection_error`, and report `invalid_media` if ffprobe reports invalid
    data (as opposed to a timeout or missing binary).
 5. Publish `EventType.MEDIA_INSPECTED`.
 
@@ -234,8 +241,9 @@ reads headers, which on rclone mounts triggers downloads.
 - `inspect_file` (event, priority 6, non-exclusive, max_attempts 2): enqueued by the import
   service after a successful import, with `dedupe_key=f"file:{id}"`. **The import doesn't wait**
   for inspection, so the import transaction stays fast.
-- `media_inspection` (scheduled every 6 h, enabled): works through `MediaFileRepository.
-  uninspected(limit=200)` and files whose size or mtime changed. It re-enqueues itself with
+- `media_inspection` (scheduled every 6 h, enabled): works through uninspected files and files
+  whose size or mtime changed, 200 per batch (`inspection_service._needs_inspection`; files whose
+  last probe failed wait until they change). It re-enqueues itself with
   `dedupe_key="backlog"` while more are pending, the same pattern as `metadata_refresh`
   ([tasks.py:57-67](../../backend/workers/tasks.py#L57-L67)).
 - The scanner marks `media_files` whose mtime or size changed (`inspected_at=None`), so the
@@ -295,16 +303,19 @@ the Renamer (post-inspection). Validation warns if they're used in the import fo
 
 ## 5. Implementation milestones
 
-1. **Domain parser + comparison**, with ffprobe JSON fixtures: HEVC DV+HDR10 4K, H.264 1080p
+1. [x] **Domain parser + comparison**, with ffprobe JSON fixtures: HEVC DV+HDR10 4K, H.264 1080p
    scope (1920×800), 720p mislabelled as 1080p, multi-audio with commentary, forced and SDH subs,
    no audio, truncated.
-2. **Service + safe subprocess + health check + settings**, with the protocol-whitelist test.
-3. **Migration + persistence + post-import job + backlog task.**
-4. **Findings → issues** (F2 recorder), plus the auto-resolve on re-inspect path.
-5. **API + UI panels + library filters.**
-6. **Docker ffprobe** (multi-arch) and docs in the README.
-7. *(Later)* `inspect_before_import`, MediaInfo naming tokens in import formats, and the quick
-   decode test.
+2. [x] **Service + safe subprocess + health check + settings**, with the protocol-whitelist test.
+3. [x] **Migration + persistence + post-import job + backlog task.**
+4. [x] **Findings → issues** (F2 recorder), plus the auto-resolve on re-inspect path.
+5. [ ] **API + UI panels + library filters.** API, Technical info panels and Issues renderers are
+   done. Library filters and columns exist for **movies only**; the TV library has none yet.
+6. [x] **Docker ffprobe** (multi-arch) and docs in the README.
+7. [ ] *(Later)* `inspect_before_import`, MediaInfo naming tokens in import formats, and the quick
+   decode test. So far only the `inspect_before_import` setting and the naming-preview warning
+   exist: import never probes, MediaInfo tokens render empty in import formats (they work in the
+   Renamer), and there is no decode test.
 
 ## 6. Testing
 

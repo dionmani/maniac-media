@@ -16,7 +16,7 @@ class VideoStream:
     bit_depth: int | None
     frame_rate: float | None
     bitrate: int | None
-    hdr_format: str | None  # "DV", "DV HDR10", "HDR10+", "HDR10", "HLG", None
+    hdr_format: str | None  # "DV", "DV HDR10", "DV HDR10+", "HDR10+", "HDR10", "HLG", None
     profile: str | None
 
 
@@ -53,6 +53,8 @@ class MediaInspection:
 
 
 def resolution_class(width: int, height: int) -> Resolution:
+    if width <= 0 or height <= 0:
+        return Resolution.UNKNOWN
     if width >= 3200 or height >= 1800:
         return Resolution.R2160
     if width >= 1700 or height >= 900:
@@ -84,18 +86,20 @@ def parse_ffprobe(payload: dict[str, Any]) -> MediaInspection:
                 color_transfer = stream.get("color_transfer")
                 side_data = stream.get("side_data_list", [])
                 
-                has_dv = stream.get("codec_tag_string") in ("dvhe", "dvh1")
+                has_dv = stream.get("codec_tag_string") in ("dvhe", "dvh1") or stream.get("codec_tag") in ("dvhe", "dvh1")
                 has_hdr10 = color_transfer == "smpte2084"
                 has_hdr10plus = False
                 
                 for sd in side_data:
                     sd_type = sd.get("side_data_type", "")
-                    if sd_type == "DOVI configuration record":
+                    if "DOVI" in sd_type or sd_type == "DOVI configuration record":
                         has_dv = True
-                    if sd_type == "SMPTE 2094-40":
+                    if "2094-40" in sd_type or sd_type in ("SMPTE 2094-40", "SMPTE2094-40"):
                         has_hdr10plus = True
 
-                if has_dv and has_hdr10:
+                if has_dv and has_hdr10plus:
+                    hdr_format = "DV HDR10+"
+                elif has_dv and has_hdr10:
                     hdr_format = "DV HDR10"
                 elif has_dv:
                     hdr_format = "DV"
@@ -116,7 +120,7 @@ def parse_ffprobe(payload: dict[str, Any]) -> MediaInspection:
                 
                 bit_depth = None
                 bits_per_raw_sample = stream.get("bits_per_raw_sample")
-                if bits_per_raw_sample and bits_per_raw_sample.isdigit():
+                if bits_per_raw_sample and str(bits_per_raw_sample).isdigit():
                     bit_depth = int(bits_per_raw_sample)
                 else:
                     pix_fmt = stream.get("pix_fmt", "")
@@ -145,15 +149,21 @@ def parse_ffprobe(payload: dict[str, Any]) -> MediaInspection:
                 disposition = stream.get("disposition", {})
                 
                 lang = tags.get("language")
-                if lang == "und":
+                if lang and lang.lower() in ("und", "unk"):
                     lang = None
                     
                 title = tags.get("title")
+                profile = stream.get("profile")
+                if title and "atmos" in title.lower():
+                    if not profile:
+                        profile = "Atmos"
+                    elif "atmos" not in profile.lower():
+                        profile = f"{profile} Atmos"
                 commentary = bool(disposition.get("comment", 0)) or (title is not None and "commentary" in title.lower())
                 
                 audio.append(AudioStream(
                     codec=stream.get("codec_name", ""),
-                    profile=stream.get("profile"),
+                    profile=profile,
                     channels=stream.get("channels", 2),
                     layout=stream.get("channel_layout"),
                     language=lang,
@@ -167,14 +177,17 @@ def parse_ffprobe(payload: dict[str, Any]) -> MediaInspection:
                 disposition = stream.get("disposition", {})
                 
                 lang = tags.get("language")
-                if lang == "und":
+                if lang and lang.lower() in ("und", "unk"):
                     lang = None
+                sub_title = (tags.get("title") or "").lower()
+                forced = bool(disposition.get("forced", 0)) or "forced" in sub_title
+                sdh = bool(disposition.get("hearing_impaired", 0)) or any(w in sub_title for w in ("sdh", "hearing impaired"))
 
                 subtitles.append(SubtitleStream(
                     codec=stream.get("codec_name", ""),
                     language=lang,
-                    forced=bool(disposition.get("forced", 0)),
-                    hearing_impaired=bool(disposition.get("hearing_impaired", 0)),
+                    forced=forced,
+                    hearing_impaired=sdh,
                     default=bool(disposition.get("default", 0))
                 ))
 
@@ -191,12 +204,64 @@ def parse_ffprobe(payload: dict[str, Any]) -> MediaInspection:
         raise InspectionParseError(f"Failed to parse ffprobe output: {e}") from e
 
 
+_LANG_ALIASES: dict[str, str] = {
+    "en": "eng", "english": "eng",
+    "es": "spa", "spanish": "spa",
+    "fr": "fra", "fre": "fra", "french": "fra",
+    "de": "deu", "ger": "deu", "german": "deu",
+    "it": "ita", "italian": "ita",
+    "pt": "por", "portuguese": "por",
+    "ja": "jpn", "japanese": "jpn",
+    "ko": "kor", "korean": "kor",
+    "zh": "zho", "chi": "zho", "chinese": "zho",
+    "ru": "rus", "russian": "rus",
+    "nl": "nld", "dut": "nld", "dutch": "nld",
+    "sv": "swe", "no": "nor", "da": "dan", "fi": "fin",
+    "pl": "pol", "cs": "ces", "cze": "ces", "hu": "hun",
+    "tr": "tur", "ar": "ara", "hi": "hin", "th": "tha",
+    "vi": "vie", "id": "ind", "el": "ell", "gre": "ell",
+    "ro": "ron", "rum": "ron", "sk": "slk", "slo": "slk",
+    "he": "heb", "uk": "ukr",
+}
+
+
+def normalize_language(code: str | None) -> str | None:
+    if not code:
+        return None
+    cleaned = code.strip().lower()
+    if cleaned in ("und", "unk", ""):
+        return None
+    return _LANG_ALIASES.get(cleaned, cleaned)
+
+
+# Low-end typical video bitrate per *measured* resolution class (bits/s). A file is only called
+# truncated when it is far below what even a lean encode would need for the expected runtime; a short
+# file at a normal bitrate is more likely the wrong episode/cut and is reported as runtime_mismatch.
+_BITRATE_FLOOR: dict[Resolution, int] = {
+    Resolution.SD: 500_000,
+    Resolution.R720: 1_000_000,
+    Resolution.R1080: 2_000_000,
+    Resolution.R2160: 6_000_000,
+}
+TRUNCATED_DURATION_RATIO = 0.5  # duration below this share of the expected runtime ...
+TRUNCATED_SIZE_RATIO = 0.5      # ... and size below this share of floor bitrate x expected runtime
+
+
+def expected_min_size(resolution: Resolution, expected_runtime_min: int) -> int | None:
+    """Smallest plausible size in bytes for a complete file of this resolution and runtime."""
+    floor = _BITRATE_FLOOR.get(resolution)
+    return None if floor is None else floor * expected_runtime_min * 60 // 8
+
+
 @dataclass(frozen=True)
 class Finding:
-    kind: str       # quality_mismatch | runtime_mismatch | missing_audio | language_missing | truncated
+    kind: str       # quality_mismatch | runtime_mismatch | missing_audio | language_missing | truncated_file | invalid_media
     severity: str
     message: str
     data: dict[str, Any]
+
+
+_RES_RANK = {Resolution.UNKNOWN: 0, Resolution.SD: 1, Resolution.R720: 2, Resolution.R1080: 3, Resolution.R2160: 4}
 
 
 def compare(
@@ -205,106 +270,83 @@ def compare(
     *,
     expected_runtime_min: int | None,
     preferred_audio_languages: list[str],
-    is_movie: bool = False
+    is_movie: bool = False,
+    runtime_tolerance_episode_pct: int = 25,
+    runtime_tolerance_movie_pct: int = 15,
+    file_size_bytes: int | None = None,
 ) -> list[Finding]:
-    findings = []
-    
-    if not actual.video:
-        return [Finding("corrupt_file", "error", "No video stream found", {})]
-        
-    actual_res = resolution_class(actual.video.width, actual.video.height)
-    
-    # Mismatch resolution class
-    res_ranks = {
-        Resolution.UNKNOWN: 0,
-        Resolution.SD: 1,
-        Resolution.R720: 2,
-        Resolution.R1080: 3,
-        Resolution.R2160: 4
-    }
-    
-    claimed_res = claimed.quality.resolution
-    
-    if res_ranks[actual_res] < res_ranks[claimed_res] and claimed_res != Resolution.UNKNOWN:
-        findings.append(Finding(
-            kind="quality_mismatch",
-            severity="warning",
-            message=f"Claimed quality is {claimed_res.value} but actual resolution is {actual_res.value}",
-            data={"claimed": claimed_res.value, "actual": actual_res.value}
-        ))
-    elif res_ranks[actual_res] > res_ranks[claimed_res] and claimed_res != Resolution.UNKNOWN:
-        findings.append(Finding(
-            kind="quality_mismatch",
-            severity="info",
-            message=f"Actual resolution ({actual_res.value}) is higher than claimed ({claimed_res.value})",
-            data={"claimed": claimed_res.value, "actual": actual_res.value}
-        ))
-        
-    # Duration mismatch and truncation
-    if actual.duration_seconds is not None and expected_runtime_min is not None and expected_runtime_min > 0:
-        actual_min = actual.duration_seconds / 60
-        expected_min = expected_runtime_min
-        
-        # Skip episodes shorter than 5 minutes
-        if not is_movie and expected_min < 5:
-            pass
-        else:
-            diff_pct = abs(actual_min - expected_min) / expected_min
-            
-            # Truncated check: < 50% duration. Note: we skip the bitrate check for MVP simplicity unless needed
-            # "duration < 50 % of expected and file size well below the quality's typical bitrate range."
-            # Since we only have overall_bitrate, we'll check if duration < 50% and bitrate < something
-            # To keep it simple as per spec "duration < 50% of expected *and* file size well below..."
-            # Actually, without file size, just check duration < 50% maybe? The spec says "file size well below...". We can calculate size from duration and bitrate.
-            # Let's just implement the runtime check for now.
-            is_truncated = actual_min < expected_min * 0.5
-            
-            tolerance = 0.15 if is_movie else 0.25
-            
-            if is_truncated:
-                findings.append(Finding(
-                    kind="truncated",
-                    severity="error",
-                    message=f"File appears truncated: duration is {actual_min:.1f} min, expected {expected_min} min",
-                    data={"actual_min": round(actual_min, 1), "expected_min": expected_min}
-                ))
-            else:
-                if is_movie:
-                    # For movies, only shorter counts toward a mismatch unless > +40%
-                    if (actual_min < expected_min * (1 - tolerance)) or (actual_min > expected_min * 1.40):
-                        findings.append(Finding(
-                            kind="runtime_mismatch",
-                            severity="warning",
-                            message=f"Runtime deviation: actual {actual_min:.1f} min vs expected {expected_min} min",
-                            data={"actual_min": round(actual_min, 1), "expected_min": expected_min}
-                        ))
-                else:
-                    if diff_pct > tolerance:
-                        findings.append(Finding(
-                            kind="runtime_mismatch",
-                            severity="warning",
-                            message=f"Runtime deviation: actual {actual_min:.1f} min vs expected {expected_min} min",
-                            data={"actual_min": round(actual_min, 1), "expected_min": expected_min}
-                        ))
-                        
-    # Audio checks
-    if not actual.audio:
-        findings.append(Finding(
-            kind="missing_audio",
-            severity="error",
-            message="No audio streams found in file",
-            data={}
-        ))
-    else:
-        if preferred_audio_languages:
-            audio_langs = {a.language for a in actual.audio if a.language}
-            if audio_langs: # "Untagged (und) audio doesn't count as missing, only 'unknown'" -> handled by if audio_langs
-                if not any(pref in audio_langs for pref in preferred_audio_languages):
-                    findings.append(Finding(
-                        kind="language_missing",
-                        severity="warning",
-                        message=f"None of the preferred audio languages ({', '.join(preferred_audio_languages)}) found",
-                        data={"found_languages": list(audio_langs), "preferred_languages": preferred_audio_languages}
-                    ))
+    findings: list[Finding] = []
+    actual_res = Resolution.UNKNOWN
 
+    if not actual.video:
+        findings.append(Finding("invalid_media", "error", "No video stream found", {"reason": "no_video_stream"}))
+    else:
+        actual_res = resolution_class(actual.video.width, actual.video.height)
+        claimed_res = claimed.quality.resolution
+        if claimed_res != Resolution.UNKNOWN and actual_res != Resolution.UNKNOWN and actual_res != claimed_res:
+            lower = _RES_RANK[actual_res] < _RES_RANK[claimed_res]
+            dims = f"{actual.video.width}×{actual.video.height}"
+            findings.append(Finding(
+                kind="quality_mismatch",
+                severity="warning" if lower else "info",
+                message=(f"Claimed quality is {claimed_res.value} but actual resolution is {actual_res.value} ({dims})" if lower
+                         else f"Actual resolution ({actual_res.value}, {dims}) is higher than claimed ({claimed_res.value})"),
+                data={"claimed": claimed_res.value, "actual": actual_res.value, "width": actual.video.width, "height": actual.video.height},
+            ))
+
+    findings.extend(_runtime_findings(actual, actual_res, expected_runtime_min, is_movie, file_size_bytes,
+                                      runtime_tolerance_movie_pct if is_movie else runtime_tolerance_episode_pct))
+    findings.extend(_audio_findings(actual, preferred_audio_languages))
     return findings
+
+
+def _runtime_findings(actual: MediaInspection, actual_res: Resolution, expected_min: int | None, is_movie: bool,
+                      file_size_bytes: int | None, tolerance_pct: int) -> list[Finding]:
+    if actual.duration_seconds is None or not expected_min or expected_min <= 0:
+        return []
+    if not is_movie and expected_min < 5:  # very short episodes: runtime metadata is too noisy
+        return []
+    actual_min = actual.duration_seconds / 60
+    data = {"actual_min": round(actual_min, 1), "expected_min": expected_min}
+
+    # Truncation needs both signals (spec §4.1): far too short *and* far too small for its resolution.
+    # Duration alone is ambiguous – series-level runtime fallbacks are often wrong by 2-3x.
+    if actual_min < expected_min * TRUNCATED_DURATION_RATIO and file_size_bytes:
+        min_size = expected_min_size(actual_res, expected_min)
+        if min_size and file_size_bytes < min_size * TRUNCATED_SIZE_RATIO:
+            return [Finding(
+                kind="truncated_file",
+                severity="error",
+                message=(f"File appears truncated: {actual_min:.1f} min of an expected {expected_min} min, "
+                         f"and {file_size_bytes / 1_048_576:.0f} MB is far below a complete {actual_res.value} file"),
+                data={**data, "size_bytes": file_size_bytes, "expected_min_size_bytes": min_size},
+            )]
+
+    tolerance = tolerance_pct / 100.0
+    if is_movie:
+        # extended cuts are legitimately longer: only shorter counts, unless wildly longer (> +40 %)
+        mismatch = actual_min < expected_min * (1 - tolerance) or actual_min > expected_min * 1.40
+    else:
+        mismatch = abs(actual_min - expected_min) / expected_min > tolerance
+    if not mismatch:
+        return []
+    return [Finding("runtime_mismatch", "warning", f"Runtime deviation: actual {actual_min:.1f} min vs expected {expected_min} min", data)]
+
+
+def _audio_findings(actual: MediaInspection, preferred_audio_languages: list[str]) -> list[Finding]:
+    if not actual.audio:
+        return [Finding("missing_audio", "error", "No audio streams found in file", {})]
+    if not preferred_audio_languages:
+        return []
+    audio_langs_raw = [a.language for a in actual.audio if a.language]
+    norm_audio = {n for n in map(normalize_language, audio_langs_raw) if n}
+    norm_preferred = {n for n in map(normalize_language, preferred_audio_languages) if n}
+    # untagged ("und") audio is unknown, never missing
+    if not norm_audio or not norm_preferred or norm_audio & norm_preferred:
+        return []
+    return [Finding(
+        kind="language_missing",
+        severity="warning",
+        message=f"None of the preferred audio languages ({', '.join(preferred_audio_languages)}) found",
+        data={"found_languages": sorted(set(audio_langs_raw)), "preferred_languages": preferred_audio_languages},
+    )]

@@ -16,6 +16,9 @@ type Settings = Record<string, unknown> & {
   seerr_allow_file_deletion: boolean; discover_region: string; discover_languages: string[];
   access_token_ttl_minutes: number; rate_limit_per_minute: number; metrics_require_auth: boolean;
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
+  ffprobe_path: string; inspection_enabled: boolean; inspection_concurrency: number;
+  preferred_audio_languages: string[]; runtime_tolerance_movie_pct: number;
+  runtime_tolerance_episode_pct: number; inspect_before_import: boolean;
 };
 
 function useSettingsForm() {
@@ -34,18 +37,51 @@ function useSettingsForm() {
 
 export function MediaManagement() {
   const { query, form, set, save } = useSettingsForm();
-  const canWrite = useAuth((s) => s.can)('settings:write');
+  const can = useAuth((s) => s.can);
+  const canWrite = can('settings:write');
+  const canSeeStatus = can('system:read');
+  const canScan = can('library:scan');
+
+  // All hooks run before the loading early-return below: hooks after it would change the hook
+  // count between renders and crash the tab ("Rendered more hooks than during the previous render").
+  const statusQuery = useQuery({
+    queryKey: ['system-status'],
+    queryFn: () => get<{ ffprobe?: { found: boolean; path: string | null; version: string | null } }>('/system/status'),
+    enabled: canSeeStatus, // /system/status needs system:read; a 403 must not read as "ffprobe not found"
+  });
+
+  const inspectAll = useMutation({
+    mutationFn: () => post<{ job_id: number }>('/library/inspect'),
+    onSuccess: () => toast('Library inspection queued in the background', 'success'),
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+
+  const [audioLangs, setAudioLangs] = useState('');
+  useEffect(() => {
+    if (form) setAudioLangs((form.preferred_audio_languages ?? []).join(', '));
+  }, [form]);
+
   if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
   const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
-    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion'];
+    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
+    'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct'];
+
+  const editAudioLangs = (val: string) => {
+    setAudioLangs(val);
+    const parsed = val.split(/[\s,]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+    set('preferred_audio_languages', parsed);
+  };
+
   const text = (k: keyof Settings, label: string, help?: string) => (
-    <TextField fullWidth size="small" label={label} value={form[k] as string} helperText={help} onChange={(e) => set(k as string, e.target.value)} disabled={!canWrite} />
+    <TextField fullWidth size="small" label={label} value={(form[k] ?? '') as string} helperText={help} onChange={(e) => set(k as string, e.target.value)} disabled={!canWrite} />
   );
   const toggle = (k: keyof Settings, label: string, help?: string) => (
     <Tooltip title={help ?? ''} placement="top-start">
       <FormControlLabel control={<Switch checked={!!form[k]} onChange={(e) => set(k as string, e.target.checked)} disabled={!canWrite} />} label={label} />
     </Tooltip>
   );
+  const ffprobeStatus = statusQuery.data?.ffprobe;
+
   return (
     <Stack spacing={2}>
       <Section title="Folders">
@@ -96,6 +132,90 @@ export function MediaManagement() {
           {toggle('search_on_add', 'Search for new titles as soon as they are added')}
           {toggle('seerr_allow_file_deletion', 'Let Seerr delete files when it removes a movie', 'Seerr always asks for files to be deleted when an admin removes a title. Off: only the library entry is removed. On: files are moved to the recycle bin.')}
         </Stack>
+      </Section>
+      <Section title="Media inspection (ffprobe)">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Inspects files to measure actual resolution, HDR format, codecs, channels, audio/subtitle languages, and runtime.
+        </Typography>
+        {canSeeStatus && statusQuery.isSuccess && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+          {ffprobeStatus?.found ? (
+            <Chip size="small" color="success" label={`ffprobe found${ffprobeStatus.version ? ` (${ffprobeStatus.version})` : ''}: ${ffprobeStatus.path}`} />
+          ) : (
+            <Chip size="small" color="error" label="ffprobe not found on host" />
+          )}
+        </Stack>
+        )}
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 8 }}>
+            {text('ffprobe_path', 'Custom ffprobe path', 'Path to ffprobe binary. Leave empty to auto-detect from PATH')}
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              fullWidth
+              size="small"
+              type="number"
+              label="Inspection concurrency"
+              value={form.inspection_concurrency ?? 2}
+              inputProps={{ min: 1, max: 8 }}
+              helperText="Concurrent probe workers (1–8)"
+              onChange={(e) => set('inspection_concurrency', Number(e.target.value))}
+              disabled={!canWrite}
+            />
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              fullWidth
+              size="small"
+              label="Preferred audio languages"
+              value={audioLangs}
+              placeholder="e.g. eng, en, fra, fr"
+              helperText="Language codes. Warns in Library Issues if none of these exist in a file"
+              onChange={(e) => editAudioLangs(e.target.value)}
+              disabled={!canWrite}
+            />
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              fullWidth
+              size="small"
+              type="number"
+              label="Movie runtime tolerance (%)"
+              value={form.runtime_tolerance_movie_pct ?? 20}
+              inputProps={{ min: 5, max: 90 }}
+              helperText="Tolerance before flagging runtime mismatch (default 20%)"
+              onChange={(e) => set('runtime_tolerance_movie_pct', Number(e.target.value))}
+              disabled={!canWrite}
+            />
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              fullWidth
+              size="small"
+              type="number"
+              label="Episode runtime tolerance (%)"
+              value={form.runtime_tolerance_episode_pct ?? 30}
+              inputProps={{ min: 5, max: 90 }}
+              helperText="Tolerance before flagging runtime mismatch (default 30%)"
+              onChange={(e) => set('runtime_tolerance_episode_pct', Number(e.target.value))}
+              disabled={!canWrite}
+            />
+          </Grid>
+        </Grid>
+        <Stack sx={{ mt: 1 }}>
+          {toggle('inspection_enabled', 'Enable media inspection via ffprobe')}
+        </Stack>
+        {canScan && (
+          <Box sx={{ mt: 2 }}>
+            <Button
+              variant="outlined"
+              onClick={() => inspectAll.mutate()}
+              disabled={inspectAll.isPending}
+            >
+              Inspect library now
+            </Button>
+          </Box>
+        )}
       </Section>
       {canWrite && <Box><Button variant="contained" startIcon={<Save size={16} />} onClick={() => save.mutate(keys)} disabled={save.isPending}>Save</Button></Box>}
     </Stack>
@@ -151,6 +271,12 @@ const TOKEN_LABELS: Record<string, string> = {
   title: 'Title', year: 'Year', quality: 'Quality', resolution: 'Resolution', source: 'Source', codec: 'Codec', imdbid: 'ImdbId',
   tmdbid: 'TmdbId', tvdbid: 'TvdbId', releasegroup: 'ReleaseGroup', edition: 'Edition', originalname: 'OriginalName',
   episodetitle: 'EpisodeTitle', airdate: 'AirDate',
+  mediainfo_videocodec: 'MediaInfo VideoCodec',
+  mediainfo_audiocodec: 'MediaInfo AudioCodec',
+  mediainfo_audiochannels: 'MediaInfo AudioChannels',
+  mediainfo_hdr: 'MediaInfo HDR',
+  mediainfo_resolution: 'MediaInfo Resolution',
+  customformats: 'CustomFormats',
 };
 
 const TEMPLATES: { key: string; label: string; kind: 'movie' | 'episode' }[] = [
@@ -167,7 +293,7 @@ export function NamingSettings() {
   return (
     <Stack spacing={2}>
       <Alert severity="info">
-        Templates use tokens such as <code>{'{Title}'}</code>, <code>{'{Year}'}</code>, <code>{'{Quality}'}</code>, <code>{'{season:02d}'}</code>.
+        Templates use tokens such as <code>{'{Title}'}</code>, <code>{'{Year}'}</code>, <code>{'{Quality}'}</code>, <code>{'{season:02d}'}</code>, <code>{'{MediaInfo VideoCodec}'}</code>, <code>{'{CustomFormats}'}</code>.
         Empty tokens collapse their brackets. Only whitelisted tokens are accepted – templates cannot execute code or escape the library folder.
       </Alert>
       {TEMPLATES.map((t) => (
@@ -188,13 +314,18 @@ function TemplateField({ label, kind, value, onChange, disabled }: { label: stri
   useEffect(() => { const t = setTimeout(() => setDebounced(value), 250); return () => clearTimeout(t); }, [value]);
   const preview = useQuery({
     queryKey: ['naming-preview', kind, debounced],
-    queryFn: () => post<{ example: string | null; errors: string[]; tokens: Record<string, string> }>('/settings/naming/preview', { template: debounced, kind }),
+    queryFn: () => post<{ example: string | null; errors: string[]; warnings?: string[]; tokens: Record<string, string> }>('/settings/naming/preview', { template: debounced, kind }),
   });
   return (
     <Section>
       <TextField fullWidth label={label} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
         error={!!preview.data?.errors.length} helperText={preview.data?.errors.join('; ') || (preview.data?.example ? `Example: ${preview.data.example}` : ' ')}
         InputProps={{ sx: { fontFamily: "'JetBrains Mono', monospace" } }} />
+      {preview.data?.warnings && preview.data.warnings.length > 0 && (
+        <Alert severity="warning" sx={{ mt: 1 }}>
+          {preview.data.warnings.join('; ')}
+        </Alert>
+      )}
       <Stack direction="row" spacing={0.5} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
         {Object.entries(preview.data?.tokens ?? {}).map(([k, desc]) => {
           const token = k === 'season' || k === 'episode' ? `{${k}:02d}` : `{${TOKEN_LABELS[k] ?? k}}`;

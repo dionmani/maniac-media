@@ -8,13 +8,15 @@ library never stalls API requests. Library-issue reconciliation is batched: one
 import asyncio
 import json
 import logging
+import re
 import shutil
+import subprocess
 import weakref
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
@@ -23,20 +25,44 @@ from backend.db.base import utcnow
 from backend.db.models import EpisodeFile, MediaFile
 from backend.db.session import session_scope
 from backend.domain.inspection import InspectionParseError, compare, parse_ffprobe, resolution_class
+from backend.domain.issues import INSPECTION_ISSUE_TYPES  # corrupt_file is the scanner's (header check)
 from backend.domain.quality import parse_quality
 from backend.services.fileops import long_path
 from backend.services.issue_service import IssueRecorder
 
 log = logging.getLogger("maniac.inspection")
 
-INSPECTION_ISSUE_TYPES = ("quality_mismatch", "runtime_mismatch", "truncated", "missing_audio", "language_missing", "corrupt_file")
+_version_cache: dict[str, str | None] = {}
 
 
 def ffprobe_path() -> str | None:
     settings = get_settings()
     if settings.ffprobe_path:
-        return settings.ffprobe_path
+        p = settings.ffprobe_path.strip()
+        if Path(p).is_file():
+            return p
+        resolved = shutil.which(p)
+        if resolved:
+            return resolved
+        return None
     return shutil.which("ffprobe")
+
+
+def ffprobe_version(binary: str | None = None) -> str | None:
+    exe = binary or ffprobe_path()
+    if not exe:
+        return None
+    if exe in _version_cache:
+        return _version_cache[exe]
+    try:
+        res = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=3, check=False)
+        first = (res.stdout or "").splitlines()[0] if res.stdout else ""
+        m = re.search(r"ffprobe version\s+([^\s]+)", first)
+        ver = m.group(1) if m else (first.strip()[:64] or None)
+    except Exception:
+        ver = None
+    _version_cache[exe] = ver
+    return ver
 
 
 async def probe(path: Path, timeout: float = 30) -> dict[str, Any]:
@@ -95,10 +121,11 @@ class InspectionOutcome:
 class _IssueBatch:
     """Issue reports collected while inspecting, reconciled in one pass by :func:`_reconcile`."""
     touched: list[tuple[str, int]] = field(default_factory=list)  # (media_type, media_id) fully re-checked
+    touched_paths: list[tuple[str, str]] = field(default_factory=list)  # (media_type, path) file-scoped
     reports: list[dict[str, Any]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.touched or self.reports)
+        return bool(self.touched or self.touched_paths or self.reports)
 
 
 def _reconcile(batch: _IssueBatch) -> None:
@@ -114,6 +141,8 @@ def _reconcile(batch: _IssueBatch) -> None:
 
         for media_type, media_id in batch.touched:
             recorder(media_type).touch(media_id, *INSPECTION_ISSUE_TYPES)
+        for media_type, path in batch.touched_paths:
+            recorder(media_type).touch_path(path, *INSPECTION_ISSUE_TYPES)
         for report in batch.reports:
             recorder(report["media_type"]).report(**report)
         for rec in recorders.values():
@@ -141,7 +170,10 @@ def evaluate_findings(db: Session, media_file: MediaFile, inspection) -> list:
         inspection,
         expected_runtime_min=expected_runtime_min,
         preferred_audio_languages=settings.preferred_audio_languages,
-        is_movie=is_movie
+        is_movie=is_movie,
+        runtime_tolerance_episode_pct=settings.runtime_tolerance_episode_pct,
+        runtime_tolerance_movie_pct=settings.runtime_tolerance_movie_pct,
+        file_size_bytes=media_file.size_bytes,
     )
 
 
@@ -187,8 +219,13 @@ def _record_error(media_file_id: int, error: str, batch: _IssueBatch) -> None:
             return
         mf.inspection_error = error[:512] or "Inspection failed"
         if "Invalid data found when processing input" in error:
-            batch.reports.append({"issue_type": "corrupt_file", "media_type": mf.media_type, "media_id": _media_id(mf),
-                                  "path": mf.path, "details": "ffprobe reported invalid data"})
+            ep_id = None
+            if mf.media_type == "tv":
+                ef = db.scalar(select(EpisodeFile).where(EpisodeFile.media_file_id == mf.id).limit(1))
+                ep_id = ef.episode_id if ef else None
+            batch.reports.append({"issue_type": "invalid_media", "media_type": mf.media_type, "media_id": _media_id(mf),
+                                  "episode_id": ep_id, "path": mf.path, "details": "ffprobe reported invalid data",
+                                  "data": {"reason": "invalid_data"}})
 
 
 def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch) -> InspectionOutcome:
@@ -217,22 +254,45 @@ def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch) -> I
             mf.video_bit_depth = inspection.video.bit_depth
             mf.hdr_format = inspection.video.hdr_format
             mf.video_resolution = resolution_class(inspection.video.width, inspection.video.height).value
+        else:
+            mf.video_codec = mf.video_width = mf.video_height = mf.video_bit_depth = None
+            mf.hdr_format = mf.video_resolution = None
 
         if inspection.audio:
             primary_audio = next((a for a in inspection.audio if a.default), inspection.audio[0])
             mf.audio_codec = primary_audio.codec
             mf.audio_channels = primary_audio.channels
-            mf.audio_languages = list({a.language for a in inspection.audio if a.language})
+            mf.audio_languages = sorted({a.language for a in inspection.audio if a.language})
+        else:
+            mf.audio_codec = None
+            mf.audio_channels = None
+            mf.audio_languages = []
 
-        mf.subtitle_languages = list({s.language for s in inspection.subtitles if s.language})
+        mf.subtitle_languages = sorted({s.language for s in inspection.subtitles if s.language})
         mf.mediainfo = asdict(inspection)
 
         media_id = _media_id(mf)
-        if media_id is not None:
+        episode_id = None
+        if mf.media_type == "tv":
+            ef = db.scalar(select(EpisodeFile).where(EpisodeFile.media_file_id == mf.id).limit(1))
+            episode_id = ef.episode_id if ef else None
+
+        if mf.path:
+            batch.touched_paths.append((mf.media_type, mf.path))
+        if mf.media_type == "movie" and media_id is not None and (not mf.movie or len(mf.movie.files) <= 1):
             batch.touched.append((mf.media_type, media_id))
+
         for f in evaluate_findings(db, mf, inspection):
-            batch.reports.append({"issue_type": f.kind, "media_type": mf.media_type, "media_id": media_id, "path": mf.path,
-                                  "details": f.message, "data": f.data, "severity": f.severity})
+            batch.reports.append({
+                "issue_type": f.kind,
+                "media_type": mf.media_type,
+                "media_id": media_id,
+                "episode_id": episode_id,
+                "path": mf.path,
+                "details": f.message,
+                "data": f.data,
+                "severity": f.severity,
+            })
     bus.publish(EventType.MEDIA_INSPECTED, media_file_id=media_file_id)
     return InspectionOutcome("inspected")
 
@@ -260,19 +320,34 @@ async def inspect_file(media_file_id: int, *, force: bool = False) -> Inspection
         await asyncio.to_thread(_reconcile, batch)
 
 
-def _needs_inspection():
+def _needs_inspection(scope: str = "all"):
     # Failed files (inspection_error set) wait until they change – attach_*_file clears the error then.
     # Without this guard a file whose size changed but can't be probed is re-picked by every backlog
     # batch, and the backlog job re-queues itself every 10 seconds forever.
-    return and_(
+    conds = [
         MediaFile.inspection_error.is_(None),
         or_(MediaFile.inspected_at.is_(None), MediaFile.inspected_size != MediaFile.size_bytes, MediaFile.inspected_mtime != MediaFile.mtime),
-    )
+    ]
+    if scope == "movies":
+        conds.append(MediaFile.media_type == "movie")
+    elif scope == "tv":
+        conds.append(MediaFile.media_type == "tv")
+    return and_(*conds)
 
 
-def _pending_ids(limit: int) -> list[int]:
+def _reset_inspected(scope: str = "all") -> None:
     with session_scope() as db:
-        return list(db.scalars(select(MediaFile.id).where(_needs_inspection()).order_by(MediaFile.id).limit(limit)))
+        stmt = update(MediaFile).values(inspected_at=None, inspection_error=None)
+        if scope == "movies":
+            stmt = stmt.where(MediaFile.media_type == "movie")
+        elif scope == "tv":
+            stmt = stmt.where(MediaFile.media_type == "tv")
+        db.execute(stmt)
+
+
+def _pending_ids(limit: int, scope: str = "all") -> list[int]:
+    with session_scope() as db:
+        return list(db.scalars(select(MediaFile.id).where(_needs_inspection(scope)).order_by(MediaFile.id).limit(limit)))
 
 
 def _mark_internal_error(media_file_id: int, exc: Exception) -> None:
@@ -286,11 +361,14 @@ def _mark_internal_error(media_file_id: int, exc: Exception) -> None:
         log.exception("Could not record inspection error for media file %s", media_file_id)
 
 
-async def inspect_backlog(limit: int = 100, progress=None) -> dict[str, Any]:
+async def inspect_backlog(limit: int = 100, progress=None, *, scope: str = "all", only_uninspected: bool = True) -> dict[str, Any]:
     if not get_settings().inspection_enabled or not ffprobe_path():
         return {"processed": 0, "status": "disabled_or_missing_binary"}
 
-    ids = await asyncio.to_thread(_pending_ids, limit)
+    if not only_uninspected:
+        await asyncio.to_thread(_reset_inspected, scope)
+
+    ids = await asyncio.to_thread(_pending_ids, limit, scope)
     if not ids:
         return {"processed": 0, "status": "complete"}
 
@@ -318,7 +396,7 @@ async def inspect_backlog(limit: int = 100, progress=None) -> dict[str, Any]:
     finally:
         await asyncio.to_thread(_reconcile, batch)
 
-    has_more = bool(await asyncio.to_thread(_pending_ids, 1))
+    has_more = bool(await asyncio.to_thread(_pending_ids, 1, scope))
     return {
         "processed": done,
         "errors": errors,
