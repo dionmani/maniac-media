@@ -118,7 +118,8 @@ convention on `MetaData` gives deterministic constraint names across engines.
   `released` never evaluates to NULL, so its negation selects exactly the movies still held. The UI
   uses the same gate: a movie without a file is *Missing* only once it is out; otherwise
   `movie_release_state` says why not (in theaters, a TMDB production stage, coming soon, announced,
-  canceled) and the library's *Upcoming* filter lists those.
+  canceled), the library's *Upcoming* filter lists those, and Wanted and the dashboard's missing
+  count leave them out.
   TMDB/TVDB only give episode dates, so a TMDB-first series refresh borrows TVmaze's `airstamp`s when
   it has recent or upcoming episodes (matched on season, episode *and* date).
 

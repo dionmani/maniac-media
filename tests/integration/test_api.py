@@ -96,7 +96,7 @@ def test_movie_crud_pagination_filtering(client, admin_headers, monkeypatch):
     assert client.get(f"{API}/movies/{movie['id']}", headers=admin_headers).status_code == 404
 
 
-def test_movie_list_splits_missing_from_not_out_yet(client, admin_headers):
+def test_unreleased_movies_are_not_missing(client, admin_headers):
     from datetime import date, timedelta
 
     from backend.db import models
@@ -121,6 +121,11 @@ def test_movie_list_splits_missing_from_not_out_yet(client, admin_headers):
         assert listed(released=False) == {"Gate List Filming": "in_production", "Gate List Undated": "announced"}
         detail = client.get(f"{API}/movies/{ids[1]}", headers=admin_headers).json()
         assert detail["release_state"] == "in_production" and soon in detail["release_note"]
+
+        wanted = client.get(f"{API}/wanted/missing", params={"media_type": "movie", "page_size": 500}, headers=admin_headers).json()
+        titles = {m["title"] for m in wanted["items"]}
+        assert "Gate List Released" in titles and not titles & {"Gate List Filming", "Gate List Undated"}
+        assert client.get(f"{API}/dashboard", headers=admin_headers).json()["movies"]["missing"] == wanted["total"]
     finally:
         with session_scope() as db:
             for movie_id in ids:

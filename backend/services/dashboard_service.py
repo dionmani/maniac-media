@@ -11,7 +11,7 @@ from backend.api.schemas import public_art
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
-from backend.db.repositories import EpisodeRepository, MediaFileRepository
+from backend.db.repositories import EpisodeRepository, MediaFileRepository, MovieRepository
 
 
 def _disk(path: str) -> dict | None:
@@ -29,7 +29,8 @@ def stats(db: Session) -> dict:
 
     movies_total = count(select(func.count(models.Movie.id)))
     movies_with_file = count(select(func.count(models.Movie.id)).where(models.Movie.has_file.is_(True)))
-    movies_missing = count(select(func.count(models.Movie.id)).where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False)))
+    movies_missing = count(select(func.count(models.Movie.id)).where(
+        models.Movie.monitored.is_(True), models.Movie.has_file.is_(False), MovieRepository.released(date.today(), settings.release_gate_catalog_days)))
     series_total = count(select(func.count(models.Series.id)))
     episodes_total = count(select(func.count(models.Episode.id)))
     episodes_with_file = count(select(func.count(models.Episode.id)).where(models.Episode.has_file.is_(True)))

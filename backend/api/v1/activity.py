@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from backend.api import schemas
 from backend.api.deps import DB, Paging, Requires, page_response
 from backend.core.security import Permission
+from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
 from backend.db.repositories import EpisodeRepository, HistoryRepository, MovieRepository, QueueRepository, Repository
@@ -214,8 +216,10 @@ def unblock(item_id: int, db: DB, _: Requires(Permission.QUEUE_WRITE)):
 def wanted_missing(db: DB, _: Requires(Permission.MEDIA_READ), paging: Paging, media_type: str = Query("movie", pattern="^(movie|tv)$")):
     if media_type == "movie":
         repo = MovieRepository(db)
-        page = repo.paginate(repo.wanted_missing(), page=paging.page, page_size=paging.page_size, sort=paging.sort or "title", order=paging.order)
-        return page_response(page, [schemas.MovieSummary.model_validate(m) for m in page.items])
+        catalog_days = get_settings().release_gate_catalog_days
+        page = repo.paginate(repo.wanted_missing(date.today(), catalog_days), page=paging.page, page_size=paging.page_size,
+                             sort=paging.sort or "title", order=paging.order)
+        return page_response(page, [schemas.MovieSummary.model_validate(m, context={"catalog_days": catalog_days}) for m in page.items])
     repo = EpisodeRepository(db)
     page = repo.paginate(repo.wanted_missing(utcnow()), page=paging.page, page_size=paging.page_size,
                          sort=paging.sort or "air_date", order=paging.order if paging.sort else "desc")

@@ -354,9 +354,8 @@ async def search_missing(limit: int = 50, progress=None) -> dict:
         with session_scope() as db:
             movies = list(
                 db.scalars(
-                    select(models.Movie.id)
-                    .where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False),
-                           MovieRepository.released(date.today(), catalog_days))
+                    MovieRepository(db).wanted_missing(date.today(), catalog_days)
+                    .with_only_columns(models.Movie.id)
                     .order_by(models.Movie.last_search_at.is_not(None), models.Movie.last_search_at)
                     .limit(limit)
                 )

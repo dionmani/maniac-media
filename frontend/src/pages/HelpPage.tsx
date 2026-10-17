@@ -23,8 +23,21 @@ const ENTRIES: Entry[] = [
       <>
         No. An episode only counts as missing once its air date has passed. Episodes with a future air date show an <b>Unaired</b> chip and are left out
         of the missing count, the Wanted list, searches and the "x / y episodes" progress on the library and series pages. Episodes with <b>no</b> air
-        date (TBA) are treated as aired, so they do count. Unmonitored episodes without a file (for example an unmonitored Specials season) are left
-        out of the "x / y episodes" progress too – they aren't wanted, so they aren't missing.
+        date yet (TBA) are held the same way until a date is set and has passed. Unmonitored episodes without a file (for example an unmonitored
+        Specials season) are left out of the "x / y episodes" progress too – they aren't wanted, so they aren't missing.
+      </>
+    ),
+  },
+  {
+    q: 'Movies that are still in theaters or in production are showing as missing – are they?',
+    topic: 'Missing & counts',
+    keywords: 'movie missing in theaters cinema production upcoming coming soon announced planned release digital physical wanted count',
+    a: (
+      <>
+        No. A movie only counts as missing once it is out on digital or disc – or, when no such date is on record, a year after it was first released.
+        Until then its badge on the Movies page says why it isn't out (<b>In theaters</b>, <b>In production</b>, <b>Post-production</b>, <b>Coming
+        soon</b>, …; hover it for the date), and it is left out of the missing count, the Wanted list and searches. The <b>Upcoming</b> filter on the
+        Movies page lists them. The production stage comes from TMDB and is updated by the metadata refresh.
       </>
     ),
   },

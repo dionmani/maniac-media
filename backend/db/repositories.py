@@ -166,8 +166,10 @@ class MovieRepository(Repository[models.Movie]):
     def by_imdb(self, imdb_id: str) -> models.Movie | None:
         return self.db.scalar(select(models.Movie).where(models.Movie.imdb_id == imdb_id))
 
-    def wanted_missing(self) -> Select:
-        return select(models.Movie).where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False))
+    def wanted_missing(self, today: date, catalog_days: int) -> Select:
+        """Monitored, no file, and out per the release gate - not yet released isn't missing."""
+        return select(models.Movie).where(models.Movie.monitored.is_(True), models.Movie.has_file.is_(False),
+                                          self.released(today, catalog_days))
 
     @staticmethod
     def released(today: date, catalog_days: int):
