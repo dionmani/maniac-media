@@ -868,6 +868,7 @@ class GeneralSettings(BaseModel):
     download_poll_seconds: int | None = Field(None, ge=5, le=600)
     import_untracked_downloads: bool | None = None
     search_on_add: bool | None = None
+    search_missing_files: bool | None = None
     auto_retry_failed_downloads: bool | None = None
     max_download_retries: int | None = Field(None, ge=0, le=10)
     release_gate_catalog_days: int | None = Field(None, ge=0, le=3650)

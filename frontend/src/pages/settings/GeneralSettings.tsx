@@ -12,7 +12,7 @@ type Settings = Record<string, unknown> & {
   media_root_movies: string; media_root_tv: string; download_folder: string; recycle_bin: string; recycle_bin_days: number;
   movie_folder_format: string; movie_format: string; series_folder_format: string; tv_format: string; rename_on_import: boolean;
   auto_import: boolean; import_mode: string; min_import_size_mb: number; watch_download_folder: boolean; download_poll_seconds: number; import_untracked_downloads: boolean;
-  search_on_add: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; release_gate_catalog_days: number; metadata_language: string;
+  search_on_add: boolean; search_missing_files: boolean; auto_retry_failed_downloads: boolean; max_download_retries: number; release_gate_catalog_days: number; metadata_language: string;
   seerr_allow_file_deletion: boolean; discover_region: string; discover_languages: string[];
   access_token_ttl_minutes: number; rate_limit_per_minute: number; metrics_require_auth: boolean;
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
@@ -63,7 +63,7 @@ export function MediaManagement() {
 
   if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
   const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
-    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
+    'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'search_missing_files', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
     'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct', 'inspect_before_import', 'inspection_decode_test'];
 
   const editAudioLangs = (val: string) => {
@@ -130,6 +130,7 @@ export function MediaManagement() {
           {toggle('import_untracked_downloads', 'Import untracked downloads', 'Also import files placed in the watch folder that were not grabbed by Maniac Media, when they match a library item')}
           {toggle('auto_retry_failed_downloads', 'On failure: blocklist the release and search for another')}
           {toggle('search_on_add', 'Search for new titles as soon as they are added')}
+          {toggle('search_missing_files', 'Search when a library file goes missing', 'Runs when a scan finds a file has disappeared, and notes every release tried on the issue. Skipped when more than 10 files go missing in one scan, which usually means a drive or share isn\'t mounted.')}
           {toggle('seerr_allow_file_deletion', 'Let Seerr delete files when it removes a movie', 'Seerr always asks for files to be deleted when an admin removes a title. Off: only the library entry is removed. On: files are moved to the recycle bin.')}
         </Stack>
       </Section>

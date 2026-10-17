@@ -21,12 +21,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.events import EventType, bus
+from backend.core.logging import redact
 from backend.core.observability import LIBRARY_ISSUES_OPEN
 from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
 from backend.db.repositories import MediaFileRepository, MovieRepository, SeriesRepository
-from backend.domain.issues import REGISTRY, Status, default_severity, fingerprint, spec_for
+from backend.db.session import session_scope
+from backend.domain.issues import REGISTRY, IssueType, Status, default_severity, fingerprint, spec_for
 from backend.services import fileops, media_file_service
 from backend.services.audit import Actor, audit
 
@@ -47,6 +49,7 @@ class RecorderStats:
     still_open: int = 0
     auto_resolved: int = 0
     reopened: int = 0
+    created: list[models.LibraryIssue] = field(default_factory=list, repr=False)  # rows inserted by this pass
 
     def changed(self) -> bool:
         return bool(self.new or self.auto_resolved or self.reopened)
@@ -131,16 +134,21 @@ class IssueRecorder:
         for fp, rep in self._reported.items():
             row = stored.get(fp)
             if row is None:
-                self.db.add(models.LibraryIssue(
+                row = models.LibraryIssue(
                     issue_type=rep.issue_type, media_type=rep.media_type, media_id=rep.media_id, episode_id=rep.episode_id,
                     path=rep.path, details=rep.details, data=rep.data, severity=rep.severity, fingerprint=fp,
                     status=OPEN, resolved=False, detected_at=now, first_detected_at=now, last_seen_at=now,
-                ))
+                )
+                self.db.add(row)
+                stats.created.append(row)
                 stats.new += 1
                 continue
             old_signature = (row.data or {}).get("signature")
             row.last_seen_at = now
-            row.details, row.data, row.severity, row.fingerprint = rep.details, rep.data, rep.severity, fp
+            data = rep.data
+            if (row.data or {}).get("search") and not (data or {}).get("search"):  # detectors don't know about searches
+                data = {**(data or {}), "search": row.data["search"]}
+            row.details, row.data, row.severity, row.fingerprint = rep.details, data, rep.severity, fp
             row.episode_id = rep.episode_id or row.episode_id
             if row.status == DISMISSED:
                 new_signature = (rep.data or {}).get("signature")
@@ -271,8 +279,10 @@ def _search(db, issue, params, actor) -> str:
 
     if issue.media_id is None:
         raise IssueActionError("Issue is not linked to a title")
-    job_queue.enqueue("automatic_search", {**_search_target(db, issue), "user_id": actor.user_id, "username": actor.username},
+    job_queue.enqueue("automatic_search", {**_search_target(db, issue), "issue_id": issue.id, "user_id": actor.user_id,
+                                           "username": actor.username},
                       dedupe_key=f"issue-search:{issue.media_type}:{issue.media_id}:{issue.episode_id}")
+    _note_search(issue, "queued")
     return "Search queued"
 
 
@@ -365,3 +375,87 @@ _DISPATCH = {
     "unmonitor": _unmonitor, "delete_file": _delete_file, "match": _match, "relabel": _relabel,
 }
 assert {a for s in REGISTRY.values() for a in s.actions} <= set(_DISPATCH), "registry action without a handler"
+
+
+# --------------------------------------------------------------------------- searches for missing files
+# More files going missing in one scan than this looks like an unmounted drive or share, not deletions;
+# searching for all of them would re-download the library, so those issues are only noted.
+AUTO_SEARCH_LIMIT = 10
+MAX_RECORDED_RELEASES = 50
+
+
+def _note_search(issue: models.LibraryIssue, status: str, **fields: Any) -> None:
+    """Latest search for the issue, in ``data["search"]``: queued | skipped | grabbed | held | not_found | failed."""
+    issue.data = {**(issue.data or {}), "search": {"status": status, "at": utcnow().isoformat(), **fields}}
+
+
+def _monitored(db: Session, issue: models.LibraryIssue) -> bool:
+    if issue.media_type == "movie":
+        movie = db.get(models.Movie, issue.media_id)
+        return bool(movie and movie.monitored)
+    series = db.get(models.Series, issue.media_id)
+    episode = db.get(models.Episode, issue.episode_id) if issue.episode_id else None
+    return bool(series and series.monitored and (episode is None or episode.monitored))
+
+
+def plan_missing_file_searches(db: Session, created: Sequence[models.LibraryIssue]) -> list[tuple[dict, str]]:
+    """``automatic_search`` jobs (payload, dedupe key) for files a scan just found missing; notes the decision on each issue.
+
+    Hand the result to ``enqueue_searches`` only after the scan's session has committed: the job queue writes
+    through its own session, which would wait on the scan's SQLite write lock.
+    """
+    missing = [i for i in created if i.issue_type == IssueType.MISSING_FILE and i.media_id is not None]
+    if not missing or not get_settings().search_missing_files:
+        return []
+    if len(missing) > AUTO_SEARCH_LIMIT:
+        log.warning("%d files went missing in one scan; not searching automatically (is the media root mounted?)", len(missing))
+        for issue in missing:
+            _note_search(issue, "skipped", reason=f"Not searched automatically: {len(missing)} files went missing in one scan, "
+                                                    "which usually means a drive or share isn't mounted")
+        return []
+    jobs = []
+    for issue in missing:
+        if not _monitored(db, issue):
+            _note_search(issue, "skipped", reason="Not searched automatically: not monitored")
+            continue
+        _note_search(issue, "queued")
+        jobs.append(({**_search_target(db, issue), "issue_id": issue.id},
+                     f"issue-search:{issue.media_type}:{issue.media_id}:{issue.episode_id}"))
+    return jobs
+
+
+def enqueue_searches(jobs: Sequence[tuple[dict, str]]) -> None:
+    from backend.workers.queue import job_queue
+
+    for payload, dedupe_key in jobs:
+        job_queue.enqueue("automatic_search", payload, trigger="event", dedupe_key=dedupe_key)
+
+
+def _search_outcome(result: dict, error: str | None) -> tuple[str, dict]:
+    if error:
+        return "failed", {"reason": redact(error)}
+    if result.get("grabbed"):
+        grabbed = result["grabbed"]
+        return "grabbed", {"grabbed": grabbed if isinstance(grabbed, list) else [grabbed], "quality": result.get("quality")}
+    if result.get("held"):
+        return "held", {"reason": result.get("reason")}
+    if "indexers" not in result:  # e.g. already in the download queue
+        return "skipped", {"reason": result.get("reason")}
+    indexers = [{**r, "error": redact(r["error"]) if r.get("error") else None} for r in result["indexers"]]
+    releases = result.get("rejected") or []
+    return "not_found", {
+        "reason": "No indexers are enabled for search" if not indexers else result.get("reason") or "No acceptable releases found",
+        "indexers": indexers, "candidates": result.get("candidates", len(releases)), "releases": releases[:MAX_RECORDED_RELEASES],
+    }
+
+
+def record_search(issue_id: int, result: dict | None, error: str | None = None) -> None:
+    """Note an ``automatic_search`` outcome (or its error) on the issue that asked for it."""
+    with session_scope() as db:
+        issue = db.get(models.LibraryIssue, issue_id)
+        if issue is None:
+            return
+        status, fields = _search_outcome(result or {}, error)
+        _note_search(issue, status, **fields)
+        db.commit()  # before the event, so the refetch it triggers sees the note
+        publish_changed(db, media_type=issue.media_type)

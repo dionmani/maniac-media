@@ -291,10 +291,12 @@ async def automatic(media_type: str, media_id: int, season: int | None = None, e
             return out
 
         releases, report = await indexer_service.search(criteria)
-        best = _best(releases, target, blocked)
+        decisions = rank([evaluate(r, target, blocked) for r in releases])
+        best = next((d for d in decisions if d.approved), None)
         await asyncio.to_thread(_touch_search, media_type, media_id, season, episodes)
         if not best:
-            return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases)}
+            return {"grabbed": None, "reason": "No acceptable releases found", "indexers": report, "candidates": len(releases),
+                    "rejected": [_rejected(d) for d in decisions]}
         qid = await download_service.grab(best.release, media_type=media_type, media_id=media_id, season=season if season is not None else best.season,
                                           episodes=episodes or best.episodes, actor=actor, retry_count=retry_count,
                                           release_gate=best.release_gate, custom_formats=best.custom_formats,
@@ -319,6 +321,12 @@ def _hold(target: Target) -> Availability | None:
     if known and not any(a.available for a in known):
         return latest(known)
     return None
+
+
+def _rejected(d: Decision) -> dict:
+    """What a rejected release looked like and why – no guid/URLs, which can embed indexer API keys."""
+    return {"title": d.release.title, "indexer": d.release.indexer, "quality": d.quality.quality.name,
+            "size_bytes": d.release.size_bytes, "rejections": d.rejections}
 
 
 def _best(releases: list[ReleaseInfo], target: Target, blocked: set[str]) -> Decision | None:
