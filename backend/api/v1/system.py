@@ -37,11 +37,12 @@ def status(_: Requires(Permission.SYSTEM_READ)):
     settings = get_settings()
     ffprobe_info = {"found": False, "path": None, "version": None}
     if settings.inspection_enabled:
-        from backend.services.inspection_service import ffprobe_path
+        from backend.services.inspection_service import ffprobe_path, ffprobe_version
         path = ffprobe_path()
         if path:
             ffprobe_info["found"] = True
             ffprobe_info["path"] = path
+            ffprobe_info["version"] = ffprobe_version()
 
     return {
         "app_name": "Maniac Media",

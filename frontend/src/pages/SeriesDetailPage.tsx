@@ -7,6 +7,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -28,7 +29,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Link2, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Info, Link2, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post, put } from '../api/client';
@@ -37,6 +38,7 @@ import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../compon
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
 import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
+import TechnicalInfoPanel, { claimedResolutionMismatch } from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
 import { palette } from '../theme';
@@ -305,6 +307,7 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
 function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, onSearch }: {
   ep: Episode; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const aired = ep.aired;
   const primaryFile = ep.files?.find((f) => f.is_primary) ?? ep.files?.[0];
   const filePath = primaryFile?.path ?? ep.file_path ?? '';
@@ -313,57 +316,85 @@ function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, o
     ? `Linked episodes: ${[ep, ...otherEps].map((e) => `E${String(e.episode_number).padStart(2, '0')}`).join(', ')}`
     : null;
   const tooltipText = multiInfo ? `${filePath} · ${multiInfo}` : filePath;
+  const mismatchClaimed = claimedResolutionMismatch(primaryFile?.quality ?? ep.quality, primaryFile?.video_resolution);
 
   const status = ep.has_file ? (
     <Tooltip title={tooltipText}>
-      <span>
+      <Stack direction="row" spacing={0.5} alignItems="center" component="span">
         <QualityChip quality={primaryFile?.quality ?? ep.quality ?? 'On disk'} />
-        {otherEps && otherEps.length > 0 && (
-          <Chip size="small" variant="outlined" sx={{ ml: 0.75, fontSize: '0.7rem', height: 20 }} label={`Multi (+E${otherEps.map((e) => e.episode_number).join(', ')})`} />
+        {mismatchClaimed && (
+          <Chip size="small" color="warning" label={`Actual: ${primaryFile?.video_resolution}`} sx={{ height: 20, fontSize: '0.68rem' }} />
         )}
-      </span>
+        {otherEps && otherEps.length > 0 && (
+          <Chip size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} label={`Multi (+E${otherEps.map((e) => e.episode_number).join(', ')})`} />
+        )}
+      </Stack>
     </Tooltip>
   ) : ep.status === 'downloading' ? <Chip size="small" color="secondary" label="Downloading" />
     : aired ? <Chip size="small" color="error" variant="outlined" label="Missing" />
     : <Chip size="small" variant="outlined" label="Unaired" />;
   return (
-    <TableRow hover>
-      <TableCell sx={{ width: 40 }}>
-        <IconButton size="small" disabled={!write} onClick={() => call(() => put('/episodes/monitor', { episode_ids: [ep.id], monitored: !ep.monitored }))}>
-          {ep.monitored ? <Bookmark size={14} color={palette.cyan} /> : <BookmarkX size={14} color={palette.dim} />}
-        </IconButton>
-      </TableCell>
-      <TableCell sx={{ width: 50, fontWeight: 700 }}>{ep.episode_number}</TableCell>
-      <TableCell>
-        <Tooltip title={ep.overview ?? ''} placement="top-start"><span>{ep.title}</span></Tooltip>
-      </TableCell>
-      <TableCell sx={{ whiteSpace: 'nowrap', color: 'text.secondary' }}>{ep.air_date ?? 'TBA'}</TableCell>
-      <TableCell>{status}</TableCell>
-      <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-        {canSearch && aired && (
-          <>
-            <Tooltip title="Automatic search">
-              <IconButton size="small" onClick={() => call(() => post('/search/automatic', { media_type: 'tv', media_id: series.id, season: ep.season_number, episodes: [ep.episode_number] }),
-                `Searching ${episodeCode(ep.season_number, ep.episode_number)}`)}>
-                <Zap size={14} />
+    <>
+      <TableRow hover>
+        <TableCell sx={{ width: 40 }}>
+          <IconButton size="small" disabled={!write} onClick={() => call(() => put('/episodes/monitor', { episode_ids: [ep.id], monitored: !ep.monitored }))}>
+            {ep.monitored ? <Bookmark size={14} color={palette.cyan} /> : <BookmarkX size={14} color={palette.dim} />}
+          </IconButton>
+        </TableCell>
+        <TableCell sx={{ width: 50, fontWeight: 700 }}>{ep.episode_number}</TableCell>
+        <TableCell>
+          <Tooltip title={ep.overview ?? ''} placement="top-start"><span>{ep.title}</span></Tooltip>
+        </TableCell>
+        <TableCell sx={{ whiteSpace: 'nowrap', color: 'text.secondary' }}>{ep.air_date ?? 'TBA'}</TableCell>
+        <TableCell>{status}</TableCell>
+        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+          {primaryFile && (
+            <Tooltip title={expanded ? 'Hide technical info' : 'View technical info (ffprobe)'}>
+              <IconButton size="small" onClick={() => setExpanded(!expanded)} color={expanded ? 'primary' : 'default'}>
+                <Info size={14} />
               </IconButton>
             </Tooltip>
-            <Tooltip title="Interactive search">
-              <IconButton size="small" onClick={() => onSearch({ mediaType: 'tv', mediaId: series.id, title: series.title, season: ep.season_number, episode: ep.episode_number })}>
-                <Search size={14} />
+          )}
+          {canSearch && aired && (
+            <>
+              <Tooltip title="Automatic search">
+                <IconButton size="small" onClick={() => call(() => post('/search/automatic', { media_type: 'tv', media_id: series.id, season: ep.season_number, episodes: [ep.episode_number] }),
+                  `Searching ${episodeCode(ep.season_number, ep.episode_number)}`)}>
+                  <Zap size={14} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Interactive search">
+                <IconButton size="small" onClick={() => onSearch({ mediaType: 'tv', mediaId: series.id, title: series.title, season: ep.season_number, episode: ep.episode_number })}>
+                  <Search size={14} />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+          {canDelete && (
+            <Tooltip title="Delete episode…">
+              <IconButton size="small" onClick={() => onRemove({ kind: 'episode', episode: ep })}>
+                <Trash2 size={14} color={palette.red} />
               </IconButton>
             </Tooltip>
-          </>
-        )}
-        {canDelete && (
-          <Tooltip title="Delete episode…">
-            <IconButton size="small" onClick={() => onRemove({ kind: 'episode', episode: ep })}>
-              <Trash2 size={14} color={palette.red} />
-            </IconButton>
-          </Tooltip>
-        )}
-      </TableCell>
-    </TableRow>
+          )}
+        </TableCell>
+      </TableRow>
+      {primaryFile && (
+        <TableRow>
+          <TableCell colSpan={6} sx={{ py: 0, px: 2, border: expanded ? undefined : 0 }}>
+            <Collapse in={expanded} unmountOnExit>
+              <Box sx={{ py: 1.5 }}>
+                <TechnicalInfoPanel
+                  file={primaryFile}
+                  expectedRuntimeMinutes={ep.runtime_minutes ?? series.runtime_minutes}
+                  canInspect={write}
+                />
+              </Box>
+            </Collapse>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
   );
 }
 

@@ -169,10 +169,24 @@ async def inspect_file(ctx: JobContext):
 @job_queue.register("media_inspection", "Media Inspection (Backlog)", priority=7)
 async def media_inspection(ctx: JobContext):
     from backend.services.inspection_service import inspect_backlog
-    stats = await inspect_backlog(limit=200, progress=ctx.progress)
+    scope = ctx.payload.get("scope", "all")
+    only_uninspected = bool(ctx.payload.get("only_uninspected", True))
+    stats = await inspect_backlog(
+        limit=200,
+        scope=scope,
+        only_uninspected=only_uninspected,
+        progress=ctx.progress,
+    )
     if stats.get("status") == "more_pending":
         await asyncio.to_thread(
-            job_queue.enqueue, "media_inspection", {}, trigger="event", dedupe_key="backlog", delay_seconds=10
+            job_queue.enqueue,
+            "media_inspection",
+            # Continuations never reset again: the first run already cleared inspected_at for a full
+            # re-inspect, and resetting on every batch would re-probe the same first files forever.
+            {"scope": scope, "only_uninspected": True},
+            trigger="event",
+            dedupe_key="backlog",
+            delay_seconds=10,
         )
     return stats
 

@@ -7,7 +7,10 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers -m 'not e2e'"
-markers = ["e2e: browser end-to-end tests (need Playwright + built frontend)"]
+markers = [
+    "e2e: browser end-to-end tests (need Playwright + built frontend)",
+    "ffprobe: tests requiring a real ffprobe binary on the host",
+]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]

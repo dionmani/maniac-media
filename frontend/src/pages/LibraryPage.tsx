@@ -31,6 +31,7 @@ import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { MovieSummary, Page, QualityProfile, SeriesSummary } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, Poster, QualityChip } from '../components/common';
+import { claimedResolutionMismatch, formatChannels } from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
 import { toast, useUi } from '../store/ui';
 import { palette } from '../theme';
@@ -67,6 +68,8 @@ export default function LibraryPage() {
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [filter, setFilter] = useState('all');
+  const [resFilter, setResFilter] = useState('all');
+  const [hdrFilter, setHdrFilter] = useState('all');
   const [sort, setSort] = useState('title');
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const [selecting, setSelecting] = useState(false);
@@ -79,6 +82,8 @@ export default function LibraryPage() {
   }, [search]);
   useEffect(() => {
     setFilter('all');
+    setResFilter('all');
+    setHdrFilter('all');
     setSort('title');
     setSelecting(false);
     setSelected(new Set());
@@ -90,6 +95,10 @@ export default function LibraryPage() {
   if (filter === 'monitored') params.monitored = true;
   if (filter === 'unmonitored') params.monitored = false;
   if (filter === 'continuing' || filter === 'ended') params.status = filter;
+  if (mode === 'movie') {
+    if (resFilter !== 'all') params.video_resolution = resFilter;
+    if (hdrFilter !== 'all') params.hdr_format = hdrFilter;
+  }
 
   const query = useQuery({
     queryKey: [mode === 'movie' ? 'movies' : 'series', 'all', params],
@@ -180,6 +189,26 @@ export default function LibraryPage() {
                 variant={filter === f.value ? 'filled' : 'outlined'} />
             ))}
           </Stack>
+          {mode === 'movie' && (
+            <>
+              <TextField select size="small" label="Resolution" value={resFilter} onChange={(e) => setResFilter(e.target.value)} sx={{ minWidth: 120 }}>
+                <MenuItem value="all">All Res</MenuItem>
+                <MenuItem value="2160p">2160p</MenuItem>
+                <MenuItem value="1080p">1080p</MenuItem>
+                <MenuItem value="720p">720p</MenuItem>
+                <MenuItem value="SD">SD</MenuItem>
+              </TextField>
+              <TextField select size="small" label="HDR" value={hdrFilter} onChange={(e) => setHdrFilter(e.target.value)} sx={{ minWidth: 120 }}>
+                <MenuItem value="all">All HDR</MenuItem>
+                <MenuItem value="ANY_HDR">Any HDR</MenuItem>
+                <MenuItem value="DV">Dolby Vision</MenuItem>
+                <MenuItem value="HDR10+">HDR10+</MenuItem>
+                <MenuItem value="HDR10">HDR10</MenuItem>
+                <MenuItem value="HLG">HLG</MenuItem>
+                <MenuItem value="SDR">SDR</MenuItem>
+              </TextField>
+            </>
+          )}
           <TextField select size="small" label="Sort" value={sort} onChange={(e) => setSort(e.target.value)} sx={{ minWidth: 140 }}>
             {SORTS[mode].map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
           </TextField>
@@ -218,6 +247,8 @@ export default function LibraryPage() {
                 <TableCell>Title</TableCell>
                 <TableCell>Year</TableCell>
                 <TableCell>{mode === 'movie' ? 'Quality' : 'Network'}</TableCell>
+                {mode === 'movie' && <TableCell>Actual / HDR</TableCell>}
+                {mode === 'movie' && <TableCell>Audio</TableCell>}
                 <TableCell>{mode === 'movie' ? 'Size' : 'Episodes'}</TableCell>
                 <TableCell>Status</TableCell>
               </TableRow>
@@ -300,8 +331,9 @@ function JumpBar({ available }: { available: Map<string, number> }) {
 
 type CardProps = { item: Item; onOpen: (i: Item) => void; selecting: boolean; selected: boolean; anchor?: string };
 
-// Memoized so toggling one checkbox in a large library doesn't re-render every row/card.
 const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, selected, anchor }: CardProps) {
+  const series = isSeries(i);
+  const mismatch = !series ? claimedResolutionMismatch(i.quality, i.video_resolution) : null;
   return (
     <TableRow id={anchor ? anchorId(anchor) : undefined} hover selected={selected} onClick={() => onOpen(i)} sx={{ cursor: 'pointer', scrollMarginTop: SCROLL_MARGIN }}>
       <TableCell sx={{ width: 32 }}>
@@ -310,9 +342,36 @@ const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, select
       </TableCell>
       <TableCell sx={{ fontWeight: 600 }}>{i.title}</TableCell>
       <TableCell>{i.year || '—'}</TableCell>
-      <TableCell>{isSeries(i) ? i.network ?? '—' : <QualityChip quality={i.quality} />}</TableCell>
+      <TableCell>{series ? i.network ?? '—' : <QualityChip quality={i.quality} />}</TableCell>
+      {!series && (
+        <TableCell>
+          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            {i.video_resolution ? (
+              <Tooltip title={mismatch ? `Labelled ${mismatch}, but ffprobe measured ${i.video_resolution}` : ''}>
+                <Chip size="small" color={mismatch ? 'warning' : 'default'} variant="outlined" label={i.video_resolution} sx={{ height: 20, fontSize: '0.7rem' }} />
+              </Tooltip>
+            ) : null}
+            {i.hdr_format && (
+              <Chip size="small" color="secondary" label={i.hdr_format} sx={{ height: 20, fontSize: '0.7rem' }} />
+            )}
+            {i.video_codec && (
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.72rem' }}>
+                {i.video_codec.toUpperCase()}
+              </Typography>
+            )}
+            {!i.video_resolution && !i.hdr_format && !i.video_codec && '—'}
+          </Stack>
+        </TableCell>
+      )}
+      {!series && (
+        <TableCell sx={{ whiteSpace: 'nowrap' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+            {[i.audio_codec?.toUpperCase(), formatChannels(i.audio_channels), i.audio_languages?.[0]].filter(Boolean).join(' · ') || '—'}
+          </Typography>
+        </TableCell>
+      )}
       <TableCell>
-        {isSeries(i) ? (
+        {series ? (
           <Stack direction="row" spacing={1} alignItems="center">
             <LinearProgress variant="determinate" value={i.aired_episode_count ? (i.episode_file_count / i.aired_episode_count) * 100 : 100} sx={{ width: 90 }} />
             <Typography variant="caption">{i.episode_file_count}/{i.aired_episode_count}</Typography>
@@ -320,7 +379,7 @@ const LibraryRow = memo(function LibraryRow({ item: i, onOpen, selecting, select
         ) : bytes(i.file_size_bytes)}
       </TableCell>
       <TableCell>
-        {isSeries(i) ? <Chip size="small" label={i.status ?? 'continuing'} variant="outlined" />
+        {series ? <Chip size="small" label={i.status ?? 'continuing'} variant="outlined" />
           : i.has_file ? <Chip size="small" color="success" label="On disk" /> : <Chip size="small" color="error" label="Missing" variant="outlined" />}
       </TableCell>
     </TableRow>

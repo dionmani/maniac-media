@@ -101,12 +101,14 @@ def run_checks() -> list[HealthCheck]:
     import importlib.util
 
     if settings.inspection_enabled:
-        from backend.services.inspection_service import ffprobe_path
+        from backend.services.inspection_service import ffprobe_path, ffprobe_version
         ffprobe = ffprobe_path()
         if not ffprobe:
             checks.append(HealthCheck("ffprobe", "warning", "ffprobe not found – install ffmpeg or set its path in Settings → General"))
         else:
-            checks.append(HealthCheck("ffprobe", "ok", f"ffprobe found at {ffprobe}"))
+            ver = ffprobe_version()
+            suffix = f" ({ver})" if ver else ""
+            checks.append(HealthCheck("ffprobe", "ok", f"ffprobe found at {ffprobe}{suffix}"))
 
     if not any(importlib.util.find_spec(m) for m in ("websockets", "wsproto")):
         checks.append(HealthCheck("websockets", "warning", "No WebSocket library installed – live updates disabled. pip install 'uvicorn[standard]'"))

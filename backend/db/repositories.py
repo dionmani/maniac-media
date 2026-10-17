@@ -66,6 +66,16 @@ class Repository(Generic[T]):
         return Page(items, total, page, page_size)
 
 
+# Library HDR filter → stored hdr_format values (exact matches; layered formats count for each layer).
+# "Dolby Vision" covers rows inspected while the parser briefly used that label instead of "DV".
+_HDR_FILTER_VALUES: dict[str, tuple[str, ...]] = {
+    "DV": ("DV", "DV HDR10", "DV HDR10+", "Dolby Vision"),
+    "HDR10+": ("HDR10+", "DV HDR10+"),
+    "HDR10": ("HDR10", "DV HDR10"),
+    "HLG": ("HLG",),
+}
+
+
 class MovieRepository(Repository[models.Movie]):
     model = models.Movie
     default_sort = "title"
@@ -90,6 +100,10 @@ class MovieRepository(Repository[models.Movie]):
         year_from: int | None = None,
         year_to: int | None = None,
         quality_profile_id: int | None = None,
+        video_resolution: str | None = None,
+        hdr_format: str | None = None,
+        video_codec: str | None = None,
+        audio_codec: str | None = None,
     ) -> Select:
         stmt = select(models.Movie)
         conds = []
@@ -110,6 +124,24 @@ class MovieRepository(Repository[models.Movie]):
             conds.append(models.Movie.year <= year_to)
         if quality_profile_id:
             conds.append(models.Movie.quality_profile_id == quality_profile_id)
+        if any((video_resolution, hdr_format, video_codec, audio_codec)):
+            mf = models.MediaFile
+            mf_conds = [mf.movie_id == models.Movie.id, mf.is_primary.is_(True)]
+            if video_resolution:
+                mf_conds.append(mf.video_resolution == video_resolution)
+            if hdr_format:
+                key = hdr_format.upper()
+                if key == "SDR":
+                    mf_conds.append(mf.hdr_format.is_(None))
+                elif key == "ANY_HDR":
+                    mf_conds.append(mf.hdr_format.is_not(None))
+                else:
+                    mf_conds.append(mf.hdr_format.in_(_HDR_FILTER_VALUES.get(key, (hdr_format,))))
+            if video_codec:
+                mf_conds.append(mf.video_codec == video_codec.lower())
+            if audio_codec:
+                mf_conds.append(mf.audio_codec == audio_codec.lower())
+            conds.append(select(mf.id).where(and_(*mf_conds)).exists())
         return stmt.where(and_(*conds)) if conds else stmt
 
     def by_tmdb(self, tmdb_id: int) -> models.Movie | None:
@@ -469,6 +501,24 @@ class DiscoverRepository(Repository[models.DiscoverExclusion]):
         return True
 
 
+class LibraryIssueRepository(Repository[models.LibraryIssue]):
+    model = models.LibraryIssue
+
+    def for_file(self, media_type: str, media_id: int | None, path: str, issue_types: Sequence[str],
+                 statuses: Sequence[str]) -> list[models.LibraryIssue]:
+        """Issues of ``issue_types`` recorded against ``path`` (compared via the normalised path key)."""
+        key = normalise_path_key(path)
+        stmt = select(models.LibraryIssue).where(
+            models.LibraryIssue.media_type == media_type,
+            models.LibraryIssue.issue_type.in_(issue_types),
+            models.LibraryIssue.status.in_(statuses),
+            models.LibraryIssue.path.is_not(None),
+        )
+        if media_id is not None:
+            stmt = stmt.where(models.LibraryIssue.media_id == media_id)
+        return [row for row in self.db.scalars(stmt) if normalise_path_key(row.path) == key]
+
+
 class MediaFileRepository(Repository[models.MediaFile]):
     model = models.MediaFile
     default_sort = "added"
@@ -510,13 +560,6 @@ class MediaFileRepository(Repository[models.MediaFile]):
         if media_type:
             stmt = stmt.where(models.MediaFile.media_type == media_type)
         return int(self.db.scalar(stmt) or 0)
-
-    def uninspected(self, limit: int = 100) -> Sequence[models.MediaFile]:
-        return self.db.scalars(
-            select(models.MediaFile)
-            .where(models.MediaFile.codec.is_(None))
-            .limit(limit)
-        ).all()
 
     def query(
         self,

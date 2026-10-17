@@ -15,13 +15,62 @@ import { dateTime, errorMessage, relative } from '../utils/format';
 
 const ACTION_LABELS: Record<string, string> = {
   dismiss: 'Dismiss', reopen: 'Reopen', rescan: 'Rescan', search: 'Search for a replacement', unmonitor: 'Unmonitor',
-  delete_file: 'Move file to recycle bin', match: 'Match in Import',
+  delete_file: 'Move file to recycle bin', match: 'Match in Import', relabel: 'Relabel to actual resolution',
 };
 const SEVERITY_COLOR: Record<IssueSeverity, 'error' | 'warning' | 'info'> = { error: 'error', warning: 'warning', info: 'info' };
-const BULK_ACTIONS = ['dismiss', 'search'];
+const BULK_ACTIONS = ['dismiss', 'relabel', 'search'];
 
 /** Per-type detail renderers plug in here (03 inspection, 05 duplicates); everything else gets the key/value fallback. */
-const DETAIL_RENDERERS: Record<string, (issue: LibraryIssue) => ReactNode> = {};
+const DETAIL_RENDERERS: Record<string, (issue: LibraryIssue) => ReactNode> = {
+  quality_mismatch: (issue) => {
+    const d = issue.data ?? {};
+    return (
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block">Claimed</Typography>
+            <Chip label={String(d.claimed_quality ?? d.claimed_resolution ?? 'Unknown')} color="default" variant="outlined" />
+          </Box>
+          <Typography variant="body1" color="text.secondary">→</Typography>
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block">Actual (ffprobe)</Typography>
+            <Chip
+              label={`${d.actual_resolution ?? 'Unknown'}${d.actual_width && d.actual_height ? ` (${d.actual_width}×${d.actual_height})` : ''}`}
+              color="warning"
+            />
+          </Box>
+        </Stack>
+        <Typography variant="body2" color="text.secondary">
+          The file's stream dimensions indicate a lower resolution than claimed by the release name. Relabel it to the actual resolution so quality upgrades will trigger properly, or search for a replacement.
+        </Typography>
+      </Stack>
+    );
+  },
+  runtime_mismatch: (issue) => {
+    const d = issue.data ?? {};
+    return (
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block">Actual duration</Typography>
+            <Chip label={`${d.actual_minutes ?? '—'} min`} color="warning" variant="outlined" />
+          </Box>
+          <Typography variant="body1" color="text.secondary">vs</Typography>
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block">Expected runtime</Typography>
+            <Chip label={`${d.expected_minutes ?? '—'} min`} color="default" variant="outlined" />
+          </Box>
+          {d.delta_pct !== undefined && (
+            <Chip size="small" label={`${d.delta_pct}% delta`} color="error" variant="outlined" />
+          )}
+        </Stack>
+        <Typography variant="body2" color="text.secondary">
+          The file duration differs from the expected metadata runtime. This may indicate a mismatched episode, a sample file, or an extended/director's cut.
+        </Typography>
+      </Stack>
+    );
+  },
+};
 
 function DetailTable({ data }: { data: Record<string, unknown> }) {
   return (

@@ -14,6 +14,8 @@ const ISSUE_LABELS: Record<string, string> = {
   duplicate_file: 'Duplicate files',
   upgrade_available: 'Upgrade available',
   corrupt_file: 'Corrupt files',
+  truncated_file: 'Truncated files',
+  invalid_media: 'Invalid media',
 };
 
 export default function DashboardPage() {
