@@ -4,6 +4,7 @@ Always synchronizes legacy columns on Movie and Episode in the same database ses
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import os
@@ -19,7 +20,7 @@ from backend.db.base import utcnow
 from backend.db.repositories import LibraryIssueRepository
 from backend.domain.issues import FILE_SCOPED_ISSUE_TYPES, Status, fingerprint
 from backend.domain.parser import normalise_path_key, release_group
-from backend.domain.quality import ParsedQuality, parse_quality
+from backend.domain.quality import ParsedQuality, get_quality, parse_quality
 
 log = logging.getLogger("maniac.media_files")
 
@@ -55,6 +56,25 @@ def _insert_or_get(db: Session, mf: models.MediaFile) -> models.MediaFile:
         if existing is None:
             raise
         return existing
+
+
+def locked_quality(parsed: ParsedQuality, media_file: models.MediaFile | None) -> ParsedQuality:
+    """``parsed`` (from the release name) with a relabelled file's corrected resolution/source.
+
+    Codec, HDR, audio, PROPER/REPACK etc. still come from the name – a relabel only corrects
+    the resolution class, which is what ffprobe measured.
+    """
+    if media_file is None or not media_file.quality_locked or not media_file.quality:
+        return parsed
+    return dataclasses.replace(parsed, quality=get_quality(media_file.quality))
+
+
+def refresh_formats(db: Session, media_file: models.MediaFile, *, profile_id: int | None, episode_count: int) -> None:
+    """Re-score a file's custom formats (e.g. after a relabel) from its scene name + effective quality."""
+    title = media_file.scene_name or Path(media_file.path).name
+    quality = locked_quality(parse_quality(title), media_file)
+    media_file.custom_formats, media_file.custom_format_score = _compute_file_formats(
+        db, title, media_file.size_bytes or 0, episode_count, quality, profile_id)
 
 
 def _compute_file_formats(
@@ -174,6 +194,8 @@ def attach_movie_file(
             mf.edition = edition
         mf.custom_formats = cf_ids
         mf.custom_format_score = cf_score
+        if mf.quality_locked:  # cf_ids was scored with the filename's quality, not the relabelled one
+            refresh_formats(db, mf, profile_id=movie.quality_profile_id, episode_count=1)
         mf.updated_at = utcnow()
 
     if make_primary:
@@ -290,6 +312,8 @@ def attach_episode_file(
             mf.scene_name = scene_name
         mf.custom_formats = cf_ids
         mf.custom_format_score = cf_score
+        if mf.quality_locked:
+            refresh_formats(db, mf, profile_id=series.quality_profile_id, episode_count=len(episodes))
         mf.updated_at = utcnow()
 
     # Link episodes

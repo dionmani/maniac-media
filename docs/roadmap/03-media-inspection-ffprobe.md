@@ -1,6 +1,6 @@
 # 03 – Media inspection via ffprobe
 
-> **Status: MVP in progress – MVP milestones 1–6 done; 7 (later) only stubbed (2026-10-16)** · Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
+> **Status: Complete (2026-10-16) – milestones 1–7 done; auto-relabel (opt-in) remains a later idea** · Phase 2 · Effort M (1.5–2 weeks) · Risk low · Depends on F1 (media_files), F2 (issue types) · Unlocks 04, 05, 10, 13 · Priority #5
 
 ## 1. Summary & user value
 
@@ -313,10 +313,22 @@ the Renamer (post-inspection). Validation warns if they're used in the import fo
    (`repositories.media_file_filter`); a series matches when any of its episode files matches, and
    its row lists the distinct measured resolutions/HDR/codecs across its inspected files.
 6. [x] **Docker ffprobe** (multi-arch) and docs in the README.
-7. [ ] *(Later)* `inspect_before_import`, MediaInfo naming tokens in import formats, and the quick
-   decode test. So far only the `inspect_before_import` setting and the naming-preview warning
-   exist: import never probes, MediaInfo tokens render empty in import formats (they work in the
-   Renamer), and there is no decode test.
+7. [x] `inspect_before_import`, MediaInfo naming tokens in import formats, and the quick
+   decode test. Implementation notes:
+   - **Pre-import check** (`inspection_service.pre_import_check`, off by default): probes each
+     download before placement and rejects it (left in the download folder, reason
+     `corrupt_file`) on positive evidence only – ffprobe "invalid data", no video stream, the
+     truncation rule against the *target's* expected runtime, or a failed decode test. If the probe
+     can't run (timeout, missing binary, odd output) the import proceeds unchecked.
+   - **MediaInfo tokens** in import formats are filled from that probe; with the check off they
+     stay empty there (the Renamer still fills them post-inspection).
+   - **Decode test** uses `ffprobe -count_frames` over three 10 s windows (start, middle, just
+     before the end) instead of `ffmpeg -t 30`: the image ships only ffprobe, and the end window is
+     what catches truncation – a cut-off MKV keeps its full duration in the header, so neither the
+     header probe nor a first-30 s decode notices. It runs on imports and single-file inspections
+     (post-import job, Re-inspect), never the library backlog (seconds per file → hours). Findings
+     carry `source: decode` + size/mtime and survive later header-only passes until the content
+     changes. Sampling can miss small damaged patches between windows; full decodes stay out of scope.
 
 ## 6. Testing
 

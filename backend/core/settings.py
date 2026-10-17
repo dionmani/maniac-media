@@ -105,7 +105,10 @@ class AppSettings(BaseModel):
     preferred_audio_languages: list[str] = Field(default_factory=list)
     runtime_tolerance_episode_pct: int = 25
     runtime_tolerance_movie_pct: int = 15
-    inspect_before_import: bool = False
+    inspect_before_import: bool = False  # probe downloads before placing them; rejects unreadable/truncated files
+    # quick decode test (start/middle/end windows) on imports and single-file inspections; never the
+    # library backlog, where seconds-per-file would add hours
+    inspection_decode_test: bool = False
 
     # --- housekeeping
     job_retention_days: int = 7

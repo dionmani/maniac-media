@@ -18,6 +18,7 @@ from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.repositories import MediaFileRepository
 from backend.db.session import session_scope
+from backend.domain.inspection import MEDIAINFO_EMPTY, format_mediainfo
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import parse_episode, parse_movie
 from backend.domain.quality import get_quality, parse_quality
@@ -58,33 +59,13 @@ def _rename_custom_formats(db, current: Path, q, ep_count: int = 1) -> str:
     return " ".join(cf.name for cf in matcher.formats if cf.include_in_rename and cf.id in matched_ids)
 
 
-_VIDEO_CODEC_LABELS = {"hevc": "x265", "h264": "x264", "av1": "AV1", "mpeg2video": "MPEG2", "vc1": "VC1"}
-_AUDIO_CODEC_LABELS = {"truehd": "TrueHD", "eac3": "EAC3", "ac3": "AC3", "dts": "DTS", "aac": "AAC", "flac": "FLAC", "opus": "Opus"}
-_CHANNEL_LABELS = {8: "7.1", 7: "6.1", 6: "5.1", 5: "5.0", 4: "4.0", 3: "2.1", 2: "2.0", 1: "1.0"}
-
-
 def _mediainfo_tokens(db, current: Path) -> dict[str, str]:
-    empty = {
-        "mediainfo_videocodec": "",
-        "mediainfo_audiocodec": "",
-        "mediainfo_audiochannels": "",
-        "mediainfo_hdr": "",
-        "mediainfo_resolution": "",
-    }
     if db is None:
-        return empty
+        return dict(MEDIAINFO_EMPTY)
     mf = MediaFileRepository(db).by_path(current)
     if mf is None or mf.inspected_at is None:
-        return empty
-    vcodec = (mf.video_codec or "").lower()
-    acodec = (mf.audio_codec or "").lower()
-    return {
-        "mediainfo_videocodec": _VIDEO_CODEC_LABELS.get(vcodec, mf.video_codec.upper() if mf.video_codec else ""),
-        "mediainfo_audiocodec": _AUDIO_CODEC_LABELS.get(acodec, mf.audio_codec.upper() if mf.audio_codec else ""),
-        "mediainfo_audiochannels": _CHANNEL_LABELS.get(mf.audio_channels, str(mf.audio_channels)) if mf.audio_channels else "",
-        "mediainfo_hdr": mf.hdr_format or "",
-        "mediainfo_resolution": mf.video_resolution or "",
-    }
+        return dict(MEDIAINFO_EMPTY)
+    return format_mediainfo(mf.video_codec, mf.audio_codec, mf.audio_channels, mf.hdr_format, mf.video_resolution)
 
 
 def _preview_movie(m: models.Movie, include_folders: bool, db=None) -> dict | None:

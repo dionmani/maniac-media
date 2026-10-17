@@ -350,3 +350,88 @@ def _audio_findings(actual: MediaInspection, preferred_audio_languages: list[str
         message=f"None of the preferred audio languages ({', '.join(preferred_audio_languages)}) found",
         data={"found_languages": sorted(set(audio_langs_raw)), "preferred_languages": preferred_audio_languages},
     )]
+
+
+# --------------------------------------------------------------------------- quick decode test
+# A header probe can't see damage inside the stream, and a truncated MKV still reports its full
+# duration in the header. Decoding everything is far too slow for routine use (minutes per 4K
+# film), so the quick test decodes short windows at the start, middle and end. The end window is
+# the one that catches truncation ("File ended prematurely", too few frames).
+DECODE_WINDOW_SECONDS = 10
+DECODE_SHORT_READ_RATIO = 0.5   # fewer frames than this share of the expected count = data missing
+DECODE_ERROR_LINE_LIMIT = 5     # a few decoder complaints can be benign; more means real damage
+_FATAL_DECODE_MARKERS = ("ended prematurely", "invalid data found", "moov atom not found", "partial file")
+
+
+@dataclass(frozen=True)
+class DecodePlan:
+    intervals: str             # ffprobe -read_intervals value
+    seconds: float             # total seconds of video the plan decodes
+
+
+def decode_plan(duration_seconds: float | None, window: int = DECODE_WINDOW_SECONDS) -> DecodePlan:
+    """Windows to decode: the whole file when short, else start / middle / just before the end."""
+    if not duration_seconds or duration_seconds <= window * 4:
+        span = int(duration_seconds) if duration_seconds else window * 3
+        return DecodePlan(f"0%+{max(span, 1)}", float(max(span, 1)))
+    mid = int(duration_seconds / 2)
+    end = int(max(duration_seconds - window * 1.5, mid + window))
+    return DecodePlan(f"0%+{window},{mid}%+{window},{end}%+{window}", float(window * 3))
+
+
+def classify_decode(stderr: str, frames_read: int | None, plan: DecodePlan, frame_rate: float | None) -> Finding | None:
+    """Turn a quick-decode run into a finding, or None when the sampled windows decoded cleanly."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    fatal = [ln for ln in lines if any(m in ln.lower() for m in _FATAL_DECODE_MARKERS)]
+    expected = plan.seconds * frame_rate if frame_rate else None
+    short = expected is not None and frames_read is not None and frames_read < expected * DECODE_SHORT_READ_RATIO
+    data = {"source": "decode", "frames_read": frames_read, "frames_expected": round(expected) if expected else None,
+            "errors": len(lines), "sample": lines[:5]}
+    if short or any("ended prematurely" in ln.lower() for ln in fatal):
+        return Finding("truncated_file", "error",
+                       f"Quick decode test: file ends early ({frames_read or 0} of ~{round(expected or 0)} sampled frames decoded)",
+                       {**data, "reason": "decode_short_read"})
+    if fatal or len(lines) >= DECODE_ERROR_LINE_LIMIT:
+        first = (fatal or lines)[0]
+        return Finding("invalid_media", "error", f"Quick decode test: {len(lines)} decode error(s), e.g. {first[:160]}",
+                       {**data, "reason": "decode_errors"})
+    return None
+
+
+# --------------------------------------------------------------------------- MediaInfo naming tokens
+_VIDEO_CODEC_LABELS = {"hevc": "x265", "h264": "x264", "av1": "AV1", "mpeg2video": "MPEG2", "vc1": "VC1"}
+_AUDIO_CODEC_LABELS = {"truehd": "TrueHD", "eac3": "EAC3", "ac3": "AC3", "dts": "DTS", "aac": "AAC", "flac": "FLAC", "opus": "Opus"}
+_CHANNEL_LABELS = {8: "7.1", 7: "6.1", 6: "5.1", 5: "5.0", 4: "4.0", 3: "2.1", 2: "2.0", 1: "1.0"}
+MEDIAINFO_EMPTY = {"mediainfo_videocodec": "", "mediainfo_audiocodec": "", "mediainfo_audiochannels": "",
+                   "mediainfo_hdr": "", "mediainfo_resolution": ""}
+
+
+def primary_audio(inspection: MediaInspection) -> AudioStream | None:
+    """The default audio track, else the first one."""
+    return next((a for a in inspection.audio if a.default), inspection.audio[0] if inspection.audio else None)
+
+
+def format_mediainfo(video_codec: str | None, audio_codec: str | None, audio_channels: int | None,
+                     hdr_format: str | None, resolution: str | None) -> dict[str, str]:
+    """``{mediainfo_*}`` naming-token values from measured facts (shared by import and the Renamer)."""
+    vcodec, acodec = (video_codec or "").lower(), (audio_codec or "").lower()
+    return {
+        "mediainfo_videocodec": _VIDEO_CODEC_LABELS.get(vcodec, vcodec.upper()),
+        "mediainfo_audiocodec": _AUDIO_CODEC_LABELS.get(acodec, acodec.upper()),
+        "mediainfo_audiochannels": _CHANNEL_LABELS.get(audio_channels, str(audio_channels)) if audio_channels else "",
+        "mediainfo_hdr": hdr_format or "",
+        "mediainfo_resolution": resolution or "",
+    }
+
+
+def mediainfo_tokens(inspection: MediaInspection | None) -> dict[str, str]:
+    if inspection is None:
+        return dict(MEDIAINFO_EMPTY)
+    audio = primary_audio(inspection)
+    video = inspection.video
+    resolution = resolution_class(video.width, video.height) if video else None
+    return format_mediainfo(
+        video.codec if video else None, audio.codec if audio else None, audio.channels if audio else None,
+        video.hdr_format if video else None,
+        resolution.value if resolution and resolution != Resolution.UNKNOWN else None,
+    )

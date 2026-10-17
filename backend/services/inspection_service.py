@@ -23,8 +23,19 @@ from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db.base import utcnow
 from backend.db.models import EpisodeFile, MediaFile
+from backend.db.repositories import LibraryIssueRepository
 from backend.db.session import session_scope
-from backend.domain.inspection import InspectionParseError, compare, parse_ffprobe, resolution_class
+from backend.domain.inspection import (
+    DecodePlan,
+    Finding,
+    InspectionParseError,
+    MediaInspection,
+    classify_decode,
+    compare,
+    decode_plan,
+    parse_ffprobe,
+    resolution_class,
+)
 from backend.domain.issues import INSPECTION_ISSUE_TYPES  # corrupt_file is the scanner's (header check)
 from backend.domain.quality import parse_quality
 from backend.services.fileops import long_path
@@ -65,50 +76,161 @@ def ffprobe_version(binary: str | None = None) -> str | None:
     return ver
 
 
-async def probe(path: Path, timeout: float = 30) -> dict[str, Any]:
-    ffprobe = ffprobe_path()
-    if not ffprobe:
-        raise RuntimeError("ffprobe not found")
+_MAX_OUTPUT = 4 * 1024 * 1024
+DECODE_TIMEOUT = 180.0  # three 10 s windows of 4K HEVC decode in well under a minute on modest CPUs
 
-    abs_path = long_path(path)
 
-    args = [
-        ffprobe,
-        "-v", "error",
-        "-hide_banner",
-        "-print_format", "json",
-        "-show_format",
-        "-show_streams",
-        "-show_chapters",
-        "-protocol_whitelist", "file",
-        "-i", f"file:{abs_path}"
-    ]
+def _input_args(path: Path) -> list[str]:
+    # `file:` + a file-only protocol whitelist: a crafted name (concat:, http://, subfile,,…) can never
+    # make ffprobe read another resource. Every invocation goes through here.
+    return ["-protocol_whitelist", "file", "-i", f"file:{long_path(path)}"]
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
 
+def _probe_argv(ffprobe: str, path: Path) -> list[str]:
+    return [ffprobe, "-v", "error", "-hide_banner", "-print_format", "json",
+            "-show_format", "-show_streams", "-show_chapters", *_input_args(path)]
+
+
+def _decode_argv(ffprobe: str, path: Path, intervals: str) -> list[str]:
+    # -count_frames makes ffprobe *decode* the selected windows; decoder errors land on stderr
+    return [ffprobe, "-v", "error", "-hide_banner", "-read_intervals", intervals, "-count_frames",
+            "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-print_format", "json",
+            *_input_args(path)]
+
+
+async def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()  # reap it, or the killed ffprobe lingers as a zombie
         raise RuntimeError("ffprobe timeout")
+    return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode(errors="replace")
 
-    if proc.returncode != 0:
-        err = stderr.decode(errors="replace")
+
+def _run_sync(argv: list[str], timeout: float) -> tuple[int, str, str]:
+    """Blocking twin of :func:`_run` for the import path, which already runs in a worker thread."""
+    try:
+        res = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffprobe timeout")
+    return res.returncode, res.stdout.decode("utf-8", errors="replace"), res.stderr.decode(errors="replace")
+
+
+def _parse_probe_output(returncode: int, out: str, err: str) -> dict[str, Any]:
+    if returncode != 0:
         raise RuntimeError(f"ffprobe failed: {err}")
-
-    out = stdout.decode("utf-8", errors="replace")
-    if len(out) > 4 * 1024 * 1024:
+    if len(out) > _MAX_OUTPUT:
         raise RuntimeError("ffprobe output exceeded 4MB limit")
-
     try:
         return json.loads(out)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"ffprobe output is not valid JSON: {e}")
+
+
+def _decode_result(out: str, err: str, plan: DecodePlan, inspection: MediaInspection) -> Finding | None:
+    frames = None
+    try:
+        streams = json.loads(out[:_MAX_OUTPUT] or "{}").get("streams") or []
+        if streams and str(streams[0].get("nb_read_frames", "")).isdigit():
+            frames = int(streams[0]["nb_read_frames"])
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return classify_decode(err, frames, plan, inspection.video.frame_rate if inspection.video else None)
+
+
+async def probe(path: Path, timeout: float = 30) -> dict[str, Any]:
+    ffprobe = ffprobe_path()
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found")
+    return _parse_probe_output(*await _run(_probe_argv(ffprobe, path), timeout))
+
+
+def probe_sync(path: Path, timeout: float = 30) -> dict[str, Any]:
+    ffprobe = ffprobe_path()
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found")
+    return _parse_probe_output(*_run_sync(_probe_argv(ffprobe, path), timeout))
+
+
+async def decode_check(path: Path, inspection: MediaInspection, timeout: float = DECODE_TIMEOUT) -> Finding | None:
+    """Quick decode test (see ``domain.inspection.decode_plan``); None = sampled windows decoded cleanly."""
+    ffprobe = ffprobe_path()
+    if not ffprobe or inspection.video is None:
+        return None
+    plan = decode_plan(inspection.duration_seconds)
+    _, out, err = await _run(_decode_argv(ffprobe, path, plan.intervals), timeout)
+    return _decode_result(out, err, plan, inspection)
+
+
+def decode_check_sync(path: Path, inspection: MediaInspection, timeout: float = DECODE_TIMEOUT) -> Finding | None:
+    ffprobe = ffprobe_path()
+    if not ffprobe or inspection.video is None:
+        return None
+    plan = decode_plan(inspection.duration_seconds)
+    _, out, err = _run_sync(_decode_argv(ffprobe, path, plan.intervals), timeout)
+    return _decode_result(out, err, plan, inspection)
+
+
+# --------------------------------------------------------------------------- pre-import check
+@dataclass(frozen=True)
+class PreImportCheck:
+    """Result of probing a download before it is placed (``inspect_before_import``)."""
+    inspection: MediaInspection | None = None
+    rejection: str | None = None  # set = do not import
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+def pre_import_check(path: Path) -> PreImportCheck | None:
+    """Probe (and optionally decode-test) a download before import. Blocking; call from a worker thread.
+
+    Returns None when the check is off or couldn't run (no binary, timeout, odd output): the import
+    then proceeds exactly as without it – the check only ever *rejects* on positive evidence.
+    """
+    settings = get_settings()
+    if not (settings.inspection_enabled and settings.inspect_before_import and ffprobe_path()):
+        return None
+    try:
+        inspection = parse_ffprobe(probe_sync(path))
+    except RuntimeError as e:
+        if "Invalid data found when processing input" in str(e):
+            return PreImportCheck(rejection="ffprobe reported invalid data – the file is unreadable",
+                                  evidence={"file": path.name, "check": "probe", "error": str(e)[:300]})
+        log.warning("pre-import probe of %s did not run (%s); importing without it", path.name, e)
+        return None
+    except InspectionParseError as e:
+        log.warning("pre-import probe of %s returned unparseable output (%s); importing without it", path.name, e)
+        return None
+    if inspection.video is None:
+        return PreImportCheck(inspection, "No video stream found", {"file": path.name, "check": "probe"})
+    if settings.inspection_decode_test:
+        try:
+            finding = decode_check_sync(path, inspection)
+        except RuntimeError as e:
+            log.warning("pre-import decode test of %s did not finish (%s); not rejecting on it", path.name, e)
+            finding = None
+        if finding is not None:
+            return PreImportCheck(inspection, finding.message, {"file": path.name, "check": "decode", **finding.data})
+    return PreImportCheck(inspection)
+
+
+def expected_runtime_minutes(runtimes: list[int | None], fallback: int | None) -> int | None:
+    """Expected runtime of a file covering these items (several for a multi-episode file).
+
+    Each missing per-item runtime falls back to ``fallback`` (the series runtime); unknown → None.
+    """
+    resolved = [r or fallback for r in runtimes]
+    if not resolved or any(not r for r in resolved):
+        return None
+    return sum(resolved)
+
+
+def truncation_finding(inspection: MediaInspection, expected_min: int | None, size_bytes: int, *, is_movie: bool) -> Finding | None:
+    """The domain's truncation rule (short *and* far too small) on its own, for the pre-import gate."""
+    findings = compare(parse_quality(""), inspection, expected_runtime_min=expected_min, preferred_audio_languages=[],
+                       is_movie=is_movie, file_size_bytes=size_bytes)
+    return next((f for f in findings if f.kind == "truncated_file"), None)
 
 
 @dataclass(frozen=True)
@@ -157,11 +279,10 @@ def evaluate_findings(db: Session, media_file: MediaFile, inspection) -> list:
     if is_movie and media_file.movie:
         expected_runtime_min = media_file.movie.runtime_minutes
     elif not is_movie:
-        ef = db.scalar(select(EpisodeFile).where(EpisodeFile.media_file_id == media_file.id).limit(1))
-        if ef and ef.episode:
-            expected_runtime_min = ef.episode.runtime_minutes
-            if not expected_runtime_min and media_file.series:
-                expected_runtime_min = media_file.series.runtime_minutes
+        # a multi-episode file (S01E01-E02) runs for all of its episodes, not just the first
+        links = db.scalars(select(EpisodeFile).where(EpisodeFile.media_file_id == media_file.id)).all()
+        series_runtime = media_file.series.runtime_minutes if media_file.series else None
+        expected_runtime_min = expected_runtime_minutes([ef.episode.runtime_minutes for ef in links if ef.episode], series_runtime)
 
     claimed = parse_quality(media_file.quality or "")
 
@@ -228,7 +349,24 @@ def _record_error(media_file_id: int, error: str, batch: _IssueBatch) -> None:
                                   "data": {"reason": "invalid_data"}})
 
 
-def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch) -> InspectionOutcome:
+@dataclass(frozen=True)
+class _DecodeRun:
+    finding: Finding | None  # None = the sampled windows decoded cleanly
+
+
+def _carried_decode_reports(db: Session, mf: MediaFile, media_id: int | None) -> list[Finding]:
+    """Open decode-test findings for this exact file content, re-reported when this pass didn't decode.
+
+    Otherwise a later header-only inspection (the backlog, or with the test switched off) would
+    auto-resolve damage it never looked for. Tied to size+mtime, so replaced content drops them.
+    """
+    rows = LibraryIssueRepository(db).for_file(mf.media_type, media_id, mf.path, ("truncated_file", "invalid_media"), ("open",))
+    return [Finding(r.issue_type, r.severity, r.details or "", r.data) for r in rows
+            if (r.data or {}).get("source") == "decode"
+            and (r.data or {}).get("size") == mf.size_bytes and (r.data or {}).get("mtime") == mf.mtime]
+
+
+def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch, decode: _DecodeRun | None = None) -> InspectionOutcome:
     with session_scope() as db:
         mf = db.get(MediaFile, media_file_id)
         if mf is None:
@@ -282,7 +420,13 @@ def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch) -> I
         if mf.media_type == "movie" and media_id is not None and (not mf.movie or len(mf.movie.files) <= 1):
             batch.touched.append((mf.media_type, media_id))
 
-        for f in evaluate_findings(db, mf, inspection):
+        findings = evaluate_findings(db, mf, inspection)
+        if decode is None:
+            findings = _carried_decode_reports(db, mf, media_id) + findings
+        elif decode.finding is not None:  # first, so it wins over a same-type duration finding
+            stamped = {**decode.finding.data, "size": mf.size_bytes, "mtime": mf.mtime}
+            findings = [Finding(decode.finding.kind, decode.finding.severity, decode.finding.message, stamped)] + findings
+        for f in findings:
             batch.reports.append({
                 "issue_type": f.kind,
                 "media_type": mf.media_type,
@@ -298,7 +442,7 @@ def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch) -> I
 
 
 # --------------------------------------------------------------------------- async entry points
-async def _inspect(media_file_id: int, force: bool, batch: _IssueBatch) -> InspectionOutcome:
+async def _inspect(media_file_id: int, force: bool, batch: _IssueBatch, *, decode: bool = False) -> InspectionOutcome:
     path, outcome = await asyncio.to_thread(_prepare, media_file_id, force)
     if outcome is not None:
         return outcome
@@ -309,13 +453,23 @@ async def _inspect(media_file_id: int, force: bool, batch: _IssueBatch) -> Inspe
         error = str(e) or type(e).__name__
         await asyncio.to_thread(_record_error, media_file_id, error, batch)
         return InspectionOutcome("error", error)
-    return await asyncio.to_thread(_store, media_file_id, payload, batch)
+
+    decode_result: _DecodeRun | None = None
+    if decode and get_settings().inspection_decode_test:
+        try:
+            inspection = parse_ffprobe(payload)
+            async with get_semaphore():
+                decode_result = _DecodeRun(await decode_check(path, inspection))
+        except (InspectionParseError, RuntimeError) as e:  # a slow/odd decode must not fail the inspection
+            log.warning("decode test of media file %s did not finish: %s", media_file_id, e)
+    return await asyncio.to_thread(_store, media_file_id, payload, batch, decode_result)
 
 
-async def inspect_file(media_file_id: int, *, force: bool = False) -> InspectionOutcome:
+async def inspect_file(media_file_id: int, *, force: bool = False, decode: bool = True) -> InspectionOutcome:
+    """Inspect one file. Runs the quick decode test too when enabled (the backlog never does)."""
     batch = _IssueBatch()
     try:
-        return await _inspect(media_file_id, force, batch)
+        return await _inspect(media_file_id, force, batch, decode=decode)
     finally:
         await asyncio.to_thread(_reconcile, batch)
 
@@ -380,7 +534,7 @@ async def inspect_backlog(limit: int = 100, progress=None, *, scope: str = "all"
         nonlocal done, errors
         async with workers:
             try:
-                outcome = await _inspect(media_file_id, False, batch)
+                outcome = await _inspect(media_file_id, False, batch)  # header-only: no decode test in the backlog
                 if outcome.status == "error":
                     errors += 1
             except Exception as e:
