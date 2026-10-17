@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -57,18 +58,25 @@ async def lifespan(app: FastAPI):
     notification_service.install()
 
     await asyncio.to_thread(import_service.recover_interrupted_imports)  # before the workers claim the re-queued jobs
-    pool = WorkerPool(job_queue, size=4)
-    await pool.start()
-    scheduler.start()
-    watcher.start()
+    # MANIAC_BACKGROUND_WORKERS=0 serves the API without running jobs, schedules or the folder watcher: tests set it
+    # so work one test queues can't run in the background of the next. Queued jobs wait in the table until a run with workers.
+    background = os.environ.get("MANIAC_BACKGROUND_WORKERS", "1") != "0"
+    pool = WorkerPool(job_queue, size=4) if background else None
+    if pool:
+        await pool.start()
+        scheduler.start()
+        watcher.start()
+    else:
+        log.warning("Background workers disabled (MANIAC_BACKGROUND_WORKERS=0): jobs are queued but not run")
     app.state.pool = pool
     log.info("Maniac Media %s ready", __version__)
     try:
         yield
     finally:
-        watcher.stop()
-        scheduler.stop()
-        await pool.stop()
+        if pool:
+            watcher.stop()
+            scheduler.stop()
+            await pool.stop()
         from backend.db.session import db_manager
 
         db_manager.dispose()
