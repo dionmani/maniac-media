@@ -70,3 +70,47 @@ def test_ffprobe_version_parsing(monkeypatch):
 
     ver = ffprobe_version()
     assert ver == "7.0.2-static"
+
+
+def test_every_ffprobe_invocation_is_locked_to_local_files(tmp_path):
+    from backend.services.inspection_service import _decode_argv, _probe_argv
+
+    crafted = tmp_path / "concat:evil.mkv"
+    for argv in (_probe_argv("ffprobe", crafted), _decode_argv("ffprobe", crafted, "0%+10")):
+        i = argv.index("-protocol_whitelist")
+        assert argv[i + 1] == "file" and argv[i + 2] == "-i" and argv[i + 3].startswith("file:")
+    assert "-count_frames" in _decode_argv("ffprobe", crafted, "0%+10")
+
+
+def test_expected_runtime_for_multi_episode_files():
+    from backend.services.inspection_service import expected_runtime_minutes
+
+    assert expected_runtime_minutes([30, 30], None) == 60       # S01E01-E02 runs for both episodes
+    assert expected_runtime_minutes([None, 25], 22) == 47       # per-episode gap filled from the series
+    assert expected_runtime_minutes([None], None) is None
+    assert expected_runtime_minutes([], 40) is None
+
+
+def test_pre_import_check_rejects_only_on_positive_evidence(monkeypatch):
+    from pathlib import Path
+
+    from backend.core.settings import settings_manager
+    from backend.services import inspection_service as svc
+
+    monkeypatch.setattr(svc, "ffprobe_path", lambda: "/usr/bin/ffprobe")
+    settings_manager.update(inspection_enabled=True, inspect_before_import=True, inspection_decode_test=False)
+    try:
+        no_video = {"format": {"format_name": "matroska", "duration": "60"}, "streams": [{"codec_type": "audio", "codec_name": "aac", "channels": 2}]}
+        monkeypatch.setattr(svc, "probe_sync", lambda p, timeout=30: no_video)
+        assert svc.pre_import_check(Path("x.mkv")).rejection == "No video stream found"
+
+        def boom(p, timeout=30):
+            raise RuntimeError("ffprobe failed: something unrelated")
+
+        monkeypatch.setattr(svc, "probe_sync", boom)
+        assert svc.pre_import_check(Path("x.mkv")) is None  # can't tell -> import proceeds unchecked
+
+        settings_manager.update(inspect_before_import=False)
+        assert svc.pre_import_check(Path("x.mkv")) is None
+    finally:
+        settings_manager.update(inspect_before_import=False)

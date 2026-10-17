@@ -18,7 +18,7 @@ type Settings = Record<string, unknown> & {
   job_retention_days: number; history_retention_days: number; audit_retention_days: number; db_connection: string;
   ffprobe_path: string; inspection_enabled: boolean; inspection_concurrency: number;
   preferred_audio_languages: string[]; runtime_tolerance_movie_pct: number;
-  runtime_tolerance_episode_pct: number; inspect_before_import: boolean;
+  runtime_tolerance_episode_pct: number; inspect_before_import: boolean; inspection_decode_test: boolean;
 };
 
 function useSettingsForm() {
@@ -64,7 +64,7 @@ export function MediaManagement() {
   if (query.isLoading || !form) return query.error ? <ErrorAlert error={query.error} /> : <Loading />;
   const keys = ['media_root_movies', 'media_root_tv', 'download_folder', 'recycle_bin', 'recycle_bin_days', 'auto_import', 'import_mode',
     'min_import_size_mb', 'watch_download_folder', 'download_poll_seconds', 'import_untracked_downloads', 'search_on_add', 'auto_retry_failed_downloads', 'max_download_retries', 'release_gate_catalog_days', 'metadata_language', 'seerr_allow_file_deletion',
-    'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct'];
+    'inspection_enabled', 'ffprobe_path', 'inspection_concurrency', 'preferred_audio_languages', 'runtime_tolerance_movie_pct', 'runtime_tolerance_episode_pct', 'inspect_before_import', 'inspection_decode_test'];
 
   const editAudioLangs = (val: string) => {
     setAudioLangs(val);
@@ -206,6 +206,10 @@ export function MediaManagement() {
         </Grid>
         <Stack sx={{ mt: 1 }}>
           {toggle('inspection_enabled', 'Enable media inspection via ffprobe')}
+          {toggle('inspect_before_import', 'Check downloads before import',
+            'Probe each download before it is moved into the library: unreadable, video-less or truncated files are rejected and left in the download folder, and {MediaInfo …} tokens work in your naming formats. If the probe can\'t run (e.g. timeout), the import continues unchecked.')}
+          {toggle('inspection_decode_test', 'Quick decode test (slower)',
+            'Also decode three 10-second windows (start, middle, end) to catch damage a header probe can\'t see – notably MKVs cut off mid-download. Runs on imports and single-file inspections, never the library-wide backlog. Takes seconds per file (longer for 4K).')}
         </Stack>
         {canScan && (
           <Box sx={{ mt: 2 }}>

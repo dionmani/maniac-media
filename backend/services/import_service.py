@@ -24,10 +24,11 @@ from backend.db import models
 from backend.db.repositories import MediaFileRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.diagnosis import ImportFailureReason, classify_oserror
+from backend.domain.inspection import MEDIAINFO_EMPTY, mediainfo_tokens
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import is_partial, is_sample, is_video, normalize_title, parse_episode, parse_folder_title, parse_movie
 from backend.domain.quality import ParsedQuality, parse_quality
-from backend.services import fileops, import_diagnosis, media_file_service
+from backend.services import fileops, import_diagnosis, inspection_service, media_file_service
 from backend.services.audit import SYSTEM, Actor, audit, history
 from backend.services.quality_service import spec_for
 
@@ -234,7 +235,8 @@ def _annotate_library_state(db: Session, candidate: Candidate) -> None:
 
 # --------------------------------------------------------------------------- destination
 def movie_destination(
-    movie: models.Movie, src: Path, quality: ParsedQuality, original: str, custom_formats_token: str = ""
+    movie: models.Movie, src: Path, quality: ParsedQuality, original: str, custom_formats_token: str = "",
+    mediainfo: dict[str, str] | None = None,
 ) -> Path:
     settings = get_settings()
     root = Path(movie.root_folder or settings.media_root_movies)
@@ -246,13 +248,14 @@ def movie_destination(
         "source": quality.quality.source.value, "codec": quality.codec.value if quality.codec.value != "unknown" else "",
         "imdbid": movie.imdb_id, "tmdbid": movie.tmdb_id, "releasegroup": parse_movie(original).release_group, "originalname": Path(original).stem,
         "customformats": custom_formats_token,
+        **(mediainfo or MEDIAINFO_EMPTY),  # measured facts when the file was probed before import
     }
     return folder / (render(settings.movie_format, values, MOVIE_TOKENS) + src.suffix.lower())
 
 
 def episode_destination(
     series: models.Series, episodes: list[models.Episode], src: Path, quality: ParsedQuality, original: str,
-    custom_formats_token: str = "",
+    custom_formats_token: str = "", mediainfo: dict[str, str] | None = None,
 ) -> Path:
     settings = get_settings()
     root = Path(series.root_folder or settings.media_root_tv)
@@ -267,6 +270,7 @@ def episode_destination(
         "source": quality.quality.source.value, "codec": quality.codec.value if quality.codec.value != "unknown" else "",
         "tvdbid": series.tvdb_id, "imdbid": series.imdb_id, "releasegroup": (parse_episode(original) or parse_movie(original)).release_group,
         "originalname": Path(original).stem, "customformats": custom_formats_token,
+        **(mediainfo or MEDIAINFO_EMPTY),
     }
     rel = render(settings.tv_format, values, EPISODE_TOKENS)
     if len(episodes) > 1:
@@ -294,11 +298,30 @@ def _enqueue_inspection_after_commit(db: Session, media_file_id: int) -> None:
     event.listen(db, "after_commit", _fire, once=True)
 
 
+def _reject_if_truncated(pre: inspection_service.PreImportCheck | None, expected_min: int | None, src: Path,
+                         size: int, *, is_movie: bool) -> None:
+    """Pre-import gate for truncation, which needs the target's expected runtime (known only here)."""
+    if pre is None or pre.inspection is None:
+        return
+    finding = inspection_service.truncation_finding(pre.inspection, expected_min, size, is_movie=is_movie)
+    if finding is not None:
+        raise ImportError_(f"Pre-import check: {finding.message}", reason=ImportFailureReason.CORRUPT_FILE,
+                           evidence={"file": src.name, "check": "truncation", **finding.data})
+
+
+def _pre_import_rejection(src: Path) -> tuple[inspection_service.PreImportCheck | None, str | None, dict]:
+    """Run the optional pre-import probe; returns (check, rejection message, evidence)."""
+    pre = inspection_service.pre_import_check(src)
+    if pre is not None and pre.rejection:
+        return pre, f"Pre-import check: {pre.rejection}", pre.evidence
+    return pre, None, {}
+
+
 # --------------------------------------------------------------------------- core import
 def _import_one(
     db: Session, tx: fileops.FileTransaction, src: Path, quality: ParsedQuality, media_type: str, media_id: int,
     season: int | None, episode_numbers: list[int], mode: str, original_name: str, queue_id: int | None,
-    force: bool = False,
+    force: bool = False, pre: inspection_service.PreImportCheck | None = None,
 ) -> str:
     from backend.services.quality_service import get_matcher
     from backend.services.search_service import compute_file_format_score
@@ -320,10 +343,12 @@ def _import_one(
             if existing
             else (None, None)
         )
+        _reject_if_truncated(pre, movie.runtime_minutes, src, src_size, is_movie=True)
         scored_cf, candidate_fs, rename_cf = _candidate_formats(db, original_name or src.name, src_size, 1, quality, profile)
         upgrade = _check_existing(existing, src, current_q, quality, profile, force, current_fs=current_fs, candidate_fs=candidate_fs)
         existing_mf = MediaFileRepository(db).by_path(existing) if existing else None
-        dest = movie_destination(movie, src, quality, original_name, custom_formats_token=rename_cf)
+        dest = movie_destination(movie, src, quality, original_name, custom_formats_token=rename_cf,
+                                 mediainfo=mediainfo_tokens(pre.inspection) if pre else None)
         _clear_destination(tx, dest, existing, recycle_root)
         if upgrade and existing_mf:
             media_file_service.detach_file(db, existing_mf, reason="upgraded")
@@ -371,6 +396,8 @@ def _import_one(
             episodes.append(ep)
         db.flush()
         episodes.sort(key=lambda e: e.episode_number)
+    _reject_if_truncated(pre, inspection_service.expected_runtime_minutes([e.runtime_minutes for e in episodes], series.runtime_minutes),
+                         src, src_size, is_movie=False)
     profile = spec_for(db, series.quality_profile_id)
     existing_paths = {Path(e.file_path) for e in episodes if e.has_file and e.file_path}
     existing = next(iter(existing_paths)) if len(existing_paths) == 1 else None
@@ -390,7 +417,8 @@ def _import_one(
         if (current_q or force)
         else False
     )
-    dest = episode_destination(series, episodes, src, quality, original_name, custom_formats_token=rename_cf)
+    dest = episode_destination(series, episodes, src, quality, original_name, custom_formats_token=rename_cf,
+                               mediainfo=mediainfo_tokens(pre.inspection) if pre else None)
     for old in existing_paths:
         if old != dest and old.exists():
             tx.recycle(old, recycle_root)
@@ -539,6 +567,11 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
                 fail_reason = _CANDIDATE_STATE_REASONS.get(candidate.state, ImportFailureReason.NO_VIDEO_FILES)
                 fail_evidence = {"file": video.name, "state": candidate.state, "detail": candidate.reason}
                 continue
+            pre, rejection, evidence = _pre_import_rejection(video)
+            if rejection:
+                result.failed.append(f"{video.name}: {rejection}")
+                fail_reason, fail_evidence = ImportFailureReason.CORRUPT_FILE, evidence
+                continue
             file_season, file_eps = season, episodes
             if media_type == "tv":
                 parsed = parse_episode(video.name) or parse_episode(release_title)
@@ -549,7 +582,7 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
                     fail_reason, fail_evidence = ImportFailureReason.UNPARSEABLE_EPISODE, {"file": video.name, "release_title": release_title}
                     continue
             quality = candidate.quality if candidate.quality.quality.weight else parse_quality(release_title)
-            label = _run_import(video, quality, media_type, media_id, file_season, list(file_eps or []), mode, release_title, queue_id, force)
+            label = _run_import(video, quality, media_type, media_id, file_season, list(file_eps or []), mode, release_title, queue_id, force, pre)
             result.imported.append(label)
     except ImportError_ as exc:
         failure = str(exc)
@@ -620,11 +653,12 @@ def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
     return result
 
 
-def _run_import(src: Path, quality, media_type, media_id, season, episodes, mode, original, queue_id, force: bool = False) -> str:
+def _run_import(src: Path, quality, media_type, media_id, season, episodes, mode, original, queue_id, force: bool = False,
+                pre: inspection_service.PreImportCheck | None = None) -> str:
     tx = fileops.FileTransaction()
     try:
         with session_scope() as db:  # commit happens on exit; failure below rolls files back too
-            label = _import_one(db, tx, src, quality, media_type, media_id, season, episodes, mode, original, queue_id, force)
+            label = _import_one(db, tx, src, quality, media_type, media_id, season, episodes, mode, original, queue_id, force, pre)
         return label
     except TemplateError as exc:
         tx.rollback()
@@ -680,9 +714,15 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
             result.failed.append(f"{src.name}: {check.reason}")
             result.failed_paths[item["path"]] = check.reason or "Invalid file"
             continue
+        pre, rejection, _ = _pre_import_rejection(src)
+        if rejection:
+            result.failed.append(f"{src.name}: {rejection}")
+            result.failed_paths[item["path"]] = rejection
+            result.failed_codes[item["path"]] = str(ImportFailureReason.CORRUPT_FILE)
+            continue
         try:
             label = _run_import(src, _import_quality(src, item.get("quality")), item["media_type"], int(item["media_id"]),
-                                item.get("season"), list(item.get("episodes") or []), mode, src.name, None)
+                                item.get("season"), list(item.get("episodes") or []), mode, src.name, None, pre=pre)
             result.imported.append(label)
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
             if mode == "move":

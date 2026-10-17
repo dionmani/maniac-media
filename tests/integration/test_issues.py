@@ -348,3 +348,49 @@ def test_moved_file_carries_its_issues_to_the_new_path(database, library, make_v
     # a clean re-inspection at the new path now resolves it (before, it was stranded on the old path)
     _reconcile(_IssueBatch(touched_paths=[("movie", str(renamed))]))
     assert _issues("Nope", "quality_mismatch")[0].status == "resolved"
+
+
+def test_relabel_rescores_custom_formats_at_the_measured_resolution(database, library, make_video, client, admin_headers):
+    """A format keyed on resolution must follow the relabel – for the stored score and for upgrade decisions."""
+    from backend.db.repositories import MediaFileRepository
+    from backend.services import quality_service, search_service
+
+    cf = client.post("/api/v1/custom-formats", json={"name": "Is 1080p (relabel test)", "include_in_rename": False, "specifications": [
+        {"name": "1080p", "kind": "resolution", "value": "1080p", "negate": False, "required": True}]}, headers=admin_headers)
+    assert cf.status_code == 201, cf.text
+    cf_id = cf.json()["id"]
+    prof = client.post("/api/v1/quality-profiles", json={
+        "name": "Relabel CF Profile", "items": ["Bluray-720p", "Bluray-1080p"], "cutoff": "Bluray-1080p",
+        "format_scores": {str(cf_id): 100}}, headers=admin_headers)
+    assert prof.status_code in (200, 201), prof.text
+    prof_id = prof.json()["id"]
+    try:
+        video = make_video(library["movies"] / "Blade Runner (1982)" / "Blade.Runner.1982.1080p.BluRay.x264-GRP.mkv", _body(11))
+        scanner_service.scan("movies", incremental=False)
+        with session_scope() as db:
+            movie = db.scalar(select(models.Movie).where(models.Movie.title == "Blade Runner"))
+            movie.quality_profile_id = prof_id
+        scanner_service.scan("movies", incremental=False)  # re-score under the new profile
+        with session_scope() as db:
+            assert MediaFileRepository(db).by_path(video).custom_format_score == 100
+
+        issue_id = _report("Blade Runner", "quality_mismatch", video, {"claimed": "1080p", "actual": "720p"})
+        with session_scope() as db:
+            issue_service.resolve(db, db.get(models.LibraryIssue, issue_id), "relabel", None, SYSTEM)
+        with session_scope() as db:
+            assert MediaFileRepository(db).by_path(video).custom_format_score == 0  # re-scored on relabel
+
+        scanner_service.scan("movies", incremental=False)
+        with session_scope() as db:
+            mf = MediaFileRepository(db).by_path(video)
+            assert mf.custom_format_score == 0 and mf.custom_formats == []  # and a rescan keeps it that way
+            movie = db.get(models.Movie, mf.movie_id)
+            current_fs, _ = search_service.compute_file_format_score(
+                db, "movie", movie.id, movie.file_path, quality_service.spec_for(db, prof_id), quality_service.get_matcher(db))
+            assert current_fs == 0  # upgrade decisions compare against the measured quality too
+    finally:
+        with session_scope() as db:
+            for m in db.scalars(select(models.Movie).where(models.Movie.quality_profile_id == prof_id)):
+                m.quality_profile_id = 1
+        client.delete(f"/api/v1/quality-profiles/{prof_id}", headers=admin_headers)
+        client.delete(f"/api/v1/custom-formats/{cf_id}", headers=admin_headers)

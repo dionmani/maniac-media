@@ -863,6 +863,7 @@ class GeneralSettings(BaseModel):
     runtime_tolerance_episode_pct: int | None = Field(None, ge=5, le=90)
     runtime_tolerance_movie_pct: int | None = Field(None, ge=5, le=90)
     inspect_before_import: bool | None = None
+    inspection_decode_test: bool | None = None
 
 
 class LibraryInspectRequest(BaseModel):

@@ -337,6 +337,9 @@ def _relabel(db, issue, params, actor) -> str:
     new_label = matched.name if matched else actual_str
     mf.quality = new_label
     mf.quality_locked = True  # a rescan re-parses the filename; don't let it undo the relabel
+    owner = mf.movie if mf.media_type == "movie" else mf.series
+    media_file_service.refresh_formats(db, mf, profile_id=owner.quality_profile_id if owner else None,
+                                       episode_count=max(1, len(mf.episodes)))
     if mf.media_type == "movie" and mf.movie:
         media_file_service.sync_legacy(db, mf.movie)
     elif mf.media_type == "tv":

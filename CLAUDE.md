@@ -54,9 +54,11 @@ npm run lint         # eslint, React hooks rules only (CI fails on rules-of-hook
 
 ### Docker / release
 
-Push to `main` or a `v*.*.*` tag runs `.github/workflows/ci.yml`: backend tests (Linux+Windows ×
-Python 3.12/3.13), a Postgres migration-wizard job, frontend build, Playwright e2e against the built
-SPA, then a multi-arch image published to `ghcr.io/dionmani/maniac-media`.
+Pull requests into `main` run `.github/workflows/ci.yml`'s test jobs: backend tests (Ubuntu,
+Python 3.13 – the same as the Docker image), a Postgres migration-wizard job, frontend lint + build,
+and Playwright e2e against the built SPA. A push to `main` or a `v*.*.*` tag runs the same jobs and,
+if they pass, publishes a `linux/amd64` image to `ghcr.io/dionmani/maniac-media` (`:latest` from
+`main`). PRs never publish.
 
 ```bash
 docker compose up -d                       # SQLite (requires .env with MANIAC_MASTER_KEY)

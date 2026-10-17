@@ -236,3 +236,45 @@ def test_naming_mediainfo_tokens():
     # preview with inspect_before_import has no warnings
     p_ok = naming.preview(template, "movie", inspect_before_import=True)
     assert p_ok.warnings == []
+
+
+# --------------------------------------------------------------------------- milestone 7
+from backend.domain.inspection import (  # noqa: E402
+    DecodePlan,
+    classify_decode,
+    decode_plan,
+    format_mediainfo,
+    mediainfo_tokens,
+)
+
+
+def test_decode_plan_samples_start_middle_and_end_of_long_files():
+    assert decode_plan(7200) == DecodePlan("0%+10,3600%+10,7185%+10", 30.0)
+    assert decode_plan(30) == DecodePlan("0%+30", 30.0)       # short file: decode all of it
+    assert decode_plan(None) == DecodePlan("0%+30", 30.0)     # unknown duration: the first 30 s
+
+
+def test_classify_decode():
+    plan = decode_plan(600)
+    assert classify_decode("", 708, plan, 24.0) is None
+    assert classify_decode("[h264] error while decoding MB 1 2\n", 720, plan, 24.0) is None  # one benign-looking line
+    short = classify_decode("[matroska,webm] File ended prematurely\n", 79, plan, 24.0)
+    assert short.kind == "truncated_file" and short.data["reason"] == "decode_short_read" and short.data["frames_expected"] == 720
+    assert classify_decode("", 100, plan, 24.0).kind == "truncated_file"  # too few frames even without stderr
+    noisy = classify_decode("[h264] error while decoding MB\n" * 5, 720, plan, 24.0)
+    assert noisy.kind == "invalid_media" and noisy.data["reason"] == "decode_errors" and noisy.data["source"] == "decode"
+    assert classify_decode("x: Invalid data found when processing input\n", None, plan, None).kind == "invalid_media"
+
+
+def test_mediainfo_token_formatting():
+    assert format_mediainfo("hevc", "truehd", 8, "DV HDR10", "2160p") == {
+        "mediainfo_videocodec": "x265", "mediainfo_audiocodec": "TrueHD", "mediainfo_audiochannels": "7.1",
+        "mediainfo_hdr": "DV HDR10", "mediainfo_resolution": "2160p"}
+    assert format_mediainfo("vp9", None, None, None, None)["mediainfo_videocodec"] == "VP9"
+    assert all(v == "" for v in mediainfo_tokens(None).values())
+    inspection = MediaInspection("mkv", 60.0, None, VideoStream("h264", 1920, 800, None, None, None, None, None),
+                                 (AudioStream("aac", None, 2, None, "eng", None, False, False),
+                                  AudioStream("eac3", None, 6, None, "eng", None, True, False)), (), 0)
+    tokens = mediainfo_tokens(inspection)
+    assert tokens["mediainfo_audiocodec"] == "EAC3" and tokens["mediainfo_audiochannels"] == "5.1"  # default track wins
+    assert tokens["mediainfo_resolution"] == "1080p"  # scope crop still classifies by width

@@ -29,7 +29,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, CheckCircle2, Download, FlaskConical, Pencil, Plus, Trash2, Upload, XCircle } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { del, get, post, put } from '../../api/client';
 import type { CustomFormat, CustomFormatSpec, CustomFormatTestResult, QualityProfile } from '../../api/types';
 import { Loading, useConfirm } from '../../components/common';
@@ -499,7 +499,8 @@ function CustomFormatEditor({
   const [cf, setCf] = useState<Partial<CustomFormat>>(format);
   const [sampleTitle, setSampleTitle] = useState('Movie.Name.2024.2160p.WEB-DL.DDP5.1.DV.HDR10.H.265-FLUX');
   const [testResult, setTestResult] = useState<CustomFormatTestResult | null>(null);
-  const specs = cf.specifications ?? [];
+  // memoised: a fresh `[]` each render would re-run the test effect on every render
+  const specs = useMemo(() => cf.specifications ?? [], [cf.specifications]);
 
   useEffect(() => {
     if (!sampleTitle.trim() || specs.length === 0) {

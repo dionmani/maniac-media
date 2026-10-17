@@ -128,7 +128,11 @@ def compute_file_format_score(
     if is_scan and not release_group(candidate_name):
         return None, candidate_name
 
-    facts = ReleaseFacts.from_title(candidate_name, size_bytes=size_bytes, episode_count=ep_count)
+    from backend.services.media_file_service import locked_quality
+
+    # a relabelled file is scored at its measured resolution, not the one its name claims
+    quality = locked_quality(parse_quality(candidate_name), mf)
+    facts = ReleaseFacts.from_title(candidate_name, size_bytes=size_bytes, episode_count=ep_count, quality=quality)
     matches = matcher.match(facts)
     fs, _ = score_formats(matches, profile.format_scores)
     return fs, candidate_name

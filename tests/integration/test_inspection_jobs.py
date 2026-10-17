@@ -401,6 +401,37 @@ def test_series_list_filters_and_summarises_measured_episode_files(client, admin
             db.delete(db.get(models.Series, sid))
 
 
+def test_multi_episode_file_is_judged_against_all_its_episodes(database, tmp_path):
+    """A 60-min S01E01-E02 file of two 30-min episodes is not a runtime mismatch."""
+    from backend.db import models
+    from backend.db.session import session_scope
+    from backend.domain.inspection import parse_ffprobe
+    from backend.services import media_file_service
+    from backend.services.inspection_service import evaluate_findings
+
+    video = tmp_path / "Show.S01E01E02.1080p.mkv"
+    video.write_bytes(b"\x1a\x45\xdf\xa3" + b"0" * 64)
+    hour = {**PAYLOAD, "format": {**PAYLOAD["format"], "duration": "3600"}}
+    with session_scope() as db:
+        series = models.Series(title="Double Bill", year=2021, monitored=True)
+        db.add(series)
+        db.flush()
+        season = models.Season(series_id=series.id, season_number=1, monitored=True)
+        db.add(season)
+        db.flush()
+        eps = [models.Episode(series_id=series.id, season_id=season.id, season_number=1, episode_number=n, title=f"Ep {n}",
+                              monitored=True, runtime_minutes=30) for n in (1, 2)]
+        db.add_all(eps)
+        db.flush()
+        mf = media_file_service.attach_episode_file(db, series, eps, video, None)
+        db.flush()
+        try:
+            kinds = [f.kind for f in evaluate_findings(db, mf, parse_ffprobe(hour))]
+            assert "runtime_mismatch" not in kinds, kinds
+        finally:
+            db.delete(series)
+
+
 @pytest.mark.ffprobe
 def test_real_ffprobe_binary(tmp_path):
     """Optional real-binary test when ffmpeg and ffprobe are installed on host."""
