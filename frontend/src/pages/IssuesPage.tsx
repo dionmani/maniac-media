@@ -7,11 +7,11 @@ import { AlertTriangle, CheckCheck, ChevronDown, ChevronRight, MoreVertical } fr
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
-import type { IssueSeverity, IssueStatus, IssueTypeSpec, LibraryIssue, Page } from '../api/types';
+import type { IssueSearch, IssueSeverity, IssueStatus, IssueTypeSpec, LibraryIssue, Page } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, useConfirm } from '../components/common';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
-import { dateTime, errorMessage, relative } from '../utils/format';
+import { bytes, dateTime, errorMessage, relative } from '../utils/format';
 
 const ACTION_LABELS: Record<string, string> = {
   dismiss: 'Dismiss', reopen: 'Reopen', rescan: 'Rescan', search: 'Search for a replacement', unmonitor: 'Unmonitor',
@@ -100,6 +100,67 @@ function availableActions(issue: LibraryIssue, canDelete: boolean): string[] {
   });
 }
 
+function searchSummary(s: IssueSearch): string {
+  switch (s.status) {
+    case 'queued': return 'Search queued';
+    case 'grabbed': return `Grabbed ${(s.grabbed ?? []).join(', ')}`;
+    case 'failed': return `Search failed: ${s.reason ?? 'unknown error'}`;
+    case 'not_found':
+      return s.indexers?.length
+        ? `Searched ${s.indexers.length} indexer(s): ${s.candidates ?? 0} release(s), none acceptable`
+        : s.reason ?? 'No acceptable releases found';
+    default: return s.reason ?? s.status;
+  }
+}
+
+const SEARCH_COLOR: Partial<Record<IssueSearch['status'], string>> = { grabbed: 'success.main', not_found: 'error.main', failed: 'error.main' };
+
+function SearchOutcome({ search }: { search: IssueSearch }) {
+  return (
+    <Stack spacing={1} sx={{ mt: 1 }}>
+      <Typography variant="subtitle2">
+        Last search <Typography component="span" variant="caption" color="text.secondary">· {dateTime(search.at)}</Typography>
+      </Typography>
+      <Typography variant="body2" color={SEARCH_COLOR[search.status] ?? 'text.secondary'}>{searchSummary(search)}</Typography>
+      {!!search.indexers?.length && (
+        <Table size="small">
+          <TableHead><TableRow><TableCell>Indexer</TableCell><TableCell>Results</TableCell><TableCell>Error</TableCell></TableRow></TableHead>
+          <TableBody>
+            {search.indexers.map((i) => (
+              <TableRow key={i.indexer}>
+                <TableCell>{i.indexer}</TableCell>
+                <TableCell>{i.results}</TableCell>
+                <TableCell sx={{ color: i.error ? 'error.main' : 'text.secondary', wordBreak: 'break-all' }}>{i.error ?? '—'}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      {!!search.releases?.length && (
+        <Table size="small">
+          <TableHead>
+            <TableRow><TableCell>Release tried</TableCell><TableCell>Indexer</TableCell><TableCell>Quality</TableCell><TableCell>Size</TableCell><TableCell>Why it was rejected</TableCell></TableRow>
+          </TableHead>
+          <TableBody>
+            {search.releases.map((r, n) => (
+              <TableRow key={`${r.indexer}-${r.title}-${n}`}>
+                <TableCell sx={{ wordBreak: 'break-all' }}>{r.title}</TableCell>
+                <TableCell>{r.indexer}</TableCell>
+                <TableCell>{r.quality}</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>{bytes(r.size_bytes)}</TableCell>
+                <TableCell>{r.rejections.join('; ')}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      {(search.candidates ?? 0) > (search.releases?.length ?? 0) && (
+        <Typography variant="caption" color="text.secondary">Showing the first {search.releases?.length ?? 0} of {search.candidates} releases.</Typography>
+      )}
+    </Stack>
+  );
+}
+
 function IssueRow({ issue, selected, onSelect, onAction, canWrite, canDelete }: {
   issue: LibraryIssue; selected: boolean; onSelect: () => void; onAction: (issue: LibraryIssue, action: string) => void; canWrite: boolean; canDelete: boolean;
 }) {
@@ -108,6 +169,8 @@ function IssueRow({ issue, selected, onSelect, onAction, canWrite, canDelete }: 
   const actions = availableActions(issue, canDelete);
   const link = issue.media_id ? (issue.media_type === 'movie' ? `/movies/${issue.media_id}` : `/series/${issue.media_id}`) : null;
   const render = DETAIL_RENDERERS[issue.issue_type];
+  const search = issue.data?.search as IssueSearch | undefined;
+  const evidence = Object.entries(issue.data ?? {}).filter(([k]) => k !== 'search');
   return (
     <>
       <TableRow hover>
@@ -123,7 +186,14 @@ function IssueRow({ issue, selected, onSelect, onAction, canWrite, canDelete }: 
           {link ? <Link to={link} style={{ color: 'inherit' }}>{issue.title ?? `${issue.media_type} #${issue.media_id}`}</Link> : '—'}
           <Typography variant="caption" display="block" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{issue.path}</Typography>
         </TableCell>
-        <TableCell>{issue.details}</TableCell>
+        <TableCell>
+          {issue.details}
+          {search && (
+            <Typography variant="caption" display="block" color={SEARCH_COLOR[search.status] ?? 'text.secondary'}>
+              {searchSummary(search)} · {relative(search.at)}
+            </Typography>
+          )}
+        </TableCell>
         <TableCell sx={{ whiteSpace: 'nowrap' }}>
           <Tooltip title={dateTime(issue.first_detected_at)}><span>First seen {relative(issue.first_detected_at)}</span></Tooltip>
           <Typography variant="caption" display="block" color="text.secondary">Last seen {relative(issue.last_seen_at)}</Typography>
@@ -145,9 +215,10 @@ function IssueRow({ issue, selected, onSelect, onAction, canWrite, canDelete }: 
         <TableCell colSpan={7} sx={{ py: 0, border: open ? undefined : 0 }}>
           <Collapse in={open} unmountOnExit>
             <Box sx={{ py: 1.5 }}>
-              {render ? render(issue) : issue.data && Object.keys(issue.data).length ? <DetailTable data={issue.data} /> : (
+              {render ? render(issue) : evidence.length ? <DetailTable data={Object.fromEntries(evidence)} /> : !search && (
                 <Typography variant="body2" color="text.secondary">No additional evidence recorded.</Typography>
               )}
+              {search && <SearchOutcome search={search} />}
               {issue.resolution && (
                 <Typography variant="caption" color="text.secondary">Closed: {issue.resolution}{issue.resolved_at ? ` · ${dateTime(issue.resolved_at)}` : ''}</Typography>
               )}

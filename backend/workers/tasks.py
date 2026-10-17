@@ -18,6 +18,7 @@ from backend.services import (
     health_service,
     import_service,
     indexer_service,
+    issue_service,
     media_file_service,
     metadata_service,
     renamer_service,
@@ -89,8 +90,17 @@ async def library_scan(ctx: JobContext):
 @job_queue.register("automatic_search", "Automatic Search", priority=4, exclusive=False, max_attempts=1)
 async def automatic_search(ctx: JobContext):
     p = ctx.payload
-    return await search_service.automatic(p["media_type"], int(p["media_id"]), p.get("season"), p.get("episodes") or None,
-                                          actor=Actor(p.get("user_id"), p.get("username")), retry_count=int(p.get("retry_count", 0)))
+    issue_id = p.get("issue_id")  # searches started from a library issue note their outcome on it
+    try:
+        result = await search_service.automatic(p["media_type"], int(p["media_id"]), p.get("season"), p.get("episodes") or None,
+                                                actor=Actor(p.get("user_id"), p.get("username")), retry_count=int(p.get("retry_count", 0)))
+    except Exception as exc:
+        if issue_id:
+            await asyncio.to_thread(issue_service.record_search, int(issue_id), None, str(exc) or type(exc).__name__)
+        raise
+    if issue_id:
+        await asyncio.to_thread(issue_service.record_search, int(issue_id), result)
+    return result
 
 
 @job_queue.register("missing_search", "Wanted: Missing Search", priority=8)

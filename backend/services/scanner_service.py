@@ -31,7 +31,7 @@ from backend.domain.issues import IssueType
 from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title
 from backend.domain.quality import parse_quality
 from backend.services import fileops, media_file_service
-from backend.services.issue_service import IssueRecorder
+from backend.services.issue_service import IssueRecorder, enqueue_searches, plan_missing_file_searches
 from backend.services.quality_service import spec_for, to_spec
 
 log = logging.getLogger("maniac.scanner")
@@ -176,7 +176,8 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None, medi
         # once detached, the movie is out of the has_file pass above; keep its issue open until a file is back
         for issue in LibraryIssueRepository(db).open_missing_movies(media_id):
             recorder.report(IssueType.MISSING_FILE, "movie", issue.media_id, issue.path, issue.details)
-        recorder.finish()
+        searches = plan_missing_file_searches(db, recorder.finish().created)
+    enqueue_searches(searches)  # after the scan's session has committed
     if progress:
         progress(100, "Movie scan complete")
     return stats
@@ -343,7 +344,8 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
         for issue, ep in LibraryIssueRepository(db).open_missing_episodes(media_id):
             recorder.report(IssueType.MISSING_FILE, "tv", issue.media_id, issue.path, issue.details, episode_id=ep.id,
                             discriminator=f"S{ep.season_number:02d}E{ep.episode_number:02d}")
-        recorder.finish()
+        searches = plan_missing_file_searches(db, recorder.finish().created)
+    enqueue_searches(searches)  # after the scan's session has committed
     if progress:
         progress(100, "TV scan complete")
     return stats

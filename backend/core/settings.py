@@ -63,6 +63,7 @@ class AppSettings(BaseModel):
     # --- automation
     rss_sync_interval_minutes: int = 15
     search_on_add: bool = False
+    search_missing_files: bool = True  # search as soon as a scan finds a library file has gone missing
     auto_retry_failed_downloads: bool = True
     max_download_retries: int = 2
     # release gate (domain/availability.py): a movie with no digital/physical date on record is still searched once

@@ -654,6 +654,18 @@ export interface LibraryIssue {
   actions: string[];
 }
 
+/** `data.search` on an issue: the latest automatic search started from it (or for it, when its file went missing). */
+export interface IssueSearch {
+  status: 'queued' | 'skipped' | 'grabbed' | 'held' | 'not_found' | 'failed';
+  at: string;
+  reason?: string | null;
+  grabbed?: string[];
+  quality?: string | null;
+  candidates?: number;
+  indexers?: { indexer: string; results: number; error: string | null }[];
+  releases?: { title: string; indexer: string; quality: string; size_bytes: number; rejections: string[] }[];
+}
+
 export interface IssueSummary {
   by_type: Record<string, { open: number; dismissed: number; severity: IssueSeverity }>;
   by_severity: Partial<Record<IssueSeverity, number>>;

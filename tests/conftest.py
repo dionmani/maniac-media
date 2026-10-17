@@ -33,7 +33,9 @@ def library(data_dir: Path) -> dict[str, Path]:
 
     settings_manager.update(
         media_root_movies=str(dirs["movies"]), media_root_tv=str(dirs["tv"]), download_folder=str(dirs["downloads"]),
-        recycle_bin=str(dirs["recycle"]), watch_download_folder=False, metadata_providers={
+        recycle_bin=str(dirs["recycle"]), watch_download_folder=False,
+        search_missing_files=False,  # scans would queue searches that run in the background of later tests
+        metadata_providers={
             "tmdb": {"enabled": False}, "tvdb": {"enabled": False}, "tvmaze": {"enabled": False}, "imdb": {"enabled": False},
         },
     )

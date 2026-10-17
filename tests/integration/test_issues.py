@@ -160,6 +160,91 @@ def test_missing_episode_file_names_the_file_and_stays_open(database, library, m
         assert rows[0].episode_id is not None
 
 
+@pytest.fixture
+def auto_search(monkeypatch):
+    """Search-on-missing switched on for one test, capturing the jobs it queues instead of running them."""
+    from backend.core.settings import settings_manager
+    from backend.workers.queue import job_queue
+
+    queued: list[tuple[str, dict]] = []
+    monkeypatch.setattr(job_queue, "enqueue", lambda name, payload=None, **kw: queued.append((name, payload)) or len(queued))
+    settings_manager.update(search_missing_files=True)
+    yield queued
+    settings_manager.update(search_missing_files=False)
+
+
+def _lose(library, make_video, folder: str, name: str, seed: int):
+    f = make_video(library["movies"] / folder / name, _body(seed))
+    scanner_service.scan("movies", incremental=False)
+    f.unlink()
+    scanner_service.scan("movies", incremental=False)
+
+
+def test_missing_file_queues_a_search_and_notes_it(database, library, make_video, auto_search):
+    _lose(library, make_video, "Tenet (2020)", "Tenet.2020.1080p.BluRay.mkv", 17)
+    issue = _issues("Tenet", "missing_file", "open")[0]
+    assert auto_search == [("automatic_search", {"media_type": "movie", "media_id": issue.media_id, "issue_id": issue.id})]
+    assert issue.data["search"]["status"] == "queued"
+
+    scanner_service.scan("movies", incremental=False)  # still missing: no second search, and the note survives the rescan
+    assert len(auto_search) == 1
+    assert _issues("Tenet", "missing_file", "open")[0].data["search"]["status"] == "queued"
+
+
+def test_unmonitored_missing_file_is_not_searched(database, library, make_video, auto_search):
+    f = make_video(library["movies"] / "Dune (2021)" / "Dune.2021.1080p.BluRay.mkv", _body(18))
+    scanner_service.scan("movies", incremental=False)
+    with session_scope() as db:
+        db.scalar(select(models.Movie).where(models.Movie.title == "Dune")).monitored = False
+    f.unlink()
+    scanner_service.scan("movies", incremental=False)
+    note = _issues("Dune", "missing_file", "open")[0].data["search"]
+    assert auto_search == [] and note["status"] == "skipped" and "not monitored" in note["reason"]
+
+
+def test_many_files_missing_at_once_are_not_searched(database, library, make_video, auto_search):
+    n = issue_service.AUTO_SEARCH_LIMIT + 1
+    files = [make_video(library["movies"] / f"Storm Film {i} (2001)" / f"Storm.Film.{i}.2001.1080p.BluRay.mkv", _body(40 + i)) for i in range(n)]
+    scanner_service.scan("movies", incremental=False)
+    for f in files:
+        f.unlink()
+    scanner_service.scan("movies", incremental=False)
+    notes = [_issues(f"Storm Film {i}", "missing_file", "open")[0].data["search"] for i in range(n)]
+    assert auto_search == []
+    assert all(note["status"] == "skipped" and "mounted" in note["reason"] for note in notes)
+
+
+def test_search_outcome_lists_every_release_and_indexer_tried(database, library, make_video, auto_search, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from backend.domain.types import ReleaseInfo
+    from backend.services import download_service, indexer_service
+    from backend.workers import tasks
+
+    _lose(library, make_video, "Memento (2000)", "Memento.2000.1080p.BluRay.mkv", 19)
+    other = "Some.Other.Film.1999.1080p.BluRay.x264-GRP"
+
+    async def search(criteria):
+        return [ReleaseInfo(other, other, "u", "Idx", "usenet", size_bytes=2 * 1024**3)], [
+            {"indexer": "Idx", "results": 1, "error": None},
+            {"indexer": "Broken", "results": 0, "error": "Client error '401' for url 'https://idx.example/api?t=movie&apikey=SECRET123'"},
+        ]
+
+    async def grab(*args, **kwargs):
+        raise AssertionError("nothing acceptable, nothing grabbed")
+
+    monkeypatch.setattr(indexer_service, "search", search)
+    monkeypatch.setattr(download_service, "grab", grab)
+    asyncio.run(tasks.automatic_search(SimpleNamespace(payload=auto_search[0][1])))
+
+    note = _issues("Memento", "missing_file", "open")[0].data["search"]
+    assert note["status"] == "not_found" and note["candidates"] == 1
+    assert [r["title"] for r in note["releases"]] == [other] and note["releases"][0]["rejections"]
+    assert [i["indexer"] for i in note["indexers"]] == ["Idx", "Broken"] and note["indexers"][1]["error"]
+    assert "SECRET123" not in str(note)
+
+
 def test_tv_upgrade_issue_recorded_with_episode(database, library, make_video):
     make_video(library["tv"] / "Mindhunter" / "Season 01" / "Mindhunter.S01E02.DVDRip.mkv", _body(7))
     scanner_service.scan("tv", incremental=False)
