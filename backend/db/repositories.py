@@ -76,6 +76,32 @@ _HDR_FILTER_VALUES: dict[str, tuple[str, ...]] = {
 }
 
 
+def media_file_filter(video_resolution: str | None = None, hdr_format: str | None = None,
+                      video_codec: str | None = None, audio_codec: str | None = None):
+    """Library filter on measured (ffprobe) facts of a ``MediaFile``, or None when no filter is set.
+
+    Shared by the movie and series lists so both apply identical semantics; callers add the
+    ownership correlation (movie_id / series_id) and wrap it in EXISTS.
+    """
+    mf = models.MediaFile
+    conds = []
+    if video_resolution:
+        conds.append(mf.video_resolution == video_resolution)
+    if hdr_format:
+        key = hdr_format.upper()
+        if key == "SDR":  # measured SDR, not "never inspected" (both have hdr_format NULL)
+            conds.extend((mf.hdr_format.is_(None), mf.inspected_at.is_not(None)))
+        elif key == "ANY_HDR":
+            conds.append(mf.hdr_format.is_not(None))
+        else:
+            conds.append(mf.hdr_format.in_(_HDR_FILTER_VALUES.get(key, (hdr_format,))))
+    if video_codec:
+        conds.append(mf.video_codec == video_codec.lower())
+    if audio_codec:
+        conds.append(mf.audio_codec == audio_codec.lower())
+    return and_(*conds) if conds else None
+
+
 class MovieRepository(Repository[models.Movie]):
     model = models.Movie
     default_sort = "title"
@@ -124,24 +150,9 @@ class MovieRepository(Repository[models.Movie]):
             conds.append(models.Movie.year <= year_to)
         if quality_profile_id:
             conds.append(models.Movie.quality_profile_id == quality_profile_id)
-        if any((video_resolution, hdr_format, video_codec, audio_codec)):
+        if (mf_cond := media_file_filter(video_resolution, hdr_format, video_codec, audio_codec)) is not None:
             mf = models.MediaFile
-            mf_conds = [mf.movie_id == models.Movie.id, mf.is_primary.is_(True)]
-            if video_resolution:
-                mf_conds.append(mf.video_resolution == video_resolution)
-            if hdr_format:
-                key = hdr_format.upper()
-                if key == "SDR":
-                    mf_conds.append(mf.hdr_format.is_(None))
-                elif key == "ANY_HDR":
-                    mf_conds.append(mf.hdr_format.is_not(None))
-                else:
-                    mf_conds.append(mf.hdr_format.in_(_HDR_FILTER_VALUES.get(key, (hdr_format,))))
-            if video_codec:
-                mf_conds.append(mf.video_codec == video_codec.lower())
-            if audio_codec:
-                mf_conds.append(mf.audio_codec == audio_codec.lower())
-            conds.append(select(mf.id).where(and_(*mf_conds)).exists())
+            conds.append(select(mf.id).where(mf.movie_id == models.Movie.id, mf.is_primary.is_(True), mf_cond).exists())
         return stmt.where(and_(*conds)) if conds else stmt
 
     def by_tmdb(self, tmdb_id: int) -> models.Movie | None:
@@ -187,7 +198,9 @@ class SeriesRepository(Repository[models.Series]):
         "id": models.Series.id,
     }
 
-    def query(self, *, search: str | None = None, status: str | None = None, monitored: bool | None = None, network: str | None = None) -> Select:
+    def query(self, *, search: str | None = None, status: str | None = None, monitored: bool | None = None, network: str | None = None,
+              video_resolution: str | None = None, hdr_format: str | None = None, video_codec: str | None = None,
+              audio_codec: str | None = None) -> Select:
         stmt = select(models.Series)
         conds = []
         if search:
@@ -198,7 +211,38 @@ class SeriesRepository(Repository[models.Series]):
             conds.append(models.Series.monitored.is_(monitored))
         if network:
             conds.append(models.Series.network.ilike(f"%{network}%"))
+        # a series matches when at least one of its episode files does
+        if (mf_cond := media_file_filter(video_resolution, hdr_format, video_codec, audio_codec)) is not None:
+            mf = models.MediaFile
+            conds.append(select(mf.id).where(mf.series_id == models.Series.id, mf.media_type == "tv", mf_cond).exists())
         return stmt.where(and_(*conds)) if conds else stmt
+
+    def media_summary(self, series_ids: Sequence[int]) -> dict[int, dict[str, list[str]]]:
+        """Distinct measured video/audio facts across each series' inspected episode files (one query)."""
+        if not series_ids:
+            return {}
+        mf = models.MediaFile
+        rows = self.db.execute(
+            select(mf.series_id, mf.video_resolution, mf.hdr_format, mf.video_codec, mf.audio_codec)
+            .where(mf.series_id.in_(series_ids), mf.media_type == "tv", mf.inspected_at.is_not(None))
+            .distinct()
+        ).all()
+        rank = {"2160p": 0, "1080p": 1, "720p": 2, "SD": 3}
+        sets: dict[int, dict[str, set[str]]] = {}
+        for series_id, res, hdr, vcodec, acodec in rows:
+            agg = sets.setdefault(series_id, {"video_resolutions": set(), "hdr_formats": set(), "video_codecs": set(), "audio_codecs": set()})
+            for key, value in (("video_resolutions", res), ("hdr_formats", hdr), ("video_codecs", vcodec), ("audio_codecs", acodec)):
+                if value:
+                    agg[key].add(value)
+        return {
+            sid: {
+                "video_resolutions": sorted(agg["video_resolutions"], key=lambda r: rank.get(r, 9)),
+                "hdr_formats": sorted(agg["hdr_formats"]),
+                "video_codecs": sorted(agg["video_codecs"]),
+                "audio_codecs": sorted(agg["audio_codecs"]),
+            }
+            for sid, agg in sets.items()
+        }
 
     def with_episodes(self, series_id: int) -> models.Series | None:
         return self.db.scalar(
