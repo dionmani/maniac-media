@@ -5,7 +5,7 @@ import {
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCheck, ChevronDown, ChevronRight, MoreVertical } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
 import type { IssueSeverity, IssueStatus, IssueTypeSpec, LibraryIssue, Page } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, useConfirm } from '../components/common';
@@ -19,6 +19,8 @@ const ACTION_LABELS: Record<string, string> = {
 };
 const SEVERITY_COLOR: Record<IssueSeverity, 'error' | 'warning' | 'info'> = { error: 'error', warning: 'warning', info: 'info' };
 const BULK_ACTIONS = ['dismiss', 'relabel', 'search'];
+const STATUSES: IssueStatus[] = ['open', 'dismissed', 'resolved'];
+const SEVERITIES: IssueSeverity[] = ['error', 'warning', 'info'];
 
 /** Per-type detail renderers plug in here (03 inspection, 05 duplicates); everything else gets the key/value fallback. */
 const DETAIL_RENDERERS: Record<string, (issue: LibraryIssue) => ReactNode> = {
@@ -118,7 +120,7 @@ function IssueRow({ issue, selected, onSelect, onAction, canWrite, canDelete }: 
           {issue.label}
         </TableCell>
         <TableCell>
-          {link ? <Link to={link} style={{ color: 'inherit' }}>{issue.media_type} #{issue.media_id}</Link> : '—'}
+          {link ? <Link to={link} style={{ color: 'inherit' }}>{issue.title ?? `${issue.media_type} #${issue.media_id}`}</Link> : '—'}
           <Typography variant="caption" display="block" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{issue.path}</Typography>
         </TableCell>
         <TableCell>{issue.details}</TableCell>
@@ -162,11 +164,26 @@ export default function IssuesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { confirm, dialog } = useConfirm();
-  const [status, setStatus] = useState<IssueStatus>('open');
-  const [severity, setSeverity] = useState('');
-  const [type, setType] = useState('');
+  const [params, setParams] = useSearchParams();
+  const status = STATUSES.find((s) => s === params.get('status')) ?? 'open';
+  const severity = SEVERITIES.find((s) => s === params.get('severity')) ?? '';
+  const type = params.get('type') ?? '';
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Map<number, LibraryIssue>>(new Map());
+  // Filters live in the URL so the dashboard can link to e.g. ?type=missing_file. However they change (a control,
+  // Back, the nav link), start over on page 1 with nothing selected, so a bulk action never hits rows that are out of view.
+  const filters = `${status}|${severity}|${type}`;
+  const [shownFilters, setShownFilters] = useState(filters);
+  if (filters !== shownFilters) {
+    setShownFilters(filters);
+    setPage(1);
+    setSelected(new Map());
+  }
+  const setFilter = (key: 'status' | 'severity' | 'type', value: string) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (value) next.set(key, value); else next.delete(key);
+    return next;
+  });
 
   const types = useQuery({ queryKey: ['issue-types'], queryFn: () => get<IssueTypeSpec[]>('/library/issue-types'), staleTime: Infinity });
   const issues = useQuery({
@@ -177,7 +194,7 @@ export default function IssuesPage() {
     }),
   });
   const refresh = () => {
-    setSelected(new Set());
+    setSelected(new Map());
     qc.invalidateQueries({ queryKey: ['issues'] });
     qc.invalidateQueries({ queryKey: ['dashboard'] });
   };
@@ -187,7 +204,7 @@ export default function IssuesPage() {
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const bulk = useMutation({
-    mutationFn: (action: string) => post<{ processed: number; failed: unknown[] }>('/library/issues/bulk', { ids: [...selected], action }),
+    mutationFn: (action: string) => post<{ processed: number; failed: unknown[] }>('/library/issues/bulk', { ids: [...selected.keys()], action }),
     onSuccess: (r) => {
       toast(`${r.processed} issue(s) updated${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length ? 'warning' : 'success');
       refresh();
@@ -196,7 +213,7 @@ export default function IssuesPage() {
   });
 
   const onAction = async (issue: LibraryIssue, action: string) => {
-    if (action === 'match') { navigate('/import'); return; }
+    if (action === 'match') { navigate(issue.path ? `/import?folder=${encodeURIComponent(issue.path)}` : '/import'); return; }
     if (action === 'delete_file') {
       const ok = await confirm('Move file to recycle bin?', <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{issue.path}</Typography>,
         { confirmLabel: 'Recycle', danger: true });
@@ -208,32 +225,35 @@ export default function IssuesPage() {
   const items = issues.data?.items ?? [];
   const canWrite = can('media:write');
   const allSelected = items.length > 0 && items.every((i) => selected.has(i.id));
-  const toggle = (id: number) => setSelected((s) => {
-    const n = new Set(s);
-    if (n.has(id)) n.delete(id); else n.add(id);
+  const toggle = (issue: LibraryIssue) => setSelected((s) => {
+    const n = new Map(s);
+    if (n.has(issue.id)) n.delete(issue.id); else n.set(issue.id, issue);
     return n;
   });
+  // only what every selected issue allows, so e.g. "Relabel" isn't offered for missing files
+  const bulkActions = BULK_ACTIONS.filter((a) => [...selected.values()].every((i) => i.actions.includes(a)));
   return (
     <>
       <PageHeader title="Library issues" icon={<AlertTriangle />} subtitle="Missing, duplicate, corrupt and upgradeable files found by library scans" />
-      <Tabs value={status} onChange={(_, v) => { setStatus(v); setPage(1); setSelected(new Set()); }} sx={{ mb: 2 }}>
+      <Tabs value={status} onChange={(_, v) => setFilter('status', v === 'open' ? '' : v)} sx={{ mb: 2 }}>
         <Tab value="open" label="Open" />
         <Tab value="dismissed" label="Dismissed" />
         <Tab value="resolved" label="Resolved" />
       </Tabs>
       <Stack direction="row" spacing={2} sx={{ mb: 2 }} alignItems="center" flexWrap="wrap" useFlexGap>
-        <TextField select size="small" label="Type" value={type} onChange={(e) => { setType(e.target.value); setPage(1); }} sx={{ minWidth: 200 }}>
+        <TextField select size="small" label="Type" value={type} onChange={(e) => setFilter('type', e.target.value)} sx={{ minWidth: 200 }}>
           <MenuItem value="">All types</MenuItem>
           {(types.data ?? []).map((t) => <MenuItem key={t.type} value={t.type}>{t.label}</MenuItem>)}
+          {type && !types.data?.some((t) => t.type === type) && <MenuItem value={type}>{type.replace(/_/g, ' ')}</MenuItem>}
         </TextField>
-        <TextField select size="small" label="Severity" value={severity} onChange={(e) => { setSeverity(e.target.value); setPage(1); }} sx={{ minWidth: 140 }}>
+        <TextField select size="small" label="Severity" value={severity} onChange={(e) => setFilter('severity', e.target.value)} sx={{ minWidth: 140 }}>
           <MenuItem value="">All</MenuItem>
-          {(['error', 'warning', 'info'] as const).map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+          {SEVERITIES.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
         </TextField>
         {selected.size > 0 && canWrite && (
           <Stack direction="row" spacing={1} alignItems="center">
             <Typography variant="body2">{selected.size} selected</Typography>
-            {status === 'open' ? BULK_ACTIONS.map((a) => (
+            {status === 'open' ? bulkActions.map((a) => (
               <Button key={a} size="small" variant="outlined" disabled={bulk.isPending} onClick={() => bulk.mutate(a)}>{ACTION_LABELS[a]}</Button>
             )) : <Button size="small" variant="outlined" disabled={bulk.isPending} onClick={() => bulk.mutate('reopen')}>Reopen</Button>}
           </Stack>
@@ -247,7 +267,7 @@ export default function IssuesPage() {
           <TableHead>
             <TableRow>
               <TableCell padding="checkbox">
-                {canWrite && <Checkbox size="small" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((i) => i.id)))} />}
+                {canWrite && <Checkbox size="small" checked={allSelected} onChange={() => setSelected(allSelected ? new Map() : new Map(items.map((i) => [i.id, i])))} />}
               </TableCell>
               <TableCell />
               <TableCell>Issue</TableCell>
@@ -260,7 +280,7 @@ export default function IssuesPage() {
           <TableBody>
             {items.map((i) => (
               <IssueRow key={i.id} issue={i} canWrite={canWrite} canDelete={can('media:delete')} selected={selected.has(i.id)}
-                onSelect={() => toggle(i.id)} onAction={onAction} />
+                onSelect={() => toggle(i)} onAction={onAction} />
             ))}
           </TableBody>
         </Table>

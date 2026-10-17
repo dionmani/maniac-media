@@ -639,6 +639,7 @@ export interface LibraryIssue {
   label: string;
   media_type: 'movie' | 'tv' | null;
   media_id: number | null;
+  title: string | null;
   episode_id: number | null;
   path: string | null;
   details: string | null;

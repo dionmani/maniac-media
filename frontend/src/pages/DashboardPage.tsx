@@ -3,26 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Download, Film, HardDrive, LayoutDashboard, SearchX, Tv } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { get } from '../api/client';
-import type { Dashboard } from '../api/types';
+import type { Dashboard, IssueTypeSpec } from '../api/types';
 import { ErrorAlert, Loading, PageHeader, Poster, Section, StatCard, StatusChip } from '../components/common';
 import { palette } from '../theme';
 import { CATEGORY_COLORS, reasonCategory, reasonLabel } from '../utils/diagnosis';
 import { bytes, episodeCode, relative } from '../utils/format';
 
-const ISSUE_LABELS: Record<string, string> = {
-  missing_file: 'Missing files',
-  duplicate_file: 'Duplicate files',
-  upgrade_available: 'Upgrade available',
-  corrupt_file: 'Corrupt files',
-  truncated_file: 'Truncated files',
-  invalid_media: 'Invalid media',
-};
-
 export default function DashboardPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ['dashboard'], queryFn: () => get<Dashboard>('/dashboard'), refetchInterval: 60_000 });
+  const issueTypes = useQuery({ queryKey: ['issue-types'], queryFn: () => get<IssueTypeSpec[]>('/library/issue-types'), staleTime: Infinity });
   if (isLoading) return <Loading />;
   if (!data) return <ErrorAlert error={error} />;
 
+  const issueLabel = (type: string) => issueTypes.data?.find((t) => t.type === type)?.label ?? type.replace(/_/g, ' ');
   const movieCoverage = data.movies.total ? (data.movies.with_file / data.movies.total) * 100 : 0;
   const tvCoverage = data.series.episodes ? (data.series.episodes_with_file / data.series.episodes) * 100 : 0;
 
@@ -108,7 +101,8 @@ export default function DashboardPage() {
               <Section title="Library issues" actions={<Chip size="small" component={Link} to="/issues" clickable label="Review" />}>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   {Object.entries(data.issues).map(([k, v]) => (
-                    <Chip key={k} label={`${ISSUE_LABELS[k] ?? k}: ${v}`} color={k === 'upgrade_available' ? 'secondary' : 'warning'} variant="outlined" />
+                    <Chip key={k} label={`${issueLabel(k)}: ${v}`} color={k === 'upgrade_available' ? 'secondary' : 'warning'} variant="outlined"
+                      component={Link} to={`/issues?type=${encodeURIComponent(k)}`} clickable />
                   ))}
                 </Stack>
               </Section>

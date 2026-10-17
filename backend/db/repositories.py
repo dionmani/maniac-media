@@ -195,6 +195,11 @@ class MovieRepository(Repository[models.Movie]):
         ).all()
         return {r.tmdb_id: r.id for r in rows if r.tmdb_id}, {r.imdb_id: r.id for r in rows if r.imdb_id}
 
+    def titles(self, ids: Sequence[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        return dict(self.db.execute(select(models.Movie.id, models.Movie.title).where(models.Movie.id.in_(list(ids)))).all())
+
 
 class SeriesRepository(Repository[models.Series]):
     model = models.Series
@@ -313,6 +318,11 @@ class SeriesRepository(Repository[models.Series]):
             .where(or_(models.Series.tmdb_id.in_(tmdb_ids), models.Series.tvdb_id.in_(tvdb_ids)))
         ).all()
         return {r.tmdb_id: r.id for r in rows if r.tmdb_id}, {r.tvdb_id: r.id for r in rows if r.tvdb_id}
+
+    def titles(self, ids: Sequence[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        return dict(self.db.execute(select(models.Series.id, models.Series.title).where(models.Series.id.in_(list(ids)))).all())
 
     def season_stats(self, series_ids: Sequence[int]) -> dict[int, dict[int, dict[str, Any]]]:
         """Per-season counts, Sonarr-style, in one query: ``{series_id: {season_number: stats}}``.
