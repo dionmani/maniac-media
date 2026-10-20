@@ -7,6 +7,7 @@ check and the UI all describe failures the same way.
 from __future__ import annotations
 
 import errno as _errno
+import hashlib
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -84,6 +85,9 @@ class ImportFailureAnalysis:
     confidence: float              # 0..1, how sure the probe pipeline is
     analysed_at: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "signature", fit_signature(self.signature))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "reason": self.reason.value,
@@ -94,6 +98,17 @@ class ImportFailureAnalysis:
             "confidence": self.confidence,
             "analysed_at": self.analysed_at,
         }
+
+
+SIGNATURE_MAX_LEN = 128  # download_queue.failure_signature is String(128)
+
+
+def fit_signature(signature: str) -> str:
+    """Keep a signature within the column width; an over-long tail becomes a hash so equal inputs still group."""
+    if len(signature) <= SIGNATURE_MAX_LEN:
+        return signature
+    digest = hashlib.sha256(signature.encode()).hexdigest()[:16]
+    return f"{signature[:SIGNATURE_MAX_LEN - len(digest) - 1]}#{digest}"
 
 
 _SEP = re.compile(r"[\\/]")

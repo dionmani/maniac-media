@@ -2,7 +2,13 @@ import errno
 
 import pytest
 
-from backend.domain.diagnosis import ImportFailureReason, classify_oserror, infer_path_mapping
+from backend.domain.diagnosis import (
+    SIGNATURE_MAX_LEN,
+    ImportFailureAnalysis,
+    ImportFailureReason,
+    classify_oserror,
+    infer_path_mapping,
+)
 
 
 @pytest.mark.parametrize(
@@ -44,3 +50,17 @@ def test_infer_path_mapping_picks_the_longest_match_among_candidates():
 )
 def test_classify_oserror(errno_, winerror, expected):
     assert classify_oserror(errno_, winerror) == expected
+
+
+def _analysis(signature: str) -> ImportFailureAnalysis:
+    return ImportFailureAnalysis(reason=ImportFailureReason.PATH_NOT_FOUND, summary="", evidence={}, fixes=(),
+                                 signature=signature, confidence=0.5, analysed_at="")
+
+
+def test_long_signature_fits_the_column_and_still_groups():
+    path = "path_not_found:/data/downloads/complete/" + "the.simpsons.s09e10.miracle.on.evergreen.terrace." * 4 + "mkv"
+    a, b, other = _analysis(path), _analysis(path), _analysis(path + "x")
+    assert len(a.signature) <= SIGNATURE_MAX_LEN
+    assert a.signature == b.signature != other.signature
+    assert a.signature.startswith("path_not_found:/data/downloads/complete/")
+    assert _analysis("unknown").signature == "unknown"
