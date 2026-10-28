@@ -765,7 +765,7 @@ def _import_quality(src: Path, label: str | None):
     return parse_quality(label)   # the quality came from the folder name (file name has none)
 
 
-def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportResult:
+def manual_import(items: list[dict], mode: str | None, actor: Actor, force: bool = False) -> ImportResult:
     result = ImportResult()
     mode = mode or get_settings().import_mode
     for item in items:
@@ -783,7 +783,7 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor) -> ImportRe
             continue
         try:
             label = _run_import(src, _import_quality(src, item.get("quality")), item["media_type"], int(item["media_id"]),
-                                item.get("season"), list(item.get("episodes") or []), mode, src.name, None, pre=pre)
+                                item.get("season"), list(item.get("episodes") or []), mode, src.name, None, force, pre=pre)
             result.imported.append(label)
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
             if mode == "move":

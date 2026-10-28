@@ -646,6 +646,7 @@ class ManualImportItem(BaseModel):
 class ManualImportRequest(BaseModel):
     items: list[ManualImportItem] = Field(min_length=1, max_length=2000)
     mode: Literal["move", "copy", "hardlink", "symlink"] | None = None
+    force: bool = False  # replace the library file even when this one isn't an upgrade (never an identical duplicate)
 
 
 class ManualImportIdentifyRequest(BaseModel):

@@ -17,7 +17,7 @@ from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, render
 from backend.domain.parser import is_sample, is_video
 from backend.domain.quality import parse_quality
 from backend.domain.types import MediaMetadata
-from backend.services import fileops, metadata_service
+from backend.services import fileops, media_file_service, metadata_service
 from backend.services.audit import Actor, audit, history
 
 log = logging.getLogger("maniac.media")
@@ -91,6 +91,27 @@ def delete_movie(db: Session, movie: models.Movie, *, delete_files: bool, actor:
     audit(db, "delete", "movie.delete", actor=actor, entity_type="movie", entity_id=movie.id,
           details={"title": movie.title, "delete_files": delete_files, "recycled_to": recycled}, severity="warning")
     db.delete(movie)
+
+
+def delete_media_file(db: Session, media_file: models.MediaFile, *, actor: Actor | None = None) -> Path | None:
+    """Recycle one library file and drop its record; the movie / episodes it held stay in the library,
+    now without a file, so the next grab imports without being judged against the old file's quality."""
+    path = Path(media_file.path)
+    recycled = fileops.recycle(path, Path(get_settings().recycle_bin)) if path.is_file() else None
+    if media_file.media_type == "movie" and media_file.movie is not None:
+        media_type, media_id, title = "movie", media_file.movie_id, media_file.movie.title
+    else:
+        series = media_file.series
+        media_type, media_id = "tv", media_file.series_id
+        codes = ", ".join(f"S{e.season_number:02d}E{e.episode_number:02d}" for e in sorted(media_file.episodes, key=lambda e: (e.season_number, e.episode_number)))
+        title = f"{series.title} {codes}".strip() if series else codes
+    history(db, media_type, media_id, title, "file_deleted", quality=media_file.quality,
+            details=f"{path.name} {'moved to recycle bin' if recycled else 'record removed (file was already gone)'}")
+    if actor is not None:
+        audit(db, "delete", "media_file.delete", actor=actor, entity_type="media_file", entity_id=media_file.id,
+              details={"path": str(path), "recycled_to": str(recycled) if recycled else None}, severity="warning")
+    media_file_service.detach_file(db, media_file, reason="deleted")
+    return recycled
 
 
 # --------------------------------------------------------------------------- series

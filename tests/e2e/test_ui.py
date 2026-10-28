@@ -164,7 +164,8 @@ def test_demo_pipeline_through_ui(server, page):
 
     _login(page, server)
     page.goto(f"{server}/movies/{movie['id']}")
-    page.get_by_role("button", name="Interactive search").click()
+    page.get_by_role("button", name="Actions").click()
+    page.get_by_role("menuitem", name="Interactive search").click()
     page.wait_for_selector("text=Primer.2004", timeout=20000)
     page.get_by_role("button", name="Grab").first.click()
     page.goto(server + "/activity")

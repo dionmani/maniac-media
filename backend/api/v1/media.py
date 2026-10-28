@@ -551,6 +551,31 @@ def get_media_file(media_file_id: int, db: DB, _: Requires(Permission.MEDIA_READ
     return file
 
 
+@router.delete("/media-files/{media_file_id}", response_model=schemas.Message, tags=["media-files"])
+def delete_media_file(media_file_id: int, db: DB, user: Requires(Permission.MEDIA_DELETE), search: bool = False):
+    """Delete one file (to the recycle bin) but keep the movie / episodes, so a replacement can be grabbed or imported."""
+    file = db.get(models.MediaFile, media_file_id)
+    if file is None:
+        raise HTTPException(404, "Media file not found")
+    if file.media_type == "movie":
+        target = {"media_type": "movie", "media_id": file.movie_id}
+        owner_id = file.movie_id
+    else:
+        eps = list(file.episodes)
+        # a multi-episode file is one release, so its episodes always share a season
+        target = {"media_type": "tv", "media_id": file.series_id, "season": eps[0].season_number if eps else None,
+                  "episodes": [e.episode_number for e in eps]}
+        owner_id = file.series_id
+    recycled = media_service.delete_media_file(db, file, actor=user.actor)
+    db.commit()
+    bus.publish(EventType.MEDIA_UPDATED, media_type=target["media_type"], media_id=owner_id)
+    message = f"File moved to recycle bin ({recycled.name})" if recycled else "File record removed (the file was already gone)"
+    if search and Permission.SEARCH in user.permissions and target["media_id"] is not None:
+        job_queue.enqueue("automatic_search", {**target, "user_id": user.id, "username": user.username})
+        message += "; searching for a replacement"
+    return schemas.Message(message=message)
+
+
 @router.post("/media-files/{media_file_id}/inspect", tags=["media-files"])
 def inspect_media_file(media_file_id: int, db: DB, user: Requires(Permission.MEDIA_WRITE)):
     if db.get(models.MediaFile, media_file_id) is None:

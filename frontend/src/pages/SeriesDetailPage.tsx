@@ -29,14 +29,15 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FolderSync, Info, Link2, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ArrowLeft, Bookmark, BookmarkX, ChevronDown, Eraser, FileEdit, FileX, FolderInput, FolderSync, Info, Link2, Plus, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post, put } from '../api/client';
-import type { DeleteEpisodesResult, Episode, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
-import { ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
+import type { DeleteEpisodesResult, Episode, MediaFile, PruneStaleResult, QualityProfile, Season, Series } from '../api/types';
+import { ActionsMenu, ErrorAlert, Loading, QualityChip, Section, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
+import ManualImportDialog, { type ManualImportTarget } from '../components/ManualImportDialog';
 import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
 import TechnicalInfoPanel, { claimedResolutionMismatch } from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
@@ -52,9 +53,12 @@ export default function SeriesDetailPage() {
   const { confirm, dialog } = useConfirm();
   const [search, setSearch] = useState<SearchTarget | null>(null);
   const [adding, setAdding] = useState<'season' | 'episode' | null>(null);
-  const [deleteFiles, setDeleteFiles] = useState(false);
+  // read after `await confirm(...)`, so refs: state would still hold the value from before the dialog opened
+  const deleteFiles = useRef(false);
+  const searchAfter = useRef(false);
   const [removal, setRemoval] = useState<RemovalTarget | null>(null);
   const [link, setLink] = useState<LinkTarget | null>(null);
+  const [importing, setImporting] = useState<ManualImportTarget | null>(null);
 
   const series = useQuery({ queryKey: ['series', id], queryFn: () => get<Series>(`/series/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -79,12 +83,13 @@ export default function SeriesDetailPage() {
   };
 
   const remove = async () => {
+    deleteFiles.current = false;
     const ok = await confirm(`Delete ${s.title}?`,
-      <FormControlLabel control={<Switch onChange={(e) => setDeleteFiles(e.target.checked)} />} label="Also move episode files to the recycle bin" />,
+      <FormControlLabel control={<Switch onChange={(e) => { deleteFiles.current = e.target.checked; }} />} label="Also move episode files to the recycle bin" />,
       { confirmLabel: 'Delete', danger: true });
     if (!ok) return;
     try {
-      await del(`/series/${id}`, { delete_files: deleteFiles });
+      await del(`/series/${id}`, { delete_files: deleteFiles.current });
       qc.invalidateQueries({ queryKey: ['series'] });
       toast(`${s.title} removed`, 'success');
       navigate('/library');
@@ -92,6 +97,33 @@ export default function SeriesDetailPage() {
       toast(errorMessage(e), 'error');
     }
   };
+
+  const deleteFile = async (file: MediaFile, ep: Episode) => {
+    searchAfter.current = false;
+    const held = file.episodes?.length ? file.episodes : [ep];
+    const ok = await confirm('Delete this file?',
+      <Stack spacing={1.5}>
+        <Box component="code" sx={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{file.path}</Box>
+        <Typography variant="body2" color="text.secondary">
+          The file moves to the recycle bin; {held.length > 1 ? `${held.map((e) => episodeCode(e.season_number, e.episode_number)).join(', ')} stay` : 'the episode stays'} in
+          the library without a file, so you can grab or import a replacement.
+        </Typography>
+        {can('search:execute') && (
+          <FormControlLabel control={<Switch onChange={(e) => { searchAfter.current = e.target.checked; }} />} label="Search for a replacement afterwards" />
+        )}
+      </Stack>,
+      { confirmLabel: 'Delete file', danger: true });
+    if (!ok) return;
+    try {
+      const r = await del<{ message: string }>(`/media-files/${file.id}`, { search: searchAfter.current });
+      toast(r.message, 'success');
+      refresh();
+    } catch (e) {
+      toast(errorMessage(e), 'error');
+    }
+  };
+
+  const currentPaths = s.seasons.flatMap((x) => x.episodes.flatMap((e) => e.files?.map((f) => f.path) ?? (e.file_path ? [e.file_path] : [])));
 
   const pruneStale = async () => {
     try {
@@ -144,29 +176,22 @@ export default function SeriesDetailPage() {
           </>
         }
         actions={
-          <>
-            {can('search:execute') && (
-              <Button variant="contained" color="secondary" startIcon={<Zap size={16} />}
-                onClick={() => run.mutate(() => post('/search/missing', undefined, { limit: 100 }).then(() => ({ message: 'Missing-episode search queued' })))}>
-                Search missing
-              </Button>
-            )}
-            {write && <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => run.mutate(() => post(`/series/${id}/refresh`).then(() => ({ message: 'Metadata refresh queued' })))}>Refresh metadata</Button>}
-            {can('library:scan') && (
-              <Tooltip title="Re-check this show's files on disk – picks up files you added or deleted by hand">
-                <Button variant="outlined" startIcon={<FolderSync size={16} />}
-                  onClick={() => run.mutate(() => post('/library/scan', { scope: 'tv', incremental: true, media_id: id }).then(() => ({ message: 'Rescan queued – refresh in a moment' })))}>
-                  Rescan files
-                </Button>
-              </Tooltip>
-            )}
-            {write && <Button variant="outlined" startIcon={<Link2 size={16} />} onClick={openLink}>Link</Button>}
-            {can('files:rename') && <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=tv&media_id=${id}`)}>Rename files</Button>}
-            {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('season')}>Add season</Button>}
-            {write && <Button variant="outlined" startIcon={<Plus size={16} />} onClick={() => setAdding('episode')}>Add episode</Button>}
-            {write && <Button variant="outlined" startIcon={<Eraser size={16} />} onClick={pruneStale}>Clean up seasons</Button>}
-            {can('media:delete') && <Button color="error" variant="outlined" startIcon={<Trash2 size={16} />} onClick={remove}>Delete</Button>}
-          </>
+          <ActionsMenu items={[
+            { label: 'Search missing', icon: <Zap size={16} />, hidden: !can('search:execute'),
+              onClick: () => run.mutate(() => post('/search/missing', undefined, { limit: 100 }).then(() => ({ message: 'Missing-episode search queued' }))) },
+            { label: 'Rescan files', icon: <FolderSync size={16} />, hidden: !can('library:scan'), divider: true,
+              onClick: () => run.mutate(() => post('/library/scan', { scope: 'tv', incremental: true, media_id: id }).then(() => ({ message: 'Rescan queued – refresh in a moment' }))) },
+            { label: 'Import from disk…', icon: <FolderInput size={16} />, hidden: !can('files:import'),
+              onClick: () => setImporting({ mediaType: 'tv', mediaId: id, title: s.title, folder: s.path ?? '', currentPaths }) },
+            { label: 'Refresh metadata', icon: <RefreshCw size={16} />, hidden: !write,
+              onClick: () => run.mutate(() => post(`/series/${id}/refresh`).then(() => ({ message: 'Metadata refresh queued' }))) },
+            { label: 'Link…', icon: <Link2 size={16} />, hidden: !write, onClick: openLink },
+            { label: 'Rename files', icon: <FileEdit size={16} />, hidden: !can('files:rename'), onClick: () => navigate(`/renamer?media_type=tv&media_id=${id}`) },
+            { label: 'Add season…', icon: <Plus size={16} />, hidden: !write, divider: true, onClick: () => setAdding('season') },
+            { label: 'Add episode…', icon: <Plus size={16} />, hidden: !write, onClick: () => setAdding('episode') },
+            { label: 'Clean up seasons…', icon: <Eraser size={16} />, hidden: !write, onClick: pruneStale },
+            { label: 'Delete series…', icon: <Trash2 size={16} />, hidden: !can('media:delete'), danger: true, divider: true, onClick: remove },
+          ]} />
         }
       />
 
@@ -182,7 +207,7 @@ export default function SeriesDetailPage() {
           </Section>
           {seasons.map((season) => (
             <SeasonPanel key={season.id} season={season} series={s} write={write} canSearch={can('search:execute')}
-              canDelete={can('media:delete')} onRemove={setRemoval} onChanged={refresh} onSearch={setSearch} defaultExpanded={season.season_number === seasons.find((x) => x.season_number > 0)?.season_number} />
+              canDelete={can('media:delete')} onRemove={setRemoval} onDeleteFile={deleteFile} onChanged={refresh} onSearch={setSearch} defaultExpanded={season.season_number === seasons.find((x) => x.season_number > 0)?.season_number} />
           ))}
           <Section title="Cast" sx={{ mt: 2 }}><CastList cast={s.cast_members} /></Section>
         </Grid>
@@ -212,6 +237,7 @@ export default function SeriesDetailPage() {
       </Grid>
 
       <LinkDialog target={link} onClose={() => setLink(null)} onLinked={linked} />
+      <ManualImportDialog target={importing} onClose={() => setImporting(null)} onImported={refresh} />
       <AddDialog kind={adding} seriesId={id} onClose={() => setAdding(null)} onDone={refresh} />
       <RemoveDialog seriesId={id} target={removal} onClose={() => setRemoval(null)} onDone={refresh} />
       <InteractiveSearchDialog target={search} onClose={() => setSearch(null)} />
@@ -222,8 +248,9 @@ export default function SeriesDetailPage() {
 
 type RemovalTarget = { kind: 'episode'; episode: Episode } | { kind: 'season'; season: number };
 
-function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, onChanged, onSearch, defaultExpanded }: {
+function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, onDeleteFile, onChanged, onSearch, defaultExpanded }: {
   season: Season; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void;
+  onDeleteFile: (file: MediaFile, ep: Episode) => void;
   onChanged: () => void; onSearch: (t: SearchTarget) => void; defaultExpanded: boolean;
 }) {
   const episodes = [...season.episodes].sort((a, b) => b.episode_number - a.episode_number);
@@ -295,7 +322,7 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
           </TableHead>
           <TableBody>
             {episodes.map((ep) => (
-              <EpisodeRow key={ep.id} ep={ep} series={series} write={write} canSearch={canSearch} canDelete={canDelete} onRemove={onRemove} call={call} onSearch={onSearch} />
+              <EpisodeRow key={ep.id} ep={ep} series={series} write={write} canSearch={canSearch} canDelete={canDelete} onRemove={onRemove} onDeleteFile={onDeleteFile} call={call} onSearch={onSearch} />
             ))}
           </TableBody>
         </Table>
@@ -304,8 +331,9 @@ function SeasonPanel({ season, series, write, canSearch, canDelete, onRemove, on
   );
 }
 
-function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, onSearch }: {
-  ep: Episode; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
+function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, onDeleteFile, call, onSearch }: {
+  ep: Episode; series: Series; write: boolean; canSearch: boolean; canDelete: boolean; onRemove: (t: RemovalTarget) => void;
+  onDeleteFile: (file: MediaFile, ep: Episode) => void; call: (fn: () => Promise<unknown>, msg?: string) => void; onSearch: (t: SearchTarget) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const aired = ep.aired;
@@ -369,6 +397,13 @@ function EpisodeRow({ ep, series, write, canSearch, canDelete, onRemove, call, o
                 </IconButton>
               </Tooltip>
             </>
+          )}
+          {canDelete && primaryFile && (
+            <Tooltip title="Delete file only (keeps the episode)…">
+              <IconButton size="small" onClick={() => onDeleteFile(primaryFile, ep)}>
+                <FileX size={14} />
+              </IconButton>
+            </Tooltip>
           )}
           {canDelete && (
             <Tooltip title="Delete episode…">

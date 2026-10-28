@@ -1,13 +1,14 @@
-import { Alert, Box, Button, Chip, FormControlLabel, Grid, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableRow, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, FormControlLabel, Grid, IconButton, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableRow, TextField, Tooltip, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileEdit, Link2, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeft, FileEdit, FileX, FolderInput, FolderSync, Link2, RefreshCw, Search, Trash2, Zap } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { del, get, patch, post } from '../api/client';
-import type { HistoryItem, Movie, Page, QualityProfile } from '../api/types';
-import { ErrorAlert, Loading, MovieStatusChip, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
+import type { HistoryItem, MediaFile, Movie, Page, QualityProfile } from '../api/types';
+import { ActionsMenu, ErrorAlert, Loading, MovieStatusChip, QualityChip, Section, StatusChip, useConfirm } from '../components/common';
 import InteractiveSearchDialog, { type SearchTarget } from '../components/InteractiveSearchDialog';
 import LinkDialog, { type LinkTarget } from '../components/LinkDialog';
+import ManualImportDialog, { type ManualImportTarget } from '../components/ManualImportDialog';
 import { CastList, Fact, MediaHeader, genreChips, requestedByChip } from '../components/MediaHeader';
 import TechnicalInfoPanel from '../components/TechnicalInfoPanel';
 import { useAuth } from '../store/auth';
@@ -21,9 +22,12 @@ export default function MovieDetailPage() {
   const can = useAuth((s) => s.can);
   const { confirm, dialog } = useConfirm();
   const [search, setSearch] = useState<SearchTarget | null>(null);
-  const [deleteFiles, setDeleteFiles] = useState(false);
+  // read after `await confirm(...)`, so refs: state would still hold the value from before the dialog opened
+  const deleteFiles = useRef(false);
+  const searchAfter = useRef(false);
   const [link, setLink] = useState<LinkTarget | null>(null);
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+  const [importing, setImporting] = useState<ManualImportTarget | null>(null);
 
   const movie = useQuery({ queryKey: ['movie', id], queryFn: () => get<Movie>(`/movies/${id}`) });
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
@@ -51,13 +55,38 @@ export default function MovieDetailPage() {
     qc.invalidateQueries({ queryKey: ['history', 'movie', id] });
   };
 
+  const deleteFile = async (file: MediaFile) => {
+    searchAfter.current = false;
+    const ok = await confirm('Delete this file?',
+      <Stack spacing={1.5}>
+        <Box component="code" sx={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{file.path}</Box>
+        <Typography variant="body2" color="text.secondary">
+          The file moves to the recycle bin; {m.title} stays in the library, so you can grab or import a replacement.
+        </Typography>
+        {can('search:execute') && (
+          <FormControlLabel control={<Switch onChange={(e) => { searchAfter.current = e.target.checked; }} />} label="Search for a replacement afterwards" />
+        )}
+      </Stack>,
+      { confirmLabel: 'Delete file', danger: true });
+    if (!ok) return;
+    try {
+      const r = await del<{ message: string }>(`/media-files/${file.id}`, { search: searchAfter.current });
+      toast(r.message, 'success');
+      setSelectedFileId(null);
+      linked();
+    } catch (e) {
+      toast(errorMessage(e), 'error');
+    }
+  };
+
   const remove = async () => {
+    deleteFiles.current = false;
     const ok = await confirm(`Delete ${m.title}?`,
-      <FormControlLabel control={<Switch onChange={(e) => setDeleteFiles(e.target.checked)} />} label="Also move the file to the recycle bin" />,
+      <FormControlLabel control={<Switch onChange={(e) => { deleteFiles.current = e.target.checked; }} />} label="Also move the file to the recycle bin" />,
       { confirmLabel: 'Delete', danger: true });
     if (!ok) return;
     try {
-      await del(`/movies/${id}`, { delete_files: deleteFiles });
+      await del(`/movies/${id}`, { delete_files: deleteFiles.current });
       toast(`${m.title} removed`, 'success');
       qc.invalidateQueries({ queryKey: ['movies'] });
       navigate('/library');
@@ -82,27 +111,23 @@ export default function MovieDetailPage() {
           </>
         }
         actions={
-          <>
-            {can('search:execute') && (
-              <>
-                <Button variant="contained" startIcon={<Zap size={16} />} disabled={action.isPending}
-                  onClick={() => action.mutate({ path: '/search/automatic', body: { media_type: 'movie', media_id: id } })}>Automatic search</Button>
-                <Button variant="outlined" startIcon={<Search size={16} />} onClick={() => setSearch({ mediaType: 'movie', mediaId: id, title: `${m.title} (${m.year})` })}>
-                  Interactive search
-                </Button>
-              </>
-            )}
-            {can('media:write') && (
-              <Button variant="outlined" startIcon={<RefreshCw size={16} />} onClick={() => action.mutate({ path: `/movies/${id}/refresh` })}>Refresh metadata</Button>
-            )}
-            {can('media:write') && (
-              <Button variant="outlined" startIcon={<Link2 size={16} />} onClick={openLink}>Link</Button>
-            )}
-            {can('files:rename') && m.has_file && (
-              <Button variant="outlined" startIcon={<FileEdit size={16} />} onClick={() => navigate(`/renamer?media_type=movie&media_id=${id}`)}>Rename</Button>
-            )}
-            {can('media:delete') && <Button color="error" variant="outlined" startIcon={<Trash2 size={16} />} onClick={remove}>Delete</Button>}
-          </>
+          <ActionsMenu items={[
+            { label: 'Automatic search', icon: <Zap size={16} />, hidden: !can('search:execute'), disabled: action.isPending,
+              onClick: () => action.mutate({ path: '/search/automatic', body: { media_type: 'movie', media_id: id } }) },
+            { label: 'Interactive search', icon: <Search size={16} />, hidden: !can('search:execute'),
+              onClick: () => setSearch({ mediaType: 'movie', mediaId: id, title: `${m.title} (${m.year})` }) },
+            { label: 'Rescan files', icon: <FolderSync size={16} />, hidden: !can('library:scan'), divider: true,
+              onClick: () => action.mutate({ path: '/library/scan', body: { scope: 'movies', incremental: true, media_id: id } }) },
+            { label: 'Import from disk…', icon: <FolderInput size={16} />, hidden: !can('files:import'),
+              onClick: () => setImporting({ mediaType: 'movie', mediaId: id, title: `${m.title} (${m.year})`, folder: m.path ?? '',
+                currentPaths: m.files?.map((f) => f.path) ?? (m.file_path ? [m.file_path] : []) }) },
+            { label: 'Refresh metadata', icon: <RefreshCw size={16} />, hidden: !can('media:write'),
+              onClick: () => action.mutate({ path: `/movies/${id}/refresh` }) },
+            { label: 'Link…', icon: <Link2 size={16} />, hidden: !can('media:write'), onClick: openLink },
+            { label: 'Rename', icon: <FileEdit size={16} />, hidden: !can('files:rename') || !m.has_file,
+              onClick: () => navigate(`/renamer?media_type=movie&media_id=${id}`) },
+            { label: 'Delete movie…', icon: <Trash2 size={16} />, hidden: !can('media:delete'), danger: true, divider: true, onClick: remove },
+          ]} />
         }
       />
 
@@ -179,6 +204,15 @@ export default function MovieDetailPage() {
                           <TableCell sx={{ whiteSpace: 'nowrap', width: 100, color: 'text.secondary' }}>
                             {bytes(file.size_bytes)}
                           </TableCell>
+                          {can('media:delete') && (
+                            <TableCell align="right" sx={{ width: 48 }}>
+                              <Tooltip title="Delete this file (keeps the movie)">
+                                <IconButton size="small" onClick={(e) => { e.stopPropagation(); deleteFile(file); }}>
+                                  <FileX size={16} />
+                                </IconButton>
+                              </Tooltip>
+                            </TableCell>
+                          )}
                         </TableRow>
                       );
                     })}
@@ -241,6 +275,7 @@ export default function MovieDetailPage() {
       </Grid>
       <InteractiveSearchDialog target={search} onClose={() => setSearch(null)} />
       <LinkDialog target={link} onClose={() => setLink(null)} onLinked={linked} />
+      <ManualImportDialog target={importing} onClose={() => setImporting(null)} onImported={linked} />
       {dialog}
     </>
   );

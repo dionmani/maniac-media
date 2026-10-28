@@ -21,17 +21,11 @@ import { FolderInput, FolderSearch, RefreshCw, Trash2, Sparkles } from 'lucide-r
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { get, post } from '../api/client';
-import type { MovieSummary, Page, SeriesSummary } from '../api/types';
+import type { Candidate, ImportResult, MovieSummary, Page, SeriesSummary } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, QualityChip, Section, StatusChip } from '../components/common';
 import { toast } from '../store/ui';
 import { palette } from '../theme';
 import { bytes, errorMessage } from '../utils/format';
-
-interface Candidate {
-  path: string; size: number; state: string; reason: string | null; quality: string;
-  media_type: 'movie' | 'tv' | null; media_id: number | null; title: string | null; season: number | null; episodes: number[];
-  library_state: 'new' | 'upgrade' | 'duplicate' | null; existing_quality: string | null; existing_size: number | null;
-}
 
 interface Suggestion {
   source: 'library' | 'tmdb'; media_type: 'movie' | 'tv'; media_id: number | null; tmdb_id: number | null;
@@ -39,7 +33,6 @@ interface Suggestion {
 }
 interface Identified { path: string; query: string; year: number | null; kind: string; season: number | null; episodes: number[]; candidates: Suggestion[] }
 /** A TMDb hit that isn't in the library yet; it is added when the import runs. */
-interface ImportResult { imported: string[]; failed: string[]; failed_paths: Record<string, string>; failed_codes: Record<string, string> }
 interface PendingAdd { title: string; year: number | null; tmdb_id: number }
 
 type Row = Candidate & { selected: boolean; query?: string; suggestions?: Suggestion[]; pending?: PendingAdd | null; haveIt?: boolean };

@@ -670,3 +670,12 @@ export interface IssueSummary {
   by_type: Record<string, { open: number; dismissed: number; severity: IssueSeverity }>;
   by_severity: Partial<Record<IssueSeverity, number>>;
 }
+
+/** A video file found by `POST /library/manual-import/scan`, with its guessed (or chosen) library match. */
+export interface Candidate {
+  path: string; size: number; state: string; reason: string | null; quality: string;
+  media_type: 'movie' | 'tv' | null; media_id: number | null; title: string | null; season: number | null; episodes: number[];
+  library_state: 'new' | 'upgrade' | 'duplicate' | null; existing_quality: string | null; existing_size: number | null;
+}
+
+export interface ImportResult { imported: string[]; failed: string[]; failed_paths: Record<string, string>; failed_codes: Record<string, string> }

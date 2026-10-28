@@ -321,11 +321,14 @@ def _unmonitor(db, issue, params, actor) -> str:
 def _delete_file(db, issue, params, actor) -> str:
     if not issue.path:
         raise IssueActionError("Issue has no file to delete")
+    from backend.services import media_service
+
     path = Path(issue.path)
-    recycled = fileops.recycle(path, Path(get_settings().recycle_bin)) if path.is_file() else None
     mf = MediaFileRepository(db).by_path(issue.path)
     if mf is not None:
-        media_file_service.detach_file(db, mf, reason="deleted")
+        recycled = media_service.delete_media_file(db, mf, actor=actor)
+    else:
+        recycled = fileops.recycle(path, Path(get_settings().recycle_bin)) if path.is_file() else None
     _close(issue, RESOLVED, "delete_file")
     return f"File moved to recycle bin ({recycled.name})" if recycled else "File record removed"
 

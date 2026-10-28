@@ -8,13 +8,19 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Paper,
   Snackbar,
   Stack,
   Typography,
 } from '@mui/material';
 import type { ChipProps } from '@mui/material';
-import { useState, type ReactNode } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { Fragment, useState, type ReactNode } from 'react';
 import type { MovieSummary } from '../api/types';
 import { palette } from '../theme';
 import { useUi } from '../store/ui';
@@ -166,6 +172,40 @@ export function useConfirm() {
     </Dialog>
   );
   return { confirm, dialog };
+}
+
+export interface ActionItem {
+  label: string;
+  icon?: ReactNode;
+  onClick: () => void;
+  hidden?: boolean;     // permission gates: hidden items are left out
+  disabled?: boolean;
+  danger?: boolean;
+  divider?: boolean;    // draw a separator above this item
+}
+
+/** One "Actions" dropdown for a page header, in place of a row of buttons. */
+export function ActionsMenu({ items, label = 'Actions' }: { items: ActionItem[]; label?: string }) {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const visible = items.filter((i) => !i.hidden);
+  if (!visible.length) return null;
+  return (
+    <>
+      <Button variant="contained" endIcon={<ChevronDown size={16} />} onClick={(e) => setAnchor(e.currentTarget)}>{label}</Button>
+      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+        {visible.map((item, i) => (
+          <Fragment key={item.label}>
+            {item.divider && i > 0 && <Divider />}
+            <MenuItem disabled={item.disabled} onClick={() => { setAnchor(null); item.onClick(); }}
+              sx={item.danger ? { color: palette.red } : undefined}>
+              {item.icon && <ListItemIcon sx={{ color: 'inherit' }}>{item.icon}</ListItemIcon>}
+              <ListItemText>{item.label}</ListItemText>
+            </MenuItem>
+          </Fragment>
+        ))}
+      </Menu>
+    </>
+  );
 }
 
 export function Toaster() {
