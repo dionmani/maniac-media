@@ -1,7 +1,7 @@
 import pytest
 
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render, sanitize_segment, validate
-from backend.domain.parser import guess_title, normalize_title, normalise_path_key, parse_episode, parse_external_id, parse_folder_title, parse_movie
+from backend.domain.parser import guess_title, is_sample, normalize_title, normalise_path_key, parse_episode, parse_external_id, parse_folder_title, parse_movie
 from backend.domain.quality import Codec, QualityProfileSpec, get_quality, parse_quality
 
 
@@ -64,6 +64,24 @@ def test_folder_title_prefers_bracketed_year():
 def test_normalize_title():
     assert normalize_title("The Lord of the Rings: The Two Towers") == normalize_title("Lord of the Rings - Two Towers")
     assert normalize_title("Law & Order") == normalize_title("Law and Order")
+
+
+@pytest.mark.parametrize("name,sample", [
+    ("Family Guy - S08E12 - Extra Large Medium - WEBDL-720p.mkv", False),
+    ("Family Guy - S08E12 - Extra Large Medium WEBDL-1080p.mkv", False),
+    ("Extras (2005) - S01E01 - Ben Stiller.mkv", False),
+    ("Show - S02E03 - The Trailer Park WEBDL-1080p.mkv", False),
+    ("Show.S01E01.720p.WEB-DL-GRP.mkv", False),
+    ("show.s01e01.720p.web-grp-sample.mkv", True),
+    ("show.s01e01.720p.web.sample.mkv", True),
+    ("sample-show.s01e01.mkv", True),
+    ("sample.mkv", True),
+    ("Movie (2020) [sample].mkv", True),
+    ("Movie (2020)-trailer.mkv", True),
+    ("Movie (2020) - featurette.mkv", True),
+])
+def test_is_sample_ignores_titles(name, sample):
+    assert is_sample(name) is sample
 
 
 # ------------------------------------------------------------------ naming

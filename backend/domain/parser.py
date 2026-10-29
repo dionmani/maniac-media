@@ -11,7 +11,10 @@ from backend.domain.quality import ParsedQuality, parse_quality
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".wmv", ".mpg", ".mpeg", ".webm", ".flv"}
 PARTIAL_EXTENSIONS = {".part", ".!qb", ".!ut", ".crdownload", ".tmp", ".partial", ".download", ".bc!", ".dlpart"}
-SAMPLE_RX = re.compile(r"(^|[\W_])(sample|trailer|featurette|extras?)([\W_]|$)", re.I)
+# Only as the last word of a name ("show-grp-sample", "Movie-trailer"), or "sample" as the first: a word
+# inside a title ("Extra Large Medium", "The Trailer Park", the show "Extras") is not a sample.
+SAMPLE_RX = re.compile(r"^sample(?:[\W_]|$)|[\W_](?:sample|trailer|featurette|extras?)$", re.I)
+_TRAILING_PUNCT = re.compile(r"[\W_]+$")
 
 _YEAR = re.compile(r"(?<!\d)(19[0-9]{2}|20[0-9]{2})(?!\d)")
 _IMDB = re.compile(r"\b(tt\d{7,9})\b")
@@ -55,7 +58,7 @@ def is_partial(path: str | PurePath) -> bool:
 
 
 def is_sample(name: str) -> bool:
-    return bool(SAMPLE_RX.search(PurePath(name).stem))
+    return bool(SAMPLE_RX.search(_TRAILING_PUNCT.sub("", PurePath(name).stem)))
 
 
 def release_group(name: str) -> str | None:
