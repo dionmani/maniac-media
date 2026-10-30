@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from backend.core.events import EventType, bus
 from backend.core.settings import get_settings
 from backend.db import models
-from backend.db.base import utcnow
 from backend.db.repositories import EpisodeRepository, MovieRepository, SeriesRepository
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, render
 from backend.domain.parser import is_sample, is_video
@@ -39,6 +38,42 @@ def _movie_folder(movie: models.Movie, root: str) -> str:
 def _series_folder(series: models.Series, root: str) -> str:
     rel = render(get_settings().series_folder_format, {"title": series.title, "year": series.year, "tvdbid": series.tvdb_id, "imdbid": series.imdb_id}, EPISODE_TOKENS)
     return str(Path(root) / Path(rel))
+
+
+def _purge_media_refs(db: Session, media_type: str, media_id: int) -> None:
+    """Detach everything that points at a library entry about to be deleted.
+
+    These rows reference it by a bare ``media_id``, and SQLite hands a deleted id to the next item
+    added: left alone, its issues, blocklist, history and downloads would turn up on that item.
+    """
+    from backend.domain.diagnosis import ImportFailureReason
+    from backend.services import import_diagnosis
+    from backend.services.download_service import TRACKED_STATUSES
+
+    db.flush()  # sessions don't autoflush: the bulk statements below must also see rows added this session
+    for model in (models.LibraryIssue, models.Blocklist):
+        db.execute(sa_delete(model).where(model.media_type == media_type, model.media_id == media_id))
+    # History is the log: keep the rows, just stop them belonging to any item
+    db.execute(update(models.History).where(models.History.media_type == media_type, models.History.media_id == media_id)
+               .values(media_id=None))
+    message = "The library item this download was for was deleted"
+    pending = select(models.DownloadQueueItem).where(
+        models.DownloadQueueItem.media_type == media_type, models.DownloadQueueItem.media_id == media_id,
+        models.DownloadQueueItem.status.in_((*TRACKED_STATUSES, "completed")))
+    for q in db.scalars(pending):
+        analysis = import_diagnosis.diagnose(db, q, ImportFailureReason.MEDIA_DELETED, {"media_id": media_id}, message)
+        q.status = "import_failed"  # untracked from here on, so client syncs leave it alone until it's removed
+        q.error_message = message
+        q.failure_reason = analysis.reason.value
+        q.failure_signature = analysis.signature
+        q.failure_analysis = analysis.to_dict()
+
+
+def _drop_episode_issues(db: Session, series_id: int, episode_ids: set[int]) -> None:
+    """Episode-scoped issues (missing file, cutoff unmet) of removed episodes; nothing would ever resolve them."""
+    if episode_ids:
+        db.execute(sa_delete(models.LibraryIssue).where(models.LibraryIssue.media_type == "tv", models.LibraryIssue.media_id == series_id,
+                                                        models.LibraryIssue.episode_id.in_(episode_ids)))
 
 
 # --------------------------------------------------------------------------- movies
@@ -90,6 +125,7 @@ def delete_movie(db: Session, movie: models.Movie, *, delete_files: bool, actor:
     history(db, "movie", movie.id, movie.title, "deleted", details=f"Removed from library{'; file moved to recycle bin' if recycled else ''}")
     audit(db, "delete", "movie.delete", actor=actor, entity_type="movie", entity_id=movie.id,
           details={"title": movie.title, "delete_files": delete_files, "recycled_to": recycled}, severity="warning")
+    _purge_media_refs(db, "movie", movie.id)
     db.delete(movie)
 
 
@@ -251,6 +287,7 @@ def prune_stale_seasons(db: Session, series: models.Series, meta: MediaMetadata,
     }
     if not apply or not (episodes or seasons):
         return result
+    _drop_episode_issues(db, series.id, {ep.id for ep in episodes})
     for ep in episodes:
         db.delete(ep)
     db.flush()
@@ -308,6 +345,7 @@ def remove_episodes(db: Session, series: models.Series, episodes: list[models.Ep
     if doomed:
         db.execute(sa_delete(models.MediaFile).where(models.MediaFile.id.in_(doomed)))
     db.expire_all()
+    _drop_episode_issues(db, series.id, ids)
     for ep in episodes:
         db.delete(ep)
     db.flush()
@@ -344,6 +382,7 @@ def delete_series(db: Session, series: models.Series, *, delete_files: bool, act
     history(db, "tv", series.id, series.title, "deleted", details=f"Removed from library; {recycled} file(s) recycled")
     audit(db, "delete", "series.delete", actor=actor, entity_type="series", entity_id=series.id,
           details={"title": series.title, "delete_files": delete_files, "recycled": recycled}, severity="warning")
+    _purge_media_refs(db, "tv", series.id)
     db.delete(series)
 
 
@@ -493,7 +532,6 @@ def merge_movie(db: Session, source: models.Movie, target: models.Movie, keep_pa
     send every other file plus the duplicate's leftover folder to the recycle bin, carry history / queue /
     blocklist rows over, and delete the duplicate entry. Filesystem changes roll back if anything fails."""
     from backend.services import media_file_service
-    from backend.services.issue_service import OPEN, RESOLVED
 
     if source.id == target.id:
         raise MediaError("A movie can't be merged into itself")
@@ -561,10 +599,8 @@ def merge_movie(db: Session, source: models.Movie, target: models.Movie, keep_pa
 
         for model in (models.History, models.Blocklist, models.DownloadQueueItem):
             db.execute(update(model).where(model.media_type == "movie", model.media_id == source.id).values(media_id=target.id))
-        db.execute(update(models.LibraryIssue)
-                   .where(models.LibraryIssue.media_type == "movie", models.LibraryIssue.media_id == source.id,
-                          models.LibraryIssue.status == OPEN)
-                   .values(status=RESOLVED, resolved=True, resolved_at=utcnow(), resolution="merged"))
+        # the duplicate's issues go with it; scans re-raise whatever still applies to the target
+        db.execute(sa_delete(models.LibraryIssue).where(models.LibraryIssue.media_type == "movie", models.LibraryIssue.media_id == source.id))
         history(db, "movie", target.id, target.title, "updated",
                 details=f"Merged '{source_label}' into this movie; kept {kept.name if kept else 'no file'}, {recycled} file(s) recycled")
         audit(db, "media", "movie.merge", actor=actor, entity_type="movie", entity_id=target.id,
