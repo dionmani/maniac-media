@@ -401,6 +401,12 @@ export interface ScoreBreakdownItem {
   value: number;
 }
 
+export interface SeriesMatch {
+  level: 'certain' | 'likely' | 'ambiguous' | 'mismatch';
+  score: number;
+  reasons: string[];
+}
+
 export interface Release {
   guid: string;
   title: string;
@@ -429,6 +435,8 @@ export interface Release {
   episodes: number[];
   /** the release/air date that cleared (or held back) this release */
   release_gate?: string | null;
+  /** tv: how sure we are the release is for this show rather than a same-titled one, and why */
+  series_match?: SeriesMatch | null;
   download_url_token: string;
 }
 

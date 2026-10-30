@@ -24,11 +24,19 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ban, CheckCircle2, ChevronDown, ChevronRight, Download, Sparkles, X } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { get, post } from '../api/client';
-import type { Release } from '../api/types';
+import type { Release, SeriesMatch } from '../api/types';
 import { toast } from '../store/ui';
 import { palette } from '../theme';
 import { bytes, episodeCode, errorMessage } from '../utils/format';
 import { Loading, QualityChip } from './common';
+
+// same-titled shows (Dark Matter 2015/2024): how sure we are a release is for this one
+const SERIES_MATCH_COLOR: Record<SeriesMatch['level'], 'success' | 'info' | 'warning' | 'error'> = {
+  certain: 'success',
+  likely: 'info',
+  ambiguous: 'warning',
+  mismatch: 'error',
+};
 
 export interface SearchTarget {
   mediaType: 'movie' | 'tv';
@@ -168,6 +176,16 @@ export default function InteractiveSearchDialog({ target, onClose }: { target: S
                                 color="primary"
                                 variant="filled"
                               />
+                            )}
+                            {r.series_match && (r.series_match.level !== 'likely' || r.series_match.reasons.length > 0) && (
+                              <Tooltip title={r.series_match.reasons.length ? <ul style={{ margin: 0, paddingLeft: 16 }}>{r.series_match.reasons.map((x) => <li key={x}>{x}</li>)}</ul> : 'No evidence either way'}>
+                                <Chip
+                                  size="small"
+                                  label={`Show: ${r.series_match.level}`}
+                                  color={SERIES_MATCH_COLOR[r.series_match.level]}
+                                  variant={r.series_match.level === 'certain' ? 'filled' : 'outlined'}
+                                />
+                              </Tooltip>
                             )}
                             {r.proper && <Chip size="small" label="PROPER" color="success" />}
                             {r.hdr && <Chip size="small" label={r.hdr_format ?? 'HDR'} color="warning" />}

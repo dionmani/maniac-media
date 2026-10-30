@@ -138,6 +138,7 @@ class ReleaseInfo:
     categories: list[int] = field(default_factory=list)
     imdb_id: str | None = None
     tvdb_id: int | None = None
+    tvmaze_id: int | None = None
     info_hash: str | None = None
     magnet_url: str | None = None
 

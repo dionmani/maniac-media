@@ -12,8 +12,8 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -28,7 +28,6 @@ from backend.domain.diagnosis import ImportFailureReason, classify_oserror
 from backend.domain.inspection import MEDIAINFO_EMPTY, mediainfo_tokens
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import (
-    identity_conflict,
     is_partial,
     is_sample,
     is_video,
@@ -36,10 +35,11 @@ from backend.domain.parser import (
     parse_episode,
     parse_folder_title,
     parse_movie,
-    resolve_series,
+    same_title_candidates,
     years_conflict,
 )
 from backend.domain.quality import ParsedQuality, parse_quality
+from backend.domain.series_match import ReleaseEvidence, SeriesFacts, best_series, match_series
 from backend.services import fileops, import_diagnosis, inspection_service, media_file_service
 from backend.services.audit import SYSTEM, Actor, audit, history
 from backend.services.quality_service import spec_for
@@ -137,12 +137,35 @@ def inspect(path: Path, min_size_mb: int) -> Candidate:
     return Candidate(path, size, state, check.reason, parse_quality(path.name if parse_quality(path.name).quality.weight else path.parent.name))
 
 
+def _other_show(shows: list[SeriesFacts], ep, grabbed: datetime | None) -> str | None:
+    """Why a download is for a different show than ``shows[0]``, the one it was grabbed for (None: nothing says so).
+
+    Doubt alone isn't enough here – the grab may have been a deliberate manual one – only a name that rules the
+    show out, or evidence pointing at a same-titled show in the library.
+    """
+    m = match_series(ReleaseEvidence.from_release(ep, posted=grabbed), shows[0], shows[1:])
+    return m.rejection() if m.ruled_out or m.other_id is not None else None
+
+
+def _series_for_file(db: Session, ep, path: Path) -> models.Series | None:
+    """The show a loose episode file is for; None when same-titled shows can't be told apart (pick by hand)."""
+    candidates = same_title_candidates(SeriesRepository(db).index(), ep.series_title)
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    try:
+        posted = datetime.fromtimestamp(path.stat().st_mtime).date()  # a fresh download lands days after airing
+    except OSError:
+        posted = None
+    winner, _ = best_series(ReleaseEvidence.from_release(ep, posted=posted), SeriesRepository(db).match_facts(candidates, ep.season))
+    return next((c for c in candidates if winner and c.id == winner.id), None)
+
+
 def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Candidate:
     """Best-effort library match for a loose file (manual import / watch folder)."""
     name = candidate.path.name
     ep = parse_episode(name) or (parse_episode(hint_name) if hint_name else None)
     if ep and ep.season is not None and ep.episodes:
-        series = resolve_series(SeriesRepository(db).index(), ep.series_title, ep.year)
+        series = _series_for_file(db, ep, candidate.path)
         if series:
             candidate.media_type, candidate.media_id, candidate.title = "tv", series.id, series.title
             candidate.season, candidate.episodes = ep.season, ep.episodes
@@ -632,18 +655,21 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             raise ImportError_("No video files found in download", reason=ImportFailureReason.NO_VIDEO_FILES,
                                evidence={"download_path": download_path})
         mode = _mode_for(protocol)
-        series = None
+        shows, grabbed = None, None
         if media_type == "tv":
             with session_scope() as db:
                 row = db.get(models.Series, media_id)
-                series = SimpleNamespace(title=row.title, year=row.year, country=row.country) if row is not None else None
+                if row is not None:
+                    repo = SeriesRepository(db)
+                    shows = repo.match_facts([row, *(s for s in repo.same_title(row.title) if s.id != row.id)])
+                q = db.get(models.DownloadQueueItem, queue_id)
+                grabbed = q.added_at if q is not None else None
             # last line of defence against a same-titled show: Dark.Matter.2024.* never lands in Dark Matter (2015),
-            # Ghosts.US never in the British Ghosts (a country the series doesn't know yet is no proof either way)
+            # nor an Apple TV+ episode that aired last week in the 2015 show it was grabbed for
             release_ep = parse_episode(release_title)
-            conflict = release_ep and series and identity_conflict(release_ep.series_title, release_ep.year, series, unknown_country=False)
+            conflict = release_ep and shows and _other_show(shows, release_ep, grabbed)
             if conflict:
-                raise ImportError_(f"Release is for a different show than {series.title}: {conflict}",
-                                   reason=ImportFailureReason.NOT_MATCHED,
+                raise ImportError_(conflict, reason=ImportFailureReason.NOT_MATCHED,
                                    evidence={"release_title": release_title, "conflict": conflict})
         for video in videos:
             candidate = inspect(video, settings.min_import_size_mb)
@@ -660,7 +686,7 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             file_season, file_eps = season, episodes
             if media_type == "tv":
                 parsed = parse_episode(video.name) or parse_episode(release_title)
-                conflict = parsed and series and identity_conflict(parsed.series_title, parsed.year, series, unknown_country=False)
+                conflict = parsed and shows and _other_show(shows, parsed, grabbed)
                 if conflict:
                     result.failed.append(f"{video.name}: file is for a different show ({conflict})")
                     fail_reason, fail_evidence = ImportFailureReason.NOT_MATCHED, {"file": video.name, "conflict": conflict}

@@ -11,8 +11,9 @@ from typing import Any
 from backend.domain.availability import Availability, latest
 from backend.domain.custom_formats import FormatMatcher, ReleaseFacts
 from backend.domain.custom_formats import score as score_formats
-from backend.domain.parser import identity_conflict, normalize_title, parse_episode, parse_movie, release_group, release_names_series
+from backend.domain.parser import normalize_title, parse_episode, parse_movie, release_group, release_names_series
 from backend.domain.quality import ParsedQuality, QualityProfileSpec, parse_quality
+from backend.domain.series_match import ReleaseEvidence, SeriesFacts, SeriesMatch, match_series
 from backend.domain.types import ReleaseInfo
 
 
@@ -31,8 +32,9 @@ class Target:
     has_file: bool = False
     aliases: list[str] = field(default_factory=list)
     country: str | None = None  # tv: ISO 3166-1 alpha-2, tells "Ghosts.US" from "Ghosts.UK"
-    # tv: an older library series shares this title, so a release with no year or country belongs to that one
-    title_has_older_twin: bool = False
+    # tv: what tells this show apart from same-titled ones (domain/series_match.py), and those shows
+    facts: SeriesFacts | None = None
+    twins: list[SeriesFacts] = field(default_factory=list)
     minimum_seeders: dict[int, int] = field(default_factory=dict)  # indexer id -> min seeders
     # release gate (domain/availability.py): the movie's, and every in-scope episode's by (season, episode)
     availability: Availability | None = None
@@ -54,6 +56,7 @@ class Decision:
     format_score: int = 0
     score_breakdown: list[dict[str, Any]] = field(default_factory=list)
     sort_key: tuple = field(default_factory=tuple)
+    series_match: SeriesMatch | None = None  # tv: how sure we are the release is for this show
 
     def to_dict(self) -> dict:
         r = self.release
@@ -81,6 +84,7 @@ class Decision:
             "custom_formats": self.custom_formats,
             "format_score": self.format_score,
             "score_breakdown": self.score_breakdown,
+            "series_match": self.series_match.to_dict() if self.series_match else None,
         }
 
 
@@ -94,6 +98,7 @@ def evaluate(
     quality = parse_quality(release.title)
     wanted_titles = {normalize_title(t) for t in [target.title, *target.aliases] if t}
     season, episodes, full_season = None, [], False
+    series_match = None
 
     if target.media_type == "movie":
         parsed = parse_movie(release.title)
@@ -107,13 +112,15 @@ def evaluate(
             rejections.append("Could not parse season/episode")
         else:
             season, episodes, full_season = ep.season, ep.episodes, ep.full_season
-            named, release_country = release_names_series(ep.series_title, target.title, target.aliases)
-            if not named:
+            if not release_names_series(ep.series_title, target.title, target.aliases)[0]:
                 rejections.append(f"Series mismatch ('{ep.series_title}')")
-            elif conflict := identity_conflict(ep.series_title, ep.year, target):
-                rejections.append(conflict)
-            elif not ep.year and not release_country and target.title_has_older_twin:
-                rejections.append("Release has no year or country; an older series has the same title")
+            else:
+                facts = target.facts or SeriesFacts(target.media_id, target.title, target.year, target.country)
+                evidence = ReleaseEvidence.from_release(ep, tvdb_id=release.tvdb_id, tvmaze_id=release.tvmaze_id,
+                                                        imdb_id=release.imdb_id, posted=release.publish_date)
+                series_match = match_series(evidence, facts, target.twins)
+                if not series_match.accepted:
+                    rejections.append(series_match.rejection())
             if target.season is not None and ep.season != target.season:
                 rejections.append(f"Wrong season (S{ep.season})")
             if target.episodes:
@@ -241,6 +248,7 @@ def evaluate(
         format_score=fs,
         score_breakdown=score_breakdown,
         sort_key=sort_key,
+        series_match=series_match,
     )
 
 
