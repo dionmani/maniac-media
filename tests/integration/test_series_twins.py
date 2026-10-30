@@ -108,3 +108,69 @@ def test_manual_import_never_falls_back_to_a_movie_from_another_year(database, l
     src = make_video(library["downloads"] / "twins-movie" / "Twin.Remake.1984.1080p.BluRay.x264-GRP.mkv")
     with session_scope() as db:
         assert import_service.match(db, import_service.inspect(src, 0)).media_id == old_id
+
+
+@pytest.fixture(scope="module")
+def ghosts(database) -> dict[str, int]:
+    """{country: series id}: the British Ghosts (2019) and the American one (2021), both wanting S05E05."""
+    ids = {}
+    with session_scope() as db:
+        for year, country in ((2019, "GB"), (2021, "US")):
+            series = models.Series(title="Ghosts", year=year, country=country, monitored=True, quality_profile_id=1,
+                                   status="continuing", series_type="standard")
+            db.add(series)
+            db.flush()
+            season = models.Season(series_id=series.id, season_number=5, monitored=True)
+            db.add(season)
+            db.flush()
+            db.add(models.Episode(series_id=series.id, season_id=season.id, season_number=5, episode_number=5,
+                                  title="Ep 5", air_date="2025-01-01", monitored=True))
+            ids[country] = series.id
+    return ids
+
+
+@pytest.mark.parametrize(("title", "country"), [
+    ("Ghosts.US.S05E05.1080p.WEB-DL.DD5.1.H.264-GRP", "US"),
+    ("Ghosts.2021.S05E05.1080p.WEB-DL.DD5.1.H.264-GRP", "US"),
+    ("Ghosts.UK.S05E05.1080p.WEB-DL.DD5.1.H.264-GRP", "GB"),
+    ("Ghosts.S05E05.1080p.WEB-DL.DD5.1.H.264-GRP", "GB"),
+])
+def test_rss_routes_country_tagged_releases(ghosts, title, country):
+    matches = search_service._match_rss([_release(title)])
+    assert {key[1] for key in matches} == {ghosts[country]}
+    (target, _, release), = matches.values()
+    assert search_service.evaluate(release, target).approved, search_service.evaluate(release, target).rejections
+
+
+def test_import_refuses_the_other_countrys_show(ghosts, library, make_video):
+    release = library["downloads"] / "Ghosts.US.S05E05.1080p.WEB-DL.DD5.1.H.264-GRP"
+    src = make_video(release / f"{release.name}.mkv")
+    with session_scope() as db:
+        q = models.DownloadQueueItem(title="Ghosts", media_type="tv", media_id=ghosts["GB"], release_title=release.name,
+                                     season_num=5, episode_numbers=[5], status="completed", download_path=str(release),
+                                     protocol="usenet")
+        db.add(q)
+        db.flush()
+        queue_id = q.id
+    assert not import_service.import_queue_item(queue_id).imported
+    assert src.exists()
+    with session_scope() as db:
+        q = db.get(models.DownloadQueueItem, queue_id)
+        assert (q.status, q.failure_reason) == ("import_failed", "not_matched")
+        assert "US vs GB" in q.failure_analysis["summary"]
+
+
+def test_metadata_fills_in_the_country(database):
+    from backend.domain.types import MediaMetadata
+    from backend.services import metadata_service
+
+    with session_scope() as db:
+        series = models.Series(title="Country Fill", year=2005, monitored=True, quality_profile_id=1)
+        db.add(series)
+        db.flush()
+        metadata_service.apply_series(db, series, MediaMetadata(media_type="tv", provider="tvdb", title="Country Fill", country="usa"),
+                                      create_episodes=False)
+        assert series.country == "US"
+        metadata_service.apply_series(db, series, MediaMetadata(media_type="tv", provider="tvdb", title="Country Fill"),
+                                      create_episodes=False)
+        assert series.country == "US"  # a provider that doesn't say keeps what we had

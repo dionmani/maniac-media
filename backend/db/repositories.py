@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from backend.db import models
 from backend.db.base import Base, utcnow
 from backend.domain.availability import DEFAULT_CATALOG_DAYS, catalog_cutoff, date_only_cutoff
-from backend.domain.parser import normalise_path_key, normalize_title
+from backend.domain.parser import normalise_path_key, series_index, title_key
 
 T = TypeVar("T", bound=Base)
 
@@ -310,9 +310,13 @@ class SeriesRepository(Repository[models.Series]):
         return self.db.scalars(select(models.Series).where(models.Series.imdb_id == imdb_id).limit(1)).first()
 
     def same_title(self, title: str) -> list[models.Series]:
-        """Every series whose normalized title equals ``title``'s ("Dark Matter" 2015 and 2024)."""
-        key = normalize_title(title)
-        return [s for s in self.db.scalars(select(models.Series)) if normalize_title(s.title) == key]
+        """Every series sharing ``title`` once a year/country suffix is dropped ("Dark Matter" 2015 and 2024, "Ghosts (US)")."""
+        key = title_key(title)
+        return [s for s in self.db.scalars(select(models.Series)) if title_key(s.title) == key]
+
+    def index(self) -> dict[str, list[models.Series]]:
+        """Every series by each title key a release can reach it under (domain.parser.series_index)."""
+        return series_index(self.db.scalars(select(models.Series)))
 
     def ids_by_external(self, tmdb_ids: Sequence[int], tvdb_ids: Sequence[int]) -> tuple[dict[int, int], dict[int, int]]:
         """Library series ids for many external ids at once: ({tmdb_id: id}, {tvdb_id: id})."""

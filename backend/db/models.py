@@ -96,6 +96,7 @@ class Series(Base):
     poster_path: Mapped[str | None] = mapped_column(String(1024))
     backdrop_path: Mapped[str | None] = mapped_column(String(1024))
     network: Mapped[str | None] = mapped_column(String(256))
+    country: Mapped[str | None] = mapped_column(String(2))  # ISO 3166-1 alpha-2: tells Ghosts (GB) from Ghosts (US)
     genres: Mapped[str | None] = mapped_column(String(512))
     total_seasons: Mapped[int | None] = mapped_column(Integer, default=1)
     added_date: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)

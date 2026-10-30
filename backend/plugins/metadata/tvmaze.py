@@ -57,6 +57,7 @@ class TvMazeProvider(MetadataProvider):
             rating=rating,
             status="ended" if show.get("status") == "Ended" else "continuing",
             studio=network,
+            country=((show.get("network") or show.get("webChannel") or {}).get("country") or {}).get("code"),
             release_date=show.get("premiered"),
             tvmaze_id=show.get("id"),
             tvdb_id=externals.get("thetvdb"),

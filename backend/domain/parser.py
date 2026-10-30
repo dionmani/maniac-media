@@ -54,24 +54,128 @@ def years_conflict(release_year: int | None, media_year: int | None, tolerance: 
     return bool(release_year and media_year and abs(release_year - media_year) > tolerance)
 
 
-def pick_series(candidates: list, release_year: int | None):
-    """Choose among library series that share a normalized title, using the year a release carries.
+# ---------------------------------------------------------------- same-titled shows (Dark Matter 2015/2024, Ghosts UK/US)
+# Release names tell such shows apart with a year ("Dark.Matter.2024") or, upper-case, a country ("Ghosts.US",
+# "The.Office.UK"); library titles from TVDB carry the same as a suffix ("Ghosts (US)", "Dark Matter (2024)").
+_RELEASE_COUNTRIES = {"US": "US", "UK": "GB", "AU": "AU", "NZ": "NZ", "CA": "CA"}
+_ALPHA3 = {"usa": "US", "gbr": "GB", "aus": "AU", "nzl": "NZ", "can": "CA", "irl": "IE", "deu": "DE", "fra": "FR",
+           "esp": "ES", "ita": "IT", "nld": "NL", "bel": "BE", "swe": "SE", "dnk": "DK", "nor": "NO", "fin": "FI",
+           "isl": "IS", "pol": "PL", "jpn": "JP", "kor": "KR", "chn": "CN", "ind": "IN", "bra": "BR", "mex": "MX",
+           "arg": "AR", "zaf": "ZA", "isr": "IL", "tur": "TR"}
+_PAREN_TAG = re.compile(r"\s*\(([^()]+)\)\s*$")
+_BARE_COUNTRY = re.compile(r"[\s._-]+([A-Z]{2})\s*$")  # case-sensitive: "This Is Us" keeps its "Us"
 
-    "Dark.Matter.2024.S02E09" must go to Dark Matter (2024), never Dark Matter (2015). A release without a year
-    belongs to the oldest one: by scene convention it is the later show that gets the year tag.
+
+def country_code(value: str | None) -> str | None:
+    """ISO 3166-1 alpha-2 for a provider's country ("US", "gb", TVDB's "usa"); "UK" is GB."""
+    v = (value or "").strip()
+    if len(v) == 2 and v.isalpha():
+        return "GB" if v.upper() == "UK" else v.upper()
+    return _ALPHA3.get(v.lower())
+
+
+def split_title_tag(title: str, *, bare: bool = False) -> tuple[str, int | None, str | None]:
+    """'Ghosts (US)' -> ('Ghosts', None, 'US'), 'Dark Matter (2024)' -> ('Dark Matter', 2024, None).
+
+    ``bare`` also reads an unbracketed upper-case country, as release names write it ("Ghosts US").
     """
-    if not candidates:
-        return None
+    m = _PAREN_TAG.search(title)
+    if m and m.start() > 0:
+        tag = m.group(1).strip()
+        if re.fullmatch(r"(?:19|20)\d{2}", tag):
+            return title[: m.start()], int(tag), None
+        if tag.upper() in _RELEASE_COUNTRIES:
+            return title[: m.start()], None, _RELEASE_COUNTRIES[tag.upper()]
+    m = _BARE_COUNTRY.search(title) if bare else None
+    if m and m.start() > 0 and m.group(1) in _RELEASE_COUNTRIES:
+        return title[: m.start()], None, _RELEASE_COUNTRIES[m.group(1)]
+    return title, None, None
+
+
+def title_key(title: str) -> str:
+    """Normalized title without a year/country suffix: what same-titled shows have in common."""
+    return normalize_title(split_title_tag(title)[0])
+
+
+def series_identity(series) -> tuple[int | None, str | None]:
+    """(year, country) of a library series; a "(2024)"/"(US)" title suffix fills in what metadata lacks."""
+    _, tag_year, tag_country = split_title_tag(series.title)
+    return series.year or tag_year or None, country_code(getattr(series, "country", None)) or tag_country
+
+
+def release_readings(series_title: str) -> list[tuple[str, str | None]]:
+    """(title key, country) readings of a release's series title: as written first, then minus a country tag."""
+    readings = [(normalize_title(series_title), None)]
+    base, _, country = split_title_tag(series_title, bare=True)
+    if country:
+        readings.append((normalize_title(base), country))
+    return readings
+
+
+def release_names_series(release_title: str, series_title: str, aliases=()) -> tuple[bool, str | None]:
+    """(does the release name this series, the release's country tag if that's how it matched)."""
+    keys = {normalize_title(t) for t in (series_title, split_title_tag(series_title)[0], *aliases) if t}
+    for key, country in release_readings(release_title):
+        if key in keys:
+            return True, country
+    return False, split_title_tag(release_title, bare=True)[2]
+
+
+def identity_conflict(release_title: str, release_year: int | None, series, *, unknown_country: bool = True) -> str | None:
+    """Why a release's year or country tag rules out ``series`` (None: nothing in the name says otherwise).
+
+    ``unknown_country``: a country-tagged release is ruled out for a series whose country isn't known yet.
+    """
+    year, country = series_identity(series)
+    if years_conflict(release_year, year):
+        return f"Series year mismatch ({release_year} vs {year})"
+    _, release_country = release_names_series(release_title, series.title, getattr(series, "aliases", ()))
+    if release_country and release_country != country and (country or unknown_country):
+        return f"Series country mismatch ({release_country} vs {country or 'unknown'})"
+    return None
+
+
+def pick_series(candidates: list, release_year: int | None, release_country: str | None = None):
+    """Choose among library series that share a title, using the year or country tag a release carries.
+
+    "Dark.Matter.2024.S02E09" must go to Dark Matter (2024), never Dark Matter (2015); "Ghosts.US" only to a show
+    known to be American. A release with neither belongs to the oldest one: by scene convention it is the later
+    show that gets the tag.
+    """
+    found = [(c, *series_identity(c)) for c in candidates]
+    if release_country:
+        found = [f for f in found if f[2] == release_country]
     if release_year:
-        fits = [c for c in candidates if not years_conflict(release_year, c.year)]
+        found = [f for f in found if not years_conflict(release_year, f[1])]
         # closest year wins; a series with no known year only when nothing dated fits
-        return min(fits, key=lambda c: abs(c.year - release_year) if c.year else 99, default=None)
-    return min(candidates, key=lambda c: c.year or 0)
+        best = min(found, key=lambda f: abs(f[1] - release_year) if f[1] else 99, default=None)
+    else:
+        best = min(found, key=lambda f: f[1] or 0, default=None)
+    return best[0] if best else None
+
+
+def series_index(series) -> dict[str, list]:
+    """Library series by every title key a release could reach them under."""
+    index: dict[str, list] = {}
+    for s in series:
+        for key in {normalize_title(s.title), title_key(s.title)}:
+            index.setdefault(key, []).append(s)
+    return index
+
+
+def resolve_series(index: dict[str, list], series_title: str, release_year: int | None):
+    """The library series a release's parsed series title + year belong to, or None."""
+    for key, country in release_readings(series_title):
+        found = pick_series(index.get(key, []), release_year, country)
+        if found is not None:
+            return found
+    return None
 
 
 def has_older_twin(series, same_title: list) -> bool:
-    """True when another series with the same normalized title is older, so a yearless release isn't this one's."""
-    return bool(series.year) and any(o is not series and o.year and o.year < series.year for o in same_title)
+    """True when another series with the same title is older, so a release with no year or country isn't this one's."""
+    year = series_identity(series)[0]
+    return bool(year) and any(o is not series and (y := series_identity(o)[0]) and y < year for o in same_title)
 
 
 def is_video(path: str | PurePath) -> bool:

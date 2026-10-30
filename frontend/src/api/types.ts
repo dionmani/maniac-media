@@ -295,6 +295,8 @@ export interface Series extends SeriesSummary {
   tmdb_id?: number | null;
   tvmaze_id?: number | null;
   imdb_id?: string | null;
+  /** ISO 3166-1 alpha-2 origin country: tells same-titled shows apart ("Ghosts.US") */
+  country?: string | null;
   overview?: string | null;
   backdrop_path?: string | null;
   first_aired?: string | null;

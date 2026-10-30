@@ -202,9 +202,8 @@ def _probe_bad_file(reason: ImportFailureReason, evidence: dict) -> ImportFailur
 
 def _probe_unparseable(reason: ImportFailureReason, evidence: dict, q: models.DownloadQueueItem) -> ImportFailureAnalysis:
     folder = str(Path(q.download_path).parent) if q.download_path else ""
-    if evidence.get("parsed_year") and evidence.get("series_year"):
-        summary = (f"{evidence.get('file', q.release_title)} is for a {evidence['parsed_year']} series, "
-                   f"not the {evidence['series_year']} one it was grabbed for.")
+    if evidence.get("conflict"):  # a same-titled show from another year or country
+        summary = f"{evidence.get('file', q.release_title)} is for a different show than the one it was grabbed for ({evidence['conflict']})."
         fixes = (FixSuggestion(FixKind.REMOVE, "Remove from queue"),
                  FixSuggestion(FixKind.MANUAL_IMPORT, "Open in manual import", {"folder": folder}))
     else:

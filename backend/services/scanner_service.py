@@ -28,7 +28,7 @@ from backend.db.base import utcnow
 from backend.db.repositories import LibraryIssueRepository, MediaFileRepository
 from backend.db.session import session_scope
 from backend.domain.issues import IssueType
-from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title, pick_series
+from backend.domain.parser import is_sample, is_video, normalize_title, parse_episode, parse_folder_title, resolve_series, series_index
 from backend.domain.quality import parse_quality
 from backend.services import fileops, media_file_service
 from backend.services.issue_service import IssueRecorder, enqueue_searches, plan_missing_file_searches
@@ -263,11 +263,12 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
         stats["folders"] = len(entries)
         recorder = IssueRecorder(db, "tv")
         state = _ScanState(db, "tv")
-        by_path, by_title = {}, {}
-        for s in db.scalars(select(models.Series)):
+        by_path = {}
+        all_series = list(db.scalars(select(models.Series)))
+        for s in all_series:
             if s.path:
                 by_path[os.path.normcase(os.path.normpath(s.path))] = s
-            by_title.setdefault(normalize_title(s.title), []).append(s)
+        by_title = series_index(all_series)
 
         for i, entry in enumerate(entries, 1):
             season_dirs = [e for e in _dir_entries(entry.path) if e.is_dir() and SEASON_DIR.match(e.name)]
@@ -354,13 +355,14 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
 def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder) -> None:
     title, year, imdb = parse_folder_title(entry.name)
     # the folder year picks between same-titled shows: "Dark Matter (2024)" is not the Dark Matter (2015) series
-    series = known or pick_series(by_title.get(normalize_title(title), []), year)
+    series = known or resolve_series(by_title, title, year)
     if series is None:
         series = models.Series(title=title, year=year or 0, status="continuing", monitored=True, quality_profile_id=default_profile_id(db, "tv"), root_folder=root,
                                path=entry.path, total_seasons=1, imdb_id=imdb, series_type="standard", monitor_new_seasons=True)
         db.add(series)
         db.flush()
-        by_title.setdefault(normalize_title(title), []).append(series)
+        for key, found in series_index([series]).items():
+            by_title.setdefault(key, []).extend(found)
         stats["new_series"] += 1
     series.path = entry.path
     recorder.touch(series.id, IssueType.DUPLICATE_FILE)

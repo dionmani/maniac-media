@@ -52,6 +52,7 @@ class MediaMetadata:
     status: str | None = None
     production_status: str | None = None  # movies: rumored | planned | in_production | post_production | released | canceled
     studio: str | None = None  # movies: studio, series: network
+    country: str | None = None  # series: ISO 3166-1 alpha-2 origin country
     release_date: str | None = None
     digital_release_date: str | None = None
     physical_release_date: str | None = None

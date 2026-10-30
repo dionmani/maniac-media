@@ -17,7 +17,7 @@ from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
 from backend.domain.availability import wants_air_times
-from backend.domain.parser import normalize_title, years_conflict
+from backend.domain.parser import country_code, normalize_title, years_conflict
 from backend.domain.types import MediaMetadata
 from backend.plugins import registry
 from backend.plugins.base import MetadataProvider, PluginKind
@@ -250,6 +250,7 @@ def apply_series(db: Session, series: models.Series, meta: MediaMetadata, *, cre
         series.backdrop_path = meta.backdrop_url or meta.poster_url or series.backdrop_path
     if meta.genres:
         series.genres = ", ".join(meta.genres)
+    series.country = country_code(meta.country) or series.country
     series.network = meta.studio or (None if series.network in ("Vault Series", "Disk Library") else series.network)
     series.status = meta.status or series.status
     series.runtime_minutes = meta.runtime_minutes or series.runtime_minutes

@@ -398,6 +398,7 @@ class SeriesOut(SeriesSummary):
     tmdb_id: int | None = None
     tvmaze_id: int | None = None
     imdb_id: str | None = None
+    country: str | None = None
     overview: str | None = None
     backdrop_path: str | None = None
     first_aired: str | None = None

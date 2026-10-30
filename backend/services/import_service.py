@@ -13,6 +13,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -27,6 +28,7 @@ from backend.domain.diagnosis import ImportFailureReason, classify_oserror
 from backend.domain.inspection import MEDIAINFO_EMPTY, mediainfo_tokens
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
 from backend.domain.parser import (
+    identity_conflict,
     is_partial,
     is_sample,
     is_video,
@@ -34,7 +36,7 @@ from backend.domain.parser import (
     parse_episode,
     parse_folder_title,
     parse_movie,
-    pick_series,
+    resolve_series,
     years_conflict,
 )
 from backend.domain.quality import ParsedQuality, parse_quality
@@ -140,7 +142,7 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
     name = candidate.path.name
     ep = parse_episode(name) or (parse_episode(hint_name) if hint_name else None)
     if ep and ep.season is not None and ep.episodes:
-        series = pick_series(SeriesRepository(db).same_title(ep.series_title), ep.year)
+        series = resolve_series(SeriesRepository(db).index(), ep.series_title, ep.year)
         if series:
             candidate.media_type, candidate.media_id, candidate.title = "tv", series.id, series.title
             candidate.season, candidate.episodes = ep.season, ep.episodes
@@ -630,17 +632,19 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             raise ImportError_("No video files found in download", reason=ImportFailureReason.NO_VIDEO_FILES,
                                evidence={"download_path": download_path})
         mode = _mode_for(protocol)
-        series_year = None
+        series = None
         if media_type == "tv":
             with session_scope() as db:
-                series = db.get(models.Series, media_id)
-                series_year = series.year if series is not None else None
-            # last line of defence against a same-titled show: Dark.Matter.2024.* never lands in Dark Matter (2015)
+                row = db.get(models.Series, media_id)
+                series = SimpleNamespace(title=row.title, year=row.year, country=row.country) if row is not None else None
+            # last line of defence against a same-titled show: Dark.Matter.2024.* never lands in Dark Matter (2015),
+            # Ghosts.US never in the British Ghosts (a country the series doesn't know yet is no proof either way)
             release_ep = parse_episode(release_title)
-            if release_ep and years_conflict(release_ep.year, series_year):
-                raise ImportError_(f"Release is for a {release_ep.year} series, not the {series_year} one it was grabbed for",
+            conflict = release_ep and series and identity_conflict(release_ep.series_title, release_ep.year, series, unknown_country=False)
+            if conflict:
+                raise ImportError_(f"Release is for a different show than {series.title}: {conflict}",
                                    reason=ImportFailureReason.NOT_MATCHED,
-                                   evidence={"release_title": release_title, "parsed_year": release_ep.year, "series_year": series_year})
+                                   evidence={"release_title": release_title, "conflict": conflict})
         for video in videos:
             candidate = inspect(video, settings.min_import_size_mb)
             if candidate.state != "ok":
@@ -656,10 +660,10 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             file_season, file_eps = season, episodes
             if media_type == "tv":
                 parsed = parse_episode(video.name) or parse_episode(release_title)
-                if parsed and years_conflict(parsed.year, series_year):
-                    result.failed.append(f"{video.name}: file is for a {parsed.year} series, not the {series_year} one")
-                    fail_reason = ImportFailureReason.NOT_MATCHED
-                    fail_evidence = {"file": video.name, "parsed_year": parsed.year, "series_year": series_year}
+                conflict = parsed and series and identity_conflict(parsed.series_title, parsed.year, series, unknown_country=False)
+                if conflict:
+                    result.failed.append(f"{video.name}: file is for a different show ({conflict})")
+                    fail_reason, fail_evidence = ImportFailureReason.NOT_MATCHED, {"file": video.name, "conflict": conflict}
                     continue
                 if parsed and parsed.episodes:
                     file_season, file_eps = parsed.season if parsed.season is not None else season, parsed.episodes
