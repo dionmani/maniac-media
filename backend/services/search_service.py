@@ -15,8 +15,9 @@ from backend.db.session import session_scope
 from backend.domain.availability import Availability, episode_availability, latest, movie_availability
 from backend.domain.custom_formats import FormatMatcher, ReleaseFacts
 from backend.domain.custom_formats import score as score_formats
-from backend.domain.parser import has_older_twin, normalize_title, parse_episode, parse_movie, release_group, resolve_series, title_key
+from backend.domain.parser import normalize_title, parse_episode, parse_movie, release_group, same_title_candidates
 from backend.domain.quality import QualityProfileSpec, get_quality, parse_quality
+from backend.domain.series_match import ReleaseEvidence, best_series
 from backend.domain.types import ReleaseInfo, SearchCriteria
 from backend.services import download_service, indexer_service
 from backend.services.audit import SYSTEM, Actor
@@ -190,7 +191,7 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
                         season=season, episodes=list(episodes or []), current_quality=worst,
                         current_format_score=current_fs, current_scene_name=scene_name, has_file=all_have,
                         aliases=[series.original_title or ""], country=series.country,
-                        title_has_older_twin=has_older_twin(series, SeriesRepository(db).same_title(series.title)),
+                        **_match_facts(db, series, SeriesRepository(db).same_title(series.title), season),
                         minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()), matcher=matcher)
         criteria = SearchCriteria("tv", series.title, series.year, imdb_id=series.imdb_id, tvdb_id=series.tvdb_id,
                                   tvmaze_id=series.tvmaze_id, season=season, episode=episodes[0] if episodes and len(episodes) == 1 else None)
@@ -429,6 +430,22 @@ async def rss_sync() -> dict:
     return {"releases": len(releases), "matched": len(matches), "grabbed": grabbed}
 
 
+def _match_facts(db, series: models.Series, same_title: list[models.Series], season: int | None) -> dict:
+    """Target kwargs for telling ``series`` apart from same-titled shows (domain/series_match.py)."""
+    facts = SeriesRepository(db).match_facts([series, *(s for s in same_title if s.id != series.id)], season)
+    return {"facts": facts[0], "twins": facts[1:]}
+
+
+def _pick_for_release(db, candidates: list[models.Series], ep, release: ReleaseInfo) -> models.Series | None:
+    """The one show the release is for; None when the evidence can't tell same-titled shows apart."""
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    evidence = ReleaseEvidence.from_release(ep, tvdb_id=release.tvdb_id, tvmaze_id=release.tvmaze_id, imdb_id=release.imdb_id,
+                                            posted=release.publish_date)
+    winner, _ = best_series(evidence, SeriesRepository(db).match_facts(candidates, ep.season))
+    return next((c for c in candidates if winner and c.id == winner.id), None)
+
+
 def _match_rss(releases: list[ReleaseInfo]) -> dict:
     """Match RSS releases to monitored library items that want a file (missing or upgradable).
 
@@ -449,7 +466,8 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
         for release in releases:
             ep = parse_episode(release.title)
             if ep and ep.season is not None:
-                s = resolve_series(series, ep.series_title, ep.year)
+                same_title = same_title_candidates(series, ep.series_title)
+                s = _pick_for_release(db, same_title, ep, release)
                 if not s or not s.monitored:
                     continue
                 profile = spec_for(db, s.quality_profile_id)
@@ -477,8 +495,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                                 episodes=[] if ep.full_season else ep.episodes,
                                 current_quality=min(have, key=lambda q: q.quality.weight) if all_have and have else None,
                                 current_format_score=current_fs, current_scene_name=scene_name,
-                                has_file=all_have, country=s.country,
-                                title_has_older_twin=has_older_twin(s, series.get(title_key(s.title), [])),
+                                has_file=all_have, country=s.country, **_match_facts(db, s, same_title, ep.season),
                                 minimum_seeders=seeders, air=air, matcher=matcher)
                 out[("tv", s.id, ep.season, tuple(ep.episodes), release.guid)] = (target, _blocklist(db, "tv", s.id), release)
                 continue

@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.domain.parser import country_code, has_older_twin, parse_episode, pick_series, split_title_tag, years_conflict
+from backend.domain.parser import country_code, parse_episode, pick_series, split_title_tag, years_conflict
 from backend.domain.quality import QualityProfileSpec
+from backend.domain.series_match import SeriesFacts
 from backend.domain.types import ReleaseInfo
 from backend.services.decision_engine import Target, evaluate
 
@@ -45,12 +46,6 @@ def test_pick_series_uses_the_release_year():
     assert pick_series([unknown], 2024) is unknown
 
 
-def test_has_older_twin():
-    assert has_older_twin(NEW, [OLD, NEW])
-    assert not has_older_twin(OLD, [OLD, NEW])
-    assert not has_older_twin(NEW, [NEW])
-
-
 @pytest.mark.parametrize(("year", "twin", "title", "approved"), [
     (2015, False, "Dark.Matter.2024.S02E09.1080p.ATVP.WEB-DL.DD+5.1.Atmos.H.264-playWEB", False),
     (2015, False, "Dark.Matter.S02E09.1080p.WEB-DL.DD5.1.H.264-GRP", True),
@@ -59,7 +54,8 @@ def test_has_older_twin():
     (2024, False, "Dark.Matter.S02E09.1080p.WEB-DL.DD5.1.H.264-GRP", True),  # no same-titled show in the library
 ])
 def test_episode_search_respects_the_series_year(year, twin, title, approved):
-    target = Target("tv", 1, "Dark Matter", year, PROFILE, season=2, episodes=[9], title_has_older_twin=twin)
+    twins = [SeriesFacts(2, "Dark Matter", 2015)] if twin else []
+    target = Target("tv", 1, "Dark Matter", year, PROFILE, season=2, episodes=[9], twins=twins)
     decision = evaluate(release(title), target)
     assert decision.approved is approved, decision.rejections
 
@@ -67,7 +63,7 @@ def test_episode_search_respects_the_series_year(year, twin, title, approved):
 def test_season_pack_from_the_other_show_is_rejected():
     target = Target("tv", 1, "Dark Matter", 2015, PROFILE, season=2)
     decision = evaluate(release("Dark.Matter.2024.S02.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DoVi.HDR.H.265-playWEB"), target)
-    assert "Series year mismatch (2024 vs 2015)" in decision.rejections
+    assert any("named year 2024, this show is 2015" in r for r in decision.rejections), decision.rejections
 
 
 @pytest.mark.parametrize(("title", "year", "release_title", "approved"), [
@@ -114,7 +110,8 @@ def test_country_code(value, code):
 
 
 def _ghosts(year, country, twin=False, title="Ghosts"):
-    return Target("tv", 1, title, year, PROFILE, season=5, episodes=[5], country=country, title_has_older_twin=twin)
+    twins = [SeriesFacts(2, "Ghosts", 2019, "GB")] if twin else []
+    return Target("tv", 1, title, year, PROFILE, season=5, episodes=[5], country=country, twins=twins)
 
 
 @pytest.mark.parametrize(("target", "title", "approved"), [

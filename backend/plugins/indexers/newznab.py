@@ -68,6 +68,7 @@ def parse_feed(xml_text: str, indexer: str, protocol: str, indexer_id: int | Non
                 categories=[_int(c) for c in attrs.get("category", []) if _int(c)],
                 imdb_id=(f"tt{imdb.zfill(7)}" if imdb and not imdb.startswith("tt") else imdb) or None,
                 tvdb_id=_int(_first(attrs, "tvdbid")),
+                tvmaze_id=_int(_first(attrs, "tvmazeid")),
                 info_hash=_first(attrs, "infohash"),
                 magnet_url=magnet,
             )

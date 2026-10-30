@@ -121,20 +121,6 @@ def release_names_series(release_title: str, series_title: str, aliases=()) -> t
     return False, split_title_tag(release_title, bare=True)[2]
 
 
-def identity_conflict(release_title: str, release_year: int | None, series, *, unknown_country: bool = True) -> str | None:
-    """Why a release's year or country tag rules out ``series`` (None: nothing in the name says otherwise).
-
-    ``unknown_country``: a country-tagged release is ruled out for a series whose country isn't known yet.
-    """
-    year, country = series_identity(series)
-    if years_conflict(release_year, year):
-        return f"Series year mismatch ({release_year} vs {year})"
-    _, release_country = release_names_series(release_title, series.title, getattr(series, "aliases", ()))
-    if release_country and release_country != country and (country or unknown_country):
-        return f"Series country mismatch ({release_country} vs {country or 'unknown'})"
-    return None
-
-
 def pick_series(candidates: list, release_year: int | None, release_country: str | None = None):
     """Choose among library series that share a title, using the year or country tag a release carries.
 
@@ -163,6 +149,16 @@ def series_index(series) -> dict[str, list]:
     return index
 
 
+def same_title_candidates(index: dict[str, list], series_title: str) -> list:
+    """Every library show a release's series title could mean, with all the shows sharing their title."""
+    found: dict[int, object] = {}
+    for key, _ in release_readings(series_title):
+        for s in index.get(key, []):
+            for twin in index.get(title_key(s.title), [s]):
+                found.setdefault(twin.id, twin)
+    return list(found.values())
+
+
 def resolve_series(index: dict[str, list], series_title: str, release_year: int | None):
     """The library series a release's parsed series title + year belong to, or None."""
     for key, country in release_readings(series_title):
@@ -170,12 +166,6 @@ def resolve_series(index: dict[str, list], series_title: str, release_year: int 
         if found is not None:
             return found
     return None
-
-
-def has_older_twin(series, same_title: list) -> bool:
-    """True when another series with the same title is older, so a release with no year or country isn't this one's."""
-    year = series_identity(series)[0]
-    return bool(year) and any(o is not series and (y := series_identity(o)[0]) and y < year for o in same_title)
 
 
 def is_video(path: str | PurePath) -> bool:

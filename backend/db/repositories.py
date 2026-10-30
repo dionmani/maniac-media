@@ -20,6 +20,7 @@ from backend.db import models
 from backend.db.base import Base, utcnow
 from backend.domain.availability import DEFAULT_CATALOG_DAYS, catalog_cutoff, date_only_cutoff
 from backend.domain.parser import normalise_path_key, series_index, title_key
+from backend.domain.series_match import SeriesFacts, parse_air_date
 
 T = TypeVar("T", bound=Base)
 
@@ -313,6 +314,18 @@ class SeriesRepository(Repository[models.Series]):
         """Every series sharing ``title`` once a year/country suffix is dropped ("Dark Matter" 2015 and 2024, "Ghosts (US)")."""
         key = title_key(title)
         return [s for s in self.db.scalars(select(models.Series)) if title_key(s.title) == key]
+
+    def match_facts(self, series: Sequence[models.Series], season: int | None = None) -> list[SeriesFacts]:
+        """What tells same-titled shows apart (domain.series_match), with episode air dates for ``season`` (or all)."""
+        stmt = select(models.Episode.series_id, models.Episode.season_number, models.Episode.episode_number, models.Episode.air_date)
+        stmt = stmt.where(models.Episode.series_id.in_([s.id for s in series]))
+        if season is not None:
+            stmt = stmt.where(models.Episode.season_number == season)
+        aired: dict[int, dict[tuple[int, int], date | None]] = {s.id: {} for s in series}
+        for row in self.db.execute(stmt):
+            aired[row.series_id][(row.season_number, row.episode_number)] = parse_air_date(row.air_date)
+        return [SeriesFacts(s.id, s.title, s.year or None, s.country, s.tvdb_id, s.tvmaze_id, s.imdb_id, s.network, aired[s.id])
+                for s in series]
 
     def index(self) -> dict[str, list[models.Series]]:
         """Every series by each title key a release can reach it under (domain.parser.series_index)."""
