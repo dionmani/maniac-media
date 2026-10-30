@@ -28,13 +28,10 @@ def profiles(client, admin_headers, library):
     yield ids
     # update() skips None values, so clear the defaults by saving a copy
     settings_manager.save(settings_manager.get().model_copy(update={"default_movie_profile_id": None, "default_tv_profile_id": None}))
-    for kind, media_type in (("movies", "movie"), ("series", "tv")):
+    for kind in ("movies", "series"):
         for item in client.get(f"{API}/{kind}", params={"page_size": 500}, headers=admin_headers).json()["items"]:
             if (item["title"] or "").startswith(TITLES):
                 client.delete(f"{API}/{kind}/{item['id']}", headers=admin_headers)
-                # deleting media leaves its issues behind, and SQLite hands the id to the next test's item
-                with session_scope() as db:
-                    db.query(models.LibraryIssue).filter_by(media_type=media_type, media_id=item["id"]).delete()
     for pid in ids.values():
         assert client.delete(f"{API}/quality-profiles/{pid}", headers=admin_headers).status_code == 200
     shutil.rmtree(library["movies"] / "Default Profile Scan (2020)", ignore_errors=True)

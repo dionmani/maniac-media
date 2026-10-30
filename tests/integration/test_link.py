@@ -182,8 +182,9 @@ def test_merge_duplicate_into_existing_keeps_the_picked_file(client, admin_heade
     scanner_service.scan_movies(incremental=False)
     target, source = _movie_at(good), _movie_at(dupe_dir)
     client.post(f"{API}/movies/{target}/link", json={"external_id": "tmdb:646", "dry_run": False, "rename": False}, headers=admin_headers)
-    with session_scope() as db:  # the source carries some history to be folded in
+    with session_scope() as db:  # the source carries some history to be folded in, and an issue that goes with it
         db.add(models.History(media_type="movie", media_id=source, title="dupe", event_type="grabbed"))
+        db.add(models.LibraryIssue(issue_type="duplicate_file", media_type="movie", media_id=source, status="dismissed", resolved=True))
 
     preview = client.post(f"{API}/movies/{source}/link", json={"external_id": "tmdb:646"}, headers=admin_headers).json()
     assert preview["existing"]["id"] == target
@@ -210,6 +211,7 @@ def test_merge_duplicate_into_existing_keeps_the_picked_file(client, admin_heade
     assert any(p.name == old.name for p in library["recycle"].rglob("*"))
     with session_scope() as db:
         assert db.query(models.History).filter(models.History.media_id == source, models.History.media_type == "movie").count() == 0
+        assert db.query(models.LibraryIssue).filter(models.LibraryIssue.media_id == source, models.LibraryIssue.media_type == "movie").count() == 0
 
     scanner_service.scan_movies(incremental=False)  # nothing left on disk to re-create the duplicate from
     with session_scope() as db:

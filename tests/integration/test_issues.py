@@ -337,6 +337,7 @@ def test_migration_backfills_status_and_fingerprint(tmp_path):
     engine = create_db_engine(f"sqlite:///{tmp_path / 'old.db'}")
     _alembic(engine, "0004_media_files")
     with engine.begin() as conn:
+        conn.execute(sa.text("INSERT INTO movies (id, title, year) VALUES (1, 'A', 2000), (2, 'B', 2000)"))  # 0015 drops orphans
         conn.execute(sa.text(
             "INSERT INTO library_issues (issue_type, media_type, media_id, path, details, detected_at, resolved) VALUES "
             "('missing_file','movie',1,'C:\\Movies\\A.mkv','gone','2026-01-01 00:00:00',0),"
@@ -389,6 +390,7 @@ def test_migration_moves_inspection_findings_off_corrupt_file(tmp_path):
             "('movie','/m/trunc.mkv','h1',1,1,'2026-01-01 00:00:00',NULL),"
             "('movie','/m/bad.mkv','h2',1,1,NULL,'ffprobe failed: Invalid data found when processing input'),"
             "('movie','/m/header.mkv','h3',1,1,'2026-01-01 00:00:00',NULL)"))
+        conn.execute(sa.text("INSERT INTO movies (id, title, year) VALUES (1, 'A', 2000), (3, 'C', 2000)"))  # 0015 drops orphans
         conn.execute(sa.text(
             "INSERT INTO library_issues (issue_type, media_type, media_id, path, details, status, resolved, severity, detected_at) VALUES "
             "('corrupt_file','movie',1,'/m/trunc.mkv','File appears truncated: duration is 10.0 min, expected 100 min','open',0,'error','2026-01-01'),"
