@@ -17,7 +17,7 @@ from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
 from backend.domain.availability import wants_air_times
-from backend.domain.parser import normalize_title
+from backend.domain.parser import normalize_title, years_conflict
 from backend.domain.types import MediaMetadata
 from backend.plugins import registry
 from backend.plugins.base import MetadataProvider, PluginKind
@@ -117,8 +117,8 @@ async def fetch_series(
             meta = await provider.get_series(tvdb_id=tvdb_id, tmdb_id=tmdb_id, tvmaze_id=tvmaze_id, imdb_id=imdb_id)
             if meta is None and title and not any((tvdb_id, tmdb_id, tvmaze_id, imdb_id)):
                 found = [f for f in await provider.search_series(title) if normalize_title(f.title) == normalize_title(title)]
-                if year:
-                    found.sort(key=lambda f: abs((f.year or year) - year))
+                if year:  # a same-titled show from another year is a different show (Dark Matter 2015 vs 2024)
+                    found = sorted((f for f in found if not years_conflict(f.year, year)), key=lambda f: abs((f.year or year) - year))
                 if found:
                     f = found[0]
                     meta = await provider.get_series(tvdb_id=f.tvdb_id, tmdb_id=f.tmdb_id, tvmaze_id=f.tvmaze_id, imdb_id=f.imdb_id) or f

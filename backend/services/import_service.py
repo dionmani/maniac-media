@@ -21,12 +21,22 @@ from backend.core.events import EventType, bus
 from backend.core.observability import IMPORT_FAILURES_TOTAL, IMPORTS_TOTAL
 from backend.core.settings import get_settings
 from backend.db import models
-from backend.db.repositories import MediaFileRepository, QueueRepository
+from backend.db.repositories import MediaFileRepository, QueueRepository, SeriesRepository
 from backend.db.session import session_scope
 from backend.domain.diagnosis import ImportFailureReason, classify_oserror
 from backend.domain.inspection import MEDIAINFO_EMPTY, mediainfo_tokens
 from backend.domain.naming import EPISODE_TOKENS, MOVIE_TOKENS, TemplateError, render
-from backend.domain.parser import is_partial, is_sample, is_video, normalize_title, parse_episode, parse_folder_title, parse_movie
+from backend.domain.parser import (
+    is_partial,
+    is_sample,
+    is_video,
+    normalize_title,
+    parse_episode,
+    parse_folder_title,
+    parse_movie,
+    pick_series,
+    years_conflict,
+)
 from backend.domain.quality import ParsedQuality, parse_quality
 from backend.services import fileops, import_diagnosis, inspection_service, media_file_service
 from backend.services.audit import SYSTEM, Actor, audit, history
@@ -130,8 +140,7 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
     name = candidate.path.name
     ep = parse_episode(name) or (parse_episode(hint_name) if hint_name else None)
     if ep and ep.season is not None and ep.episodes:
-        key = normalize_title(ep.series_title)
-        series = next((s for s in db.scalars(select(models.Series)) if normalize_title(s.title) == key), None)
+        series = pick_series(SeriesRepository(db).same_title(ep.series_title), ep.year)
         if series:
             candidate.media_type, candidate.media_id, candidate.title = "tv", series.id, series.title
             candidate.season, candidate.episodes = ep.season, ep.episodes
@@ -144,7 +153,7 @@ def match(db: Session, candidate: Candidate, hint_name: str | None = None) -> Ca
     key = normalize_title(pm.title)
     options = [m for m in db.scalars(select(models.Movie).where(models.Movie.title.ilike(f"%{pm.title[:3]}%"))) if normalize_title(m.title) == key]
     if pm.year:
-        options = [m for m in options if not m.year or abs(m.year - pm.year) <= 1] or options
+        options = [m for m in options if not years_conflict(pm.year, m.year)]  # Dune.2021 is not Dune (1984)
     if options:
         movie = options[0]
         candidate.media_type, candidate.media_id, candidate.title = "movie", movie.id, f"{movie.title} ({movie.year})"
@@ -621,6 +630,17 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             raise ImportError_("No video files found in download", reason=ImportFailureReason.NO_VIDEO_FILES,
                                evidence={"download_path": download_path})
         mode = _mode_for(protocol)
+        series_year = None
+        if media_type == "tv":
+            with session_scope() as db:
+                series = db.get(models.Series, media_id)
+                series_year = series.year if series is not None else None
+            # last line of defence against a same-titled show: Dark.Matter.2024.* never lands in Dark Matter (2015)
+            release_ep = parse_episode(release_title)
+            if release_ep and years_conflict(release_ep.year, series_year):
+                raise ImportError_(f"Release is for a {release_ep.year} series, not the {series_year} one it was grabbed for",
+                                   reason=ImportFailureReason.NOT_MATCHED,
+                                   evidence={"release_title": release_title, "parsed_year": release_ep.year, "series_year": series_year})
         for video in videos:
             candidate = inspect(video, settings.min_import_size_mb)
             if candidate.state != "ok":
@@ -636,6 +656,11 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             file_season, file_eps = season, episodes
             if media_type == "tv":
                 parsed = parse_episode(video.name) or parse_episode(release_title)
+                if parsed and years_conflict(parsed.year, series_year):
+                    result.failed.append(f"{video.name}: file is for a {parsed.year} series, not the {series_year} one")
+                    fail_reason = ImportFailureReason.NOT_MATCHED
+                    fail_evidence = {"file": video.name, "parsed_year": parsed.year, "series_year": series_year}
+                    continue
                 if parsed and parsed.episodes:
                     file_season, file_eps = parsed.season if parsed.season is not None else season, parsed.episodes
                 elif len(videos) > 1 or not episodes:
