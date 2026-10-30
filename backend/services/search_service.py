@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 
@@ -56,6 +56,19 @@ def _min_seeders(db) -> dict[int, int]:
 
 def _blocklist(db, media_type: str, media_id: int) -> set[str]:
     rows = db.scalars(select(models.Blocklist.release_title).where(models.Blocklist.media_type == media_type, models.Blocklist.media_id == media_id))
+    return {r.lower() for r in rows}
+
+
+RECENT_GRAB_DAYS = 7
+
+
+def _recent_grabs(db, media_type: str, media_id: int) -> set[str]:
+    """Releases grabbed for this item in the last week. Searches skip them: a release that came back without a
+    file (removed from the client, import failed and cleared) would only fail the same way, and indexers ban
+    accounts that fetch one NZB repeatedly. A manual grab still can."""
+    h = models.History
+    rows = db.scalars(select(h.title).where(h.media_type == media_type, h.media_id == media_id, h.event_type == "grabbed",
+                                            h.timestamp >= utcnow() - timedelta(days=RECENT_GRAB_DAYS)))
     return {r.lower() for r in rows}
 
 
@@ -158,7 +171,8 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
             target = Target("movie", movie.id, movie.title, movie.year, profile,
                             current_quality=current, current_format_score=current_fs, current_scene_name=scene_name,
                             has_file=movie.has_file, aliases=[movie.original_title or ""],
-                            minimum_seeders=_min_seeders(db), availability=movie_gate(movie), matcher=matcher)
+                            minimum_seeders=_min_seeders(db), availability=movie_gate(movie), matcher=matcher,
+                            recent_grabs=_recent_grabs(db, "movie", movie.id))
             criteria = SearchCriteria("movie", movie.title, movie.year, imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id)
             return target, criteria, _blocklist(db, "movie", movie.id)
 
@@ -192,7 +206,8 @@ def build_target(media_type: str, media_id: int, season: int | None = None, epis
                         current_format_score=current_fs, current_scene_name=scene_name, has_file=all_have,
                         aliases=[series.original_title or ""], country=series.country,
                         **_match_facts(db, series, SeriesRepository(db).same_title(series.title), season),
-                        minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()), matcher=matcher)
+                        minimum_seeders=_min_seeders(db), air=_air_map(eps, utcnow()), matcher=matcher,
+                        recent_grabs=_recent_grabs(db, "tv", series.id))
         criteria = SearchCriteria("tv", series.title, series.year, imdb_id=series.imdb_id, tvdb_id=series.tvdb_id,
                                   tvmaze_id=series.tvmaze_id, season=season, episode=episodes[0] if episodes and len(episodes) == 1 else None)
         return target, criteria, _blocklist(db, "tv", series.id)
@@ -496,7 +511,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                                 current_quality=min(have, key=lambda q: q.quality.weight) if all_have and have else None,
                                 current_format_score=current_fs, current_scene_name=scene_name,
                                 has_file=all_have, country=s.country, **_match_facts(db, s, same_title, ep.season),
-                                minimum_seeders=seeders, air=air, matcher=matcher)
+                                minimum_seeders=seeders, air=air, matcher=matcher, recent_grabs=_recent_grabs(db, "tv", s.id))
                 out[("tv", s.id, ep.season, tuple(ep.episodes), release.guid)] = (target, _blocklist(db, "tv", s.id), release)
                 continue
             pm = parse_movie(release.title)
@@ -512,6 +527,7 @@ def _match_rss(releases: list[ReleaseInfo]) -> dict:
                 )
                 target = Target("movie", m.id, m.title, m.year, profile, current_quality=current,
                                 current_format_score=current_fs, current_scene_name=scene_name,
-                                has_file=m.has_file, minimum_seeders=seeders, availability=movie_gate(m), matcher=matcher)
+                                has_file=m.has_file, minimum_seeders=seeders, availability=movie_gate(m), matcher=matcher,
+                                recent_grabs=_recent_grabs(db, "movie", m.id))
                 out[("movie", m.id, None, (), release.guid)] = (target, _blocklist(db, "movie", m.id), release)
     return out
