@@ -40,6 +40,7 @@ class Target:
     availability: Availability | None = None
     air: dict[tuple[int, int], Availability] = field(default_factory=dict)
     matcher: FormatMatcher | None = None
+    recent_grabs: set[str] = field(default_factory=set)  # lowercased release titles grabbed for this item lately
 
 
 @dataclass
@@ -151,6 +152,9 @@ def evaluate(
 
     if blocklist and release.title.lower() in blocklist:
         rejections.append("Release is blocklisted")
+    elif release.title.lower() in target.recent_grabs:
+        # it came back without a file to show for it; fetching the identical NZB again gets indexer accounts banned
+        rejections.append("Already grabbed recently")
 
     gate = release_gate(target, season, episodes, full_season)
     if gate is not None and not gate.available:

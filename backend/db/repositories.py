@@ -474,15 +474,16 @@ class QueueRepository(Repository[models.DownloadQueueItem]):
         return list(self.db.scalars(select(q.download_path).where(q.status.in_(self.ACTIVE), q.download_path.is_not(None))))
 
     def is_queued(self, media_type: str, media_id: int, season: int | None = None, episode: int | None = None) -> bool:
-        stmt = select(models.DownloadQueueItem.id).where(
-            models.DownloadQueueItem.media_type == media_type,
-            models.DownloadQueueItem.media_id == media_id,
-            models.DownloadQueueItem.status.in_(self.ACTIVE),
-        )
+        """Whether a download already holds this slot. A failed import still does: searching again would grab the
+        same release and fail the same way, and indexers ban accounts that fetch one NZB over and over. It holds
+        until someone retries or removes it – except a row orphaned by deleting its item, whose id SQLite reuses."""
+        q = models.DownloadQueueItem
+        stuck = and_(q.status == "import_failed", or_(q.failure_reason.is_(None), q.failure_reason != "media_deleted"))
+        stmt = select(q.id).where(q.media_type == media_type, q.media_id == media_id, or_(q.status.in_(self.ACTIVE), stuck))
         if season is not None:
-            stmt = stmt.where(models.DownloadQueueItem.season_num == season)
+            stmt = stmt.where(q.season_num == season)
         if episode is not None:
-            stmt = stmt.where(or_(models.DownloadQueueItem.ep_num == episode, models.DownloadQueueItem.ep_num.is_(None)))
+            stmt = stmt.where(or_(q.ep_num == episode, q.ep_num.is_(None)))
         return self.db.scalar(stmt.limit(1)) is not None
 
 
