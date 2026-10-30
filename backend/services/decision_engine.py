@@ -11,7 +11,7 @@ from typing import Any
 from backend.domain.availability import Availability, latest
 from backend.domain.custom_formats import FormatMatcher, ReleaseFacts
 from backend.domain.custom_formats import score as score_formats
-from backend.domain.parser import normalize_title, parse_episode, parse_movie, release_group, years_conflict
+from backend.domain.parser import identity_conflict, normalize_title, parse_episode, parse_movie, release_group, release_names_series
 from backend.domain.quality import ParsedQuality, QualityProfileSpec, parse_quality
 from backend.domain.types import ReleaseInfo
 
@@ -30,7 +30,8 @@ class Target:
     current_scene_name: str | None = None
     has_file: bool = False
     aliases: list[str] = field(default_factory=list)
-    # tv: an older library series shares this title, so a release with no year belongs to that one
+    country: str | None = None  # tv: ISO 3166-1 alpha-2, tells "Ghosts.US" from "Ghosts.UK"
+    # tv: an older library series shares this title, so a release with no year or country belongs to that one
     title_has_older_twin: bool = False
     minimum_seeders: dict[int, int] = field(default_factory=dict)  # indexer id -> min seeders
     # release gate (domain/availability.py): the movie's, and every in-scope episode's by (season, episode)
@@ -106,12 +107,13 @@ def evaluate(
             rejections.append("Could not parse season/episode")
         else:
             season, episodes, full_season = ep.season, ep.episodes, ep.full_season
-            if normalize_title(ep.series_title) not in wanted_titles:
+            named, release_country = release_names_series(ep.series_title, target.title, target.aliases)
+            if not named:
                 rejections.append(f"Series mismatch ('{ep.series_title}')")
-            elif years_conflict(ep.year, target.year):
-                rejections.append(f"Series year mismatch ({ep.year} vs {target.year})")
-            elif not ep.year and target.title_has_older_twin:
-                rejections.append("Release has no year; an older series has the same title")
+            elif conflict := identity_conflict(ep.series_title, ep.year, target):
+                rejections.append(conflict)
+            elif not ep.year and not release_country and target.title_has_older_twin:
+                rejections.append("Release has no year or country; an older series has the same title")
             if target.season is not None and ep.season != target.season:
                 rejections.append(f"Wrong season (S{ep.season})")
             if target.episodes:

@@ -184,6 +184,7 @@ class TmdbProvider(MetadataProvider):
             tmdb_id=s.get("id"),
             status="ended" if s.get("status") in {"Ended", "Canceled"} else "continuing",
             studio=(s.get("networks") or [{}])[0].get("name") if s.get("networks") else None,
+            country=(s.get("origin_country") or [None])[0],
             season_count=s.get("number_of_seasons"),
             runtime_minutes=(s.get("episode_run_time") or [None])[0],
         )
