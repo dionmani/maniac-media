@@ -41,6 +41,7 @@ def client_settings(row: models.DownloadClient) -> dict:
         "password": row.password,
         "api_key": row.api_key,
         "category": row.category or "maniac-media",
+        "tv_category": row.tv_category or "",
         "remote_path": row.remote_path,
         "local_path": row.local_path,
         "download_folder": get_settings().download_folder,
@@ -52,13 +53,28 @@ def build(row: models.DownloadClient) -> DownloadClientPlugin:
     return cls(client_settings(row))  # type: ignore[return-value]
 
 
+def category_for(row: models.DownloadClient | None, media_type: str) -> str:
+    """The client category a grab goes into: TV has its own when one is set, otherwise everything shares one."""
+    if row is None:
+        return "maniac-media"
+    return (media_type == "tv" and row.tv_category) or row.category or "maniac-media"
+
+
 @dataclass
 class ClientRef:
     id: int
     name: str
-    category: str
+    category: str  # movies, and TV too unless tv_category is set
     plugin: DownloadClientPlugin
     remove_completed: bool
+    tv_category: str = ""
+
+    def category_for(self, media_type: str) -> str:
+        return (media_type == "tv" and self.tv_category) or self.category
+
+    @property
+    def categories(self) -> list[str]:
+        return list(dict.fromkeys(c for c in (self.category, self.tv_category) if c))
 
 
 def _clients(protocol: str | None = None) -> list[ClientRef]:
@@ -73,7 +89,7 @@ def _clients(protocol: str | None = None) -> list[ClientRef]:
                 continue
             if protocol and plugin.protocol != protocol:
                 continue
-            refs.append(ClientRef(row.id, row.name, row.category or "maniac-media", plugin, bool(row.remove_completed)))
+            refs.append(ClientRef(row.id, row.name, row.category or "maniac-media", plugin, bool(row.remove_completed), row.tv_category or ""))
     return refs
 
 
@@ -98,7 +114,7 @@ async def grab(
     last_error = None
     for client in clients:
         try:
-            client_id = await client.plugin.add(release, client.category)
+            client_id = await client.plugin.add(release, client.category_for(media_type))
             await asyncio.to_thread(_set_client_health, client.id, True, "Accepted release")
             break
         except Exception as exc:
@@ -209,7 +225,7 @@ async def sync_clients() -> dict:
     completed_ids: list[int] = []
     for client in clients:
         try:
-            items = {i.id.lower(): i for i in await client.plugin.get_items(client.category)}
+            items = {i.id.lower(): i for category in client.categories for i in await client.plugin.get_items(category)}
             await asyncio.to_thread(_set_client_health, client.id, True, f"{len(items)} item(s)")
         except Exception as exc:
             log.warning("Download client %s unreachable: %s", client.name, exc)
@@ -374,10 +390,10 @@ async def retry(queue_id: int, actor: Actor) -> None:
                               indexer=q.indexer_name or "", indexer_id=q.indexer_id, protocol=q.protocol or "torrent", size_bytes=q.size_bytes or 0)
         client_row = db.get(models.DownloadClient, q.download_client_id) if q.download_client_id else None
         plugin = build(client_row) if client_row else None
-        category = client_row.category if client_row else "maniac-media"
+        category = category_for(client_row, q.media_type)
     if plugin is None:
         raise DownloadError("Original download client no longer exists")
-    new_id = await plugin.add(release, category or "maniac-media")
+    new_id = await plugin.add(release, category)
     with session_scope() as db:
         q = db.get(models.DownloadQueueItem, queue_id)
         q.client_item_id = new_id

@@ -75,7 +75,7 @@ All v1 tables are preserved (additive migration only):
 | `movies` | Movie library | ids (tmdb unique, imdb idx), file info, `quality`, cast/crew JSON, release dates, `production_status` (TMDB stage, for the library badge), `metadata_source`, `last_metadata_refresh`, `last_search_at` |
 | `series`, `seasons`, `episodes` | TV library | tvdb/tvmaze/imdb ids, `monitor_new_seasons`; episodes indexed by `(series_id, season_number, episode_number)`, `air_date` plus `air_date_utc` (exact air time when a provider knows it, for the release gate) |
 | `quality_profiles` | Ranking | `items` (allowed qualities, best first), `cutoff`, codec preferences/rejections, size limits |
-| `indexers`, `download_clients` | Integrations | **encrypted** `api_key`/`password`; health, failure counters, circuit-breaker `disabled_until`, remote path mapping |
+| `indexers`, `download_clients` | Integrations | **encrypted** `api_key`/`password`; health, failure counters, circuit-breaker `disabled_until`, remote path mapping; download clients carry a movie `category` and an optional `tv_category` (empty: TV shares `category`) |
 | `download_queue` | Grab → import lifecycle | client item id, **encrypted** download URL (contains indexer keys), status machine, retry count, client queue position (Activity mirrors the client's order) |
 | `history` | Per-media timeline | event type, quality, JSON data |
 | `blocklist` | Never-again releases | |

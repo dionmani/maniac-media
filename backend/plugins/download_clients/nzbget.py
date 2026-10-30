@@ -23,6 +23,7 @@ class NzbgetClient(DownloadClientPlugin):
         FieldSpec("username", "Username", default="nzbget"),
         FieldSpec("password", "Password", "password", secret=True),
         FieldSpec("category", "Category", default="maniac-media"),
+        FieldSpec("tv_category", "TV category"),
     ]
 
     async def _rpc(self, method: str, *params):

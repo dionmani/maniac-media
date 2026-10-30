@@ -151,7 +151,7 @@ export function IndexerSettings() {
 // ------------------------------------------------------------------ download clients
 interface Client {
   id?: number; name: string; client_type: string; host: string; port: number | null; use_ssl: boolean; url_base: string; username: string;
-  password?: string; api_key?: string; has_password?: boolean; has_api_key?: boolean; category: string; enabled: boolean; priority: number;
+  password?: string; api_key?: string; has_password?: boolean; has_api_key?: boolean; category: string; tv_category?: string | null; enabled: boolean; priority: number;
   remove_completed: boolean; remote_path: string; local_path: string; protocol?: string; health_status?: string; health_message?: string;
 }
 
@@ -181,7 +181,7 @@ export function ClientSettings() {
   const has = (type: string, field: string) => !!spec(type)?.fields.some((f) => f.name === field);
   const blank = (p: PluginInfo): Client => ({ name: p.name, client_type: p.key, host: 'localhost', port: p.default_port ?? null, use_ssl: false,
     url_base: String(p.fields.find((f) => f.name === 'url_base')?.default ?? ''), username: String(p.fields.find((f) => f.name === 'username')?.default ?? ''),
-    category: 'maniac-media', enabled: true, priority: 1, remove_completed: false, remote_path: '', local_path: '' });
+    category: 'movies', tv_category: 'tv', enabled: true, priority: 1, remove_completed: false, remote_path: '', local_path: '' });
 
   return (
     <>
@@ -198,7 +198,7 @@ export function ClientSettings() {
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Box>
                     <Typography fontWeight={700}>{c.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">{spec(c.client_type)?.name} · {c.protocol} · {c.host}{c.port ? `:${c.port}` : ''} · {c.category}</Typography>
+                    <Typography variant="caption" color="text.secondary">{spec(c.client_type)?.name} · {c.protocol} · {c.host}{c.port ? `:${c.port}` : ''} · {c.tv_category && c.tv_category !== c.category ? `${c.category} / ${c.tv_category}` : c.category}</Typography>
                   </Box>
                   <Stack direction="row" alignItems="center">
                     <StatusChip status={c.enabled ? c.health_status ?? 'unknown' : 'cancelled'} label={c.enabled ? c.health_status ?? 'unknown' : 'disabled'} />
@@ -243,7 +243,9 @@ export function ClientSettings() {
                   onChange={(e) => setEdit({ ...edit, api_key: e.target.value })} />
               )}
               <Stack direction="row" spacing={2}>
-                <TextField fullWidth label="Category / label" value={edit.category} onChange={(e) => setEdit({ ...edit, category: e.target.value })} />
+                <TextField fullWidth label="Movie category / label" value={edit.category} onChange={(e) => setEdit({ ...edit, category: e.target.value })} />
+                <TextField fullWidth label="TV category / label" value={edit.tv_category ?? ''} placeholder={edit.category}
+                  onChange={(e) => setEdit({ ...edit, tv_category: e.target.value })} helperText="Empty: TV uses the movie category" />
                 <TextField label="Priority" type="number" value={edit.priority} onChange={(e) => setEdit({ ...edit, priority: Number(e.target.value) })} sx={{ width: 120 }} />
               </Stack>
               {edit.client_type !== 'simulator' && (

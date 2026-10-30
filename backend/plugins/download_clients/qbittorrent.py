@@ -28,6 +28,7 @@ COMMON_FIELDS = [
     FieldSpec("username", "Username"),
     FieldSpec("password", "Password", "password", secret=True),
     FieldSpec("category", "Category", default="maniac-media"),
+    FieldSpec("tv_category", "TV category"),
 ]
 
 
