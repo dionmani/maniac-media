@@ -29,6 +29,7 @@ class TransmissionClient(DownloadClientPlugin):
         FieldSpec("username", "Username"),
         FieldSpec("password", "Password", "password", secret=True),
         FieldSpec("category", "Label", default="maniac-media"),
+        FieldSpec("tv_category", "TV label"),
     ]
 
     async def _rpc(self, method: str, arguments: dict | None = None) -> dict:

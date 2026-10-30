@@ -176,6 +176,21 @@ def test_sabnzbd_reports_only_the_active_job_as_downloading(monkeypatch):
     assert all("category" not in params and params["nzo_ids"] == "SABnzbd_nzo_B,SABnzbd_nzo_gone" for _, params in calls)
 
 
+def test_sabnzbd_test_flags_each_missing_category(monkeypatch):
+    import asyncio
+
+    from backend.plugins.download_clients.sabnzbd import SabnzbdClient
+
+    async def fake_api(self, mode, **params):
+        return {"version": {"version": "4.3.0"}, "get_cats": {"categories": ["*", "movies"]}}.get(mode, {})
+
+    monkeypatch.setattr(SabnzbdClient, "_api", fake_api)
+    ok, message = asyncio.run(SabnzbdClient({"host": "sab", "api_key": "k", "category": "movies", "tv_category": "tv"}).test())
+    assert ok and "category 'tv' does not exist" in message
+    ok, message = asyncio.run(SabnzbdClient({"host": "sab", "api_key": "k", "category": "Movies", "tv_category": "movies"}).test())
+    assert ok and message == "Connected to SABnzbd 4.3.0."
+
+
 def test_recycle_stays_on_the_files_volume(tmp_path, make_video, monkeypatch):
     """A bin on another volume would turn recycling into a full copy of the file (minutes for a remux)."""
     volume = tmp_path / "data"

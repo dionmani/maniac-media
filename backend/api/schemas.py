@@ -810,6 +810,7 @@ class ClientIn(BaseModel):
     password: SecretStr | None = None
     api_key: SecretStr | None = None
     category: str = "maniac-media"
+    tv_category: str | None = None
     enabled: bool = True
     priority: int = Field(1, ge=1, le=50)
     remove_completed: bool = False
@@ -831,6 +832,7 @@ class ClientOut(BaseModel):
     has_password: bool = False
     has_api_key: bool = False
     category: str | None = None
+    tv_category: str | None = None
     enabled: bool
     priority: int | None = None
     remove_completed: bool | None = None

@@ -32,6 +32,7 @@ class DelugeClient(DownloadClientPlugin):
         FieldSpec("url_base", "URL base"),
         FieldSpec("password", "Web UI password", "password", secret=True, default="deluge"),
         FieldSpec("category", "Label", default="maniac-media"),
+        FieldSpec("tv_category", "TV label"),
     ]
     _ids = itertools.count(1)
 

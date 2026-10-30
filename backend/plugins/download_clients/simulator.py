@@ -41,6 +41,7 @@ class SimulatorClient(DownloadClientPlugin):
     fields = [
         FieldSpec("speed_mb", "Simulated speed (MB/s)", "number", default=400),
         FieldSpec("category", "Category", default="maniac-media"),
+        FieldSpec("tv_category", "TV category"),
     ]
 
     def _folder(self) -> Path:

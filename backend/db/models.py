@@ -326,7 +326,7 @@ class DownloadClient(Base):
     username: Mapped[str | None] = mapped_column(String(256))
     password: Mapped[str | None] = mapped_column(EncryptedString("download_clients.password"))
     use_ssl: Mapped[bool] = mapped_column(Boolean, default=False)
-    category: Mapped[str | None] = mapped_column(String(128), default="maniac-media")
+    category: Mapped[str | None] = mapped_column(String(128), default="maniac-media")  # movies' category
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # v2
     url_base: Mapped[str | None] = mapped_column(String(256))
@@ -338,6 +338,7 @@ class DownloadClient(Base):
     health_status: Mapped[str | None] = mapped_column(String(16), default="unknown")
     health_message: Mapped[str | None] = mapped_column(Text)
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime)
+    tv_category: Mapped[str | None] = mapped_column(String(128))  # empty: TV shares ``category``
 
 
 class DownloadQueueItem(Base):

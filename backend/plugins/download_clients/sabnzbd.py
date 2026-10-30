@@ -35,6 +35,7 @@ class SabnzbdClient(DownloadClientPlugin):
         FieldSpec("url_base", "URL base"),
         FieldSpec("api_key", "API key", "password", required=True, secret=True),
         FieldSpec("category", "Category", default="maniac-media"),
+        FieldSpec("tv_category", "TV category"),
     ]
 
     async def _api(self, mode: str, **params) -> dict:
@@ -124,10 +125,13 @@ class SabnzbdClient(DownloadClientPlugin):
         try:
             version = (await self._api("version")).get("version")
             await self._api("queue", limit=1)  # verifies the API key
-            category = self.setting("category", "")
-            cats = (await self._api("get_cats")).get("categories") or []
-            if category and category.lower() not in {c.lower() for c in cats}:
-                return True, (f"Connected to SABnzbd {version}, but category '{category}' does not exist there; "
+            cats = {c.lower() for c in (await self._api("get_cats")).get("categories") or []}
+            wanted = dict.fromkeys(c for c in (self.setting("category", ""), self.setting("tv_category", "")) if c)
+            missing = [c for c in wanted if c.lower() not in cats]
+            if missing:
+                names = " and ".join(f"'{c}'" for c in missing)
+                what = f"category {names} does not" if len(missing) == 1 else f"categories {names} do not"
+                return True, (f"Connected to SABnzbd {version}, but {what} exist there; "
                               "create it in SABnzbd so downloads are sorted correctly.")
             return True, f"Connected to SABnzbd {version}."
         except Exception as exc:
