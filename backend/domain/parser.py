@@ -49,6 +49,31 @@ def normalize_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", t)
 
 
+def years_conflict(release_year: int | None, media_year: int | None, tolerance: int = 1) -> bool:
+    """True when a release names a year that rules out this movie/series (either year missing or 0: no conflict)."""
+    return bool(release_year and media_year and abs(release_year - media_year) > tolerance)
+
+
+def pick_series(candidates: list, release_year: int | None):
+    """Choose among library series that share a normalized title, using the year a release carries.
+
+    "Dark.Matter.2024.S02E09" must go to Dark Matter (2024), never Dark Matter (2015). A release without a year
+    belongs to the oldest one: by scene convention it is the later show that gets the year tag.
+    """
+    if not candidates:
+        return None
+    if release_year:
+        fits = [c for c in candidates if not years_conflict(release_year, c.year)]
+        # closest year wins; a series with no known year only when nothing dated fits
+        return min(fits, key=lambda c: abs(c.year - release_year) if c.year else 99, default=None)
+    return min(candidates, key=lambda c: c.year or 0)
+
+
+def has_older_twin(series, same_title: list) -> bool:
+    """True when another series with the same normalized title is older, so a yearless release isn't this one's."""
+    return bool(series.year) and any(o is not series and o.year and o.year < series.year for o in same_title)
+
+
 def is_video(path: str | PurePath) -> bool:
     return PurePath(path).suffix.lower() in VIDEO_EXTENSIONS
 
