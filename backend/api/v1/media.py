@@ -16,7 +16,7 @@ from backend.db.repositories import MediaFileRepository, MovieRepository, Series
 from backend.db.session import session_scope
 from backend.domain.parser import parse_external_id
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service, renamer_service, tag_service
+from backend.services import media_service, metadata_service, quality_service, renamer_service, tag_service
 from backend.workers.queue import job_queue
 
 router = APIRouter()
@@ -92,7 +92,8 @@ async def add_movie(req: schemas.AddMediaRequest, user: Requires(Permission.MEDI
     def persist():
         with session_scope() as db:
             try:
-                movie = media_service.add_movie(db, meta, quality_profile_id=req.quality_profile_id, root_folder=req.root_folder,
+                profile_id = req.quality_profile_id or quality_service.default_profile_id(db, "movie")
+                movie = media_service.add_movie(db, meta, quality_profile_id=profile_id, root_folder=req.root_folder,
                                                 monitored=req.monitored, actor=user.actor)
             except media_service.ConflictError as exc:
                 raise HTTPException(409, str(exc))
@@ -207,7 +208,8 @@ async def add_series(req: schemas.AddMediaRequest, user: Requires(Permission.MED
     def persist():
         with session_scope() as db:
             try:
-                series = media_service.add_series(db, meta, quality_profile_id=req.quality_profile_id, root_folder=req.root_folder,
+                profile_id = req.quality_profile_id or quality_service.default_profile_id(db, "tv")
+                series = media_service.add_series(db, meta, quality_profile_id=profile_id, root_folder=req.root_folder,
                                                   monitored=req.monitored, monitor=req.monitor, actor=user.actor)
             except media_service.ConflictError as exc:
                 raise HTTPException(409, str(exc))

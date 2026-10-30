@@ -301,7 +301,7 @@ class AddMediaRequest(BaseModel):
     imdb_id: str | None = Field(None, pattern=r"^tt\d{5,10}$")
     tvdb_id: int | None = None
     tvmaze_id: int | None = None
-    quality_profile_id: int = 1
+    quality_profile_id: int | None = None  # None = the default profile for this media type
     root_folder: str | None = None
     monitored: bool = True
     monitor: Literal["all", "future", "missing", "none", "latest", "first"] = "all"
@@ -740,6 +740,13 @@ class QualityProfileOut(QualityProfileIn):
         if not v or not isinstance(v, dict):
             return {}
         return {str(k): int(val) for k, val in v.items()}
+
+
+class QualityProfileDefaults(BaseModel):
+    """Profile given to newly added movies / series; omitted = unchanged."""
+
+    movie: int | None = None
+    tv: int | None = None
 
 
 class IndexerIn(BaseModel):

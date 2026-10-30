@@ -18,7 +18,7 @@ import { Film, Plus, PlusCircle, Search, Tv } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
-import type { LookupResult, QualityProfile } from '../api/types';
+import type { LookupResult, QualityProfile, QualityProfileDefaults } from '../api/types';
 import { Empty, ErrorAlert, Loading, PageHeader, Poster } from '../components/common';
 import { toast, useUi } from '../store/ui';
 import { palette } from '../theme';
@@ -30,11 +30,14 @@ export default function AddMediaPage() {
   const qc = useQueryClient();
   const [term, setTerm] = useState('');
   const [submitted, setSubmitted] = useState('');
-  const [profileId, setProfileId] = useState(1);
+  const [picked, setPicked] = useState<Partial<Record<'movie' | 'tv', number>>>({});
   const [monitor, setMonitor] = useState('all');
   const [searchOnAdd, setSearchOnAdd] = useState(false);
 
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
+  const defaults = useQuery({ queryKey: ['quality-profile-defaults'], queryFn: () => get<QualityProfileDefaults>('/quality-profiles/defaults') });
+  // each mode keeps its own pick and starts on that mode's default profile
+  const profileId = picked[mode] ?? defaults.data?.[mode] ?? '';
   const results = useQuery({
     queryKey: ['lookup', mode, submitted],
     enabled: submitted.length > 0,
@@ -44,7 +47,7 @@ export default function AddMediaPage() {
     mutationFn: (r: LookupResult) =>
       post<{ id: number; title: string }>(mode === 'movie' ? '/movies' : '/series', {
         title: r.title, year: r.year, tmdb_id: r.tmdb_id, imdb_id: r.imdb_id, tvdb_id: r.tvdb_id, tvmaze_id: r.tvmaze_id,
-        quality_profile_id: profileId, monitor, search_on_add: searchOnAdd,
+        quality_profile_id: profileId || null, monitor, search_on_add: searchOnAdd,
       }),
     onSuccess: (res) => {
       toast(`Added ${res.title}`, 'success');
@@ -74,7 +77,7 @@ export default function AddMediaPage() {
           <Button type="submit" variant="contained" disabled={!term.trim()}>Search</Button>
         </Stack>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mt: 2 }} alignItems={{ md: 'center' }}>
-          <TextField select size="small" label="Quality profile" value={profileId} onChange={(e) => setProfileId(Number(e.target.value))} sx={{ minWidth: 200 }}>
+          <TextField select size="small" label="Quality profile" value={profileId} onChange={(e) => setPicked({ ...picked, [mode]: Number(e.target.value) })} sx={{ minWidth: 200 }}>
             {profiles.data?.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
           </TextField>
           {mode === 'tv' && (

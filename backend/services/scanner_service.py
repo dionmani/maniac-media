@@ -32,7 +32,7 @@ from backend.domain.parser import is_sample, is_video, normalize_title, parse_ep
 from backend.domain.quality import parse_quality
 from backend.services import fileops, media_file_service
 from backend.services.issue_service import IssueRecorder, enqueue_searches, plan_missing_file_searches
-from backend.services.quality_service import spec_for, to_spec
+from backend.services.quality_service import default_profile_id, spec_for, to_spec
 
 log = logging.getLogger("maniac.scanner")
 Progress = Callable[[float, str], None]
@@ -202,7 +202,7 @@ def _scan_movie_folder(db, entry, root, known, by_imdb, by_title, profiles, stat
         if extras:
             stats["duplicates"] += 1
     if movie is None:
-        movie = models.Movie(title=title, year=year or 0, status="released", monitored=True, quality_profile_id=1, root_folder=root,
+        movie = models.Movie(title=title, year=year or 0, status="released", monitored=True, quality_profile_id=default_profile_id(db, "movie"), root_folder=root,
                              path=entry.path, has_file=False, file_size_bytes=0, minimum_availability="released", imdb_id=imdb)
         db.add(movie)
         db.flush()
@@ -355,7 +355,7 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, re
     title, year, imdb = parse_folder_title(entry.name)
     series = known or by_title.get(normalize_title(title))
     if series is None:
-        series = models.Series(title=title, year=year or 0, status="continuing", monitored=True, quality_profile_id=1, root_folder=root,
+        series = models.Series(title=title, year=year or 0, status="continuing", monitored=True, quality_profile_id=default_profile_id(db, "tv"), root_folder=root,
                                path=entry.path, total_seasons=1, imdb_id=imdb, series_type="standard", monitor_new_seasons=True)
         db.add(series)
         db.flush()

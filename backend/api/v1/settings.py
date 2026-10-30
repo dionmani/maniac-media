@@ -101,6 +101,29 @@ def create_profile(req: schemas.QualityProfileIn, db: DB, user: Requires(Permiss
     return profile
 
 
+# declared before the /{profile_id} routes so "defaults" isn't parsed as an id
+@router.get("/quality-profiles/defaults", response_model=schemas.QualityProfileDefaults)
+def get_profile_defaults(db: DB, _: Requires(Permission.MEDIA_READ)):
+    return schemas.QualityProfileDefaults(
+        movie=quality_service.default_profile_id(db, "movie"), tv=quality_service.default_profile_id(db, "tv"))
+
+
+@router.put("/quality-profiles/defaults", response_model=schemas.QualityProfileDefaults)
+def update_profile_defaults(req: schemas.QualityProfileDefaults, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
+    changes: dict[str, int] = {}
+    for media_type, profile_id in (("movie", req.movie), ("tv", req.tv)):
+        if profile_id is None:
+            continue
+        if db.get(models.QualityProfile, profile_id) is None:
+            raise HTTPException(422, f"Quality profile {profile_id} does not exist")
+        changes[f"default_{media_type}_profile_id"] = profile_id
+    if changes:
+        settings_manager.update(**changes)
+        audit(db, "settings", "quality_profile.defaults", actor=user.actor, details=changes)
+        db.commit()
+    return get_profile_defaults(db, user)
+
+
 @router.put("/quality-profiles/{profile_id}", response_model=schemas.QualityProfileOut)
 def update_profile(profile_id: int, req: schemas.QualityProfileIn, db: DB, user: Requires(Permission.SETTINGS_WRITE)):
     profile = db.get(models.QualityProfile, profile_id)
@@ -122,6 +145,9 @@ def delete_profile(profile_id: int, db: DB, user: Requires(Permission.SETTINGS_W
         select(models.Series.id).where(models.Series.quality_profile_id == profile_id).limit(1))
     if in_use:
         raise HTTPException(409, "Profile is in use by library items")
+    s = get_settings()
+    if profile_id in (s.default_movie_profile_id, s.default_tv_profile_id):
+        raise HTTPException(409, "Profile is the default for new items; pick another default first")
     audit(db, "settings", "quality_profile.delete", actor=user.actor, entity_type="quality_profile", entity_id=profile_id, severity="warning")
     db.delete(profile)
     db.commit()

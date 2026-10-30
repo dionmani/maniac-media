@@ -561,6 +561,12 @@ export interface QualityProfile {
   min_format_upgrade_delta?: number;
 }
 
+/** Profile given to newly added movies / TV shows. */
+export interface QualityProfileDefaults {
+  movie: number;
+  tv: number;
+}
+
 export interface FieldSpec {
   name: string;
   label: string;

@@ -31,7 +31,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, CheckCircle2, Download, FlaskConical, Pencil, Plus, Trash2, Upload, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { del, get, post, put } from '../../api/client';
-import type { CustomFormat, CustomFormatSpec, CustomFormatTestResult, QualityProfile } from '../../api/types';
+import type { CustomFormat, CustomFormatSpec, CustomFormatTestResult, QualityProfile, QualityProfileDefaults } from '../../api/types';
 import { Loading, useConfirm } from '../../components/common';
 import { useAuth } from '../../store/auth';
 import { toast } from '../../store/ui';
@@ -64,6 +64,7 @@ export default function QualitySettings() {
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles') });
   const qualities = useQuery({ queryKey: ['qualities'], queryFn: () => get<QualityDef[]>('/qualities') });
   const formats = useQuery({ queryKey: ['custom-formats'], queryFn: () => get<CustomFormat[]>('/custom-formats') });
+  const defaults = useQuery({ queryKey: ['quality-profile-defaults'], queryFn: () => get<QualityProfileDefaults>('/quality-profiles/defaults') });
 
   const [editing, setEditing] = useState<Partial<QualityProfile> | null>(null);
   const [editingFormat, setEditingFormat] = useState<Partial<CustomFormat> | null>(null);
@@ -73,6 +74,12 @@ export default function QualitySettings() {
   const save = useMutation({
     mutationFn: (p: Partial<QualityProfile>) => (p.id ? put(`/quality-profiles/${p.id}`, p) : post('/quality-profiles', p)),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['quality-profiles'] }); setEditing(null); toast('Profile saved', 'success'); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+
+  const saveDefaults = useMutation({
+    mutationFn: (d: Partial<QualityProfileDefaults>) => put<QualityProfileDefaults>('/quality-profiles/defaults', d),
+    onSuccess: (d) => { qc.setQueryData(['quality-profile-defaults'], d); toast('Default profile saved', 'success'); },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
 
@@ -135,18 +142,34 @@ export default function QualitySettings() {
           </Button>
         )}
       </Stack>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
+        {([['movie', 'Default for new movies'], ['tv', 'Default for new TV shows']] as const).map(([type, label]) => (
+          <TextField key={type} select size="small" label={label} sx={{ minWidth: 240 }}
+            value={defaults.data?.[type] ?? ''} disabled={!canWrite || saveDefaults.isPending}
+            onChange={(e) => saveDefaults.mutate({ [type]: Number(e.target.value) })}>
+            {profileList.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+          </TextField>
+        ))}
+      </Stack>
       <Grid container spacing={2}>
         {profileList.map((p) => (
           <Grid key={p.id} size={{ xs: 12, md: 6, lg: 4 }}>
             <Paper sx={{ p: 2, height: '100%' }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="h6">{p.name}</Typography>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                  <Typography variant="h6" noWrap>{p.name}</Typography>
+                  {defaults.data?.movie === p.id && <Chip size="small" color="primary" label="Movie default" />}
+                  {defaults.data?.tv === p.id && <Chip size="small" color="secondary" label="TV default" />}
+                </Stack>
                 {canWrite && (
                   <Box>
                     <IconButton size="small" onClick={() => setEditing(p)}><Pencil size={15} /></IconButton>
                     <IconButton size="small" color="error" onClick={async () => {
                       if (await confirm('Delete profile?', `Delete "${p.name}"? Profiles in use cannot be deleted.`, { danger: true, confirmLabel: 'Delete' })) {
-                        del(`/quality-profiles/${p.id}`).then(() => qc.invalidateQueries({ queryKey: ['quality-profiles'] })).catch((e) => toast(errorMessage(e), 'error'));
+                        del(`/quality-profiles/${p.id}`).then(() => {
+                          qc.invalidateQueries({ queryKey: ['quality-profiles'] });
+                          qc.invalidateQueries({ queryKey: ['quality-profile-defaults'] });
+                        }).catch((e) => toast(errorMessage(e), 'error'));
                       }
                     }}><Trash2 size={15} /></IconButton>
                   </Box>

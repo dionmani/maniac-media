@@ -60,6 +60,10 @@ class AppSettings(BaseModel):
     auto_fix_imports: bool = True  # apply safe (non-settings-changing) import failure fixes automatically
     extra_file_extensions: list[str] = Field(default_factory=lambda: [".srt", ".ass", ".sub", ".idx", ".nfo"])
 
+    # --- defaults for newly added items (None = the lowest-id profile)
+    default_movie_profile_id: int | None = None
+    default_tv_profile_id: int | None = None
+
     # --- automation
     rss_sync_interval_minutes: int = 15
     search_on_add: bool = False

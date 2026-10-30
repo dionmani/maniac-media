@@ -19,7 +19,7 @@ import { ExternalLink, EyeOff, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, post } from '../api/client';
-import type { DiscoverItem, QualityProfile } from '../api/types';
+import type { DiscoverItem, QualityProfile, QualityProfileDefaults } from '../api/types';
 import { useAuth } from '../store/auth';
 import { toast } from '../store/ui';
 import { errorMessage } from '../utils/format';
@@ -36,6 +36,9 @@ export function DiscoverDialog({ item, onClose, onHide }: Props) {
   const qc = useQueryClient();
   const canWrite = useAuth((s) => s.can)('media:write');
   const profiles = useQuery({ queryKey: ['quality-profiles'], queryFn: () => get<QualityProfile[]>('/quality-profiles'), enabled: !!item && canWrite });
+  const defaults = useQuery({
+    queryKey: ['quality-profile-defaults'], queryFn: () => get<QualityProfileDefaults>('/quality-profiles/defaults'), enabled: !!item && canWrite,
+  });
   const [profileId, setProfileId] = useState<number | ''>('');
   const [monitor, setMonitor] = useState('all');
   const [searchOnAdd, setSearchOnAdd] = useState(false);
@@ -43,16 +46,16 @@ export function DiscoverDialog({ item, onClose, onHide }: Props) {
   // a returning show is usually wanted from the new season on; a new show from the start
   const reason = item?.reason;
   useEffect(() => { if (reason) setMonitor(reason === 'season_premiere' ? 'latest' : 'all'); }, [item?.tmdb_id, reason]);
-  useEffect(() => {
-    if (profileId === '' && profiles.data?.length) setProfileId(profiles.data.find((p) => p.id === 1)?.id ?? profiles.data[0].id);
-  }, [profiles.data, profileId]);
-
   const movie = item?.media_type === 'movie';
+  // every title opens on the default profile for its media type
+  const defaultId = defaults.data?.[movie ? 'movie' : 'tv'];
+  useEffect(() => { setProfileId(defaultId ?? ''); }, [item?.tmdb_id, defaultId]);
+
   const add = useMutation({
     mutationFn: (i: DiscoverItem) =>
       post<{ id: number; title: string }>(movie ? '/movies' : '/series', {
         title: i.title, year: i.year, tmdb_id: i.tmdb_id, imdb_id: i.imdb_id, tvdb_id: i.tvdb_id, tvmaze_id: i.tvmaze_id,
-        quality_profile_id: profileId || 1, monitor, search_on_add: searchOnAdd,
+        quality_profile_id: profileId || null, monitor, search_on_add: searchOnAdd,
       }),
     onSuccess: (res) => {
       toast(`Added ${res.title}`, 'success');

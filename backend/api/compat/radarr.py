@@ -41,7 +41,7 @@ from backend.db import models
 from backend.db.repositories import MovieRepository, QueueRepository
 from backend.db.session import session_scope
 from backend.domain.types import MediaMetadata
-from backend.services import media_service, metadata_service, search_service, tag_service
+from backend.services import media_service, metadata_service, quality_service, search_service, tag_service
 from backend.workers.queue import job_queue
 
 URL_BASE = "/api/compat/radarr"
@@ -239,13 +239,15 @@ def get_movie(movie_id: int, db: DB, _: Requires(Permission.MEDIA_READ)):
 async def add_movie(body: MovieIn, user: Requires(Permission.MEDIA_WRITE)):
     if body.tmdb_id <= 0:
         return validation_error("TmdbId", "'Tmdb Id' must be greater than '0'.")
-    profile_id = body.quality_profile_id or body.profile_id or 1
+    profile_id = body.quality_profile_id or body.profile_id
     root = body.root_folder_path or _root_folders()[0]
     if not is_known_root(root, _root_folders()):
         return validation_error("RootFolderPath", f"Root folder '{root}' is not configured in Maniac Media")
 
     def precheck() -> JSONResponse | None:
+        nonlocal profile_id
         with session_scope() as db:
+            profile_id = profile_id or quality_service.default_profile_id(db, "movie")
             if db.get(models.QualityProfile, profile_id) is None:
                 return validation_error("QualityProfileId", f"Quality profile {profile_id} does not exist")
             if MovieRepository(db).by_tmdb(body.tmdb_id):

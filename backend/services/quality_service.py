@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.events import Event, EventType, bus
+from backend.core.settings import get_settings
 from backend.db import models
 from backend.db.base import utcnow
 from backend.domain.custom_formats import (
@@ -88,6 +89,15 @@ def ensure_default_profiles(db: Session) -> None:
             )
         )
     db.flush()
+
+
+def default_profile_id(db: Session, media_type: Literal["movie", "tv"]) -> int:
+    """Profile for a newly added movie/series: the configured default while it exists, else the lowest id."""
+    s = get_settings()
+    configured = s.default_movie_profile_id if media_type == "movie" else s.default_tv_profile_id
+    if configured and db.get(models.QualityProfile, configured) is not None:
+        return configured
+    return db.scalar(select(models.QualityProfile.id).order_by(models.QualityProfile.id).limit(1)) or 1
 
 
 def _parse_format_scores(raw: dict[Any, Any] | None) -> dict[int, int]:
@@ -273,6 +283,7 @@ def test_release(
 
 __all__ = [
     "bump_formats_version",
+    "default_profile_id",
     "delete_custom_format",
     "ensure_default_profiles",
     "get_matcher",
