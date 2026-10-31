@@ -37,7 +37,8 @@ from backend.domain.inspection import (
     resolution_class,
 )
 from backend.domain.issues import INSPECTION_ISSUE_TYPES  # corrupt_file is the scanner's (header check)
-from backend.domain.quality import parse_quality
+from backend.domain.quality import Resolution, parse_quality
+from backend.services import media_file_service
 from backend.services.fileops import long_path
 from backend.services.issue_service import IssueRecorder
 
@@ -408,6 +409,11 @@ def _store(media_file_id: int, payload: dict[str, Any], batch: _IssueBatch, deco
 
         mf.subtitle_languages = sorted({s.language for s in inspection.subtitles if s.language})
         mf.mediainfo = asdict(inspection)
+        # nothing in the name says what this is (a DVR recording, "Show - S01E01.ts"): label it by what was measured
+        if not mf.quality_locked and parse_quality(mf.quality or "").quality.weight == 0 \
+                and mf.video_resolution not in (None, Resolution.UNKNOWN.value):
+            label = media_file_service.relabel(db, mf, Resolution(mf.video_resolution))
+            log.info("Classified %s as %s from its measured resolution", mf.path, label)
 
         media_id = _media_id(mf)
         episode_id = None

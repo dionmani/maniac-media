@@ -177,7 +177,9 @@ def scan_movies(incremental: bool = True, progress: Progress | None = None, medi
         for issue in LibraryIssueRepository(db).open_missing_movies(media_id):
             recorder.report(IssueType.MISSING_FILE, "movie", issue.media_id, issue.path, issue.details)
         searches = plan_missing_file_searches(db, recorder.finish().created)
+        unclassified = _unclassified(db, "movie", media_id)
     enqueue_searches(searches)  # after the scan's session has committed
+    _queue_classification(unclassified)
     if progress:
         progress(100, "Movie scan complete")
     return stats
@@ -281,8 +283,8 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
                 stats["skipped"] += 1
             else:
                 stats["scanned"] += 1
-                _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder)
-                state.mark(entry.path, mtime)
+                if _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder):
+                    state.mark(entry.path, mtime)
             if i % 25 == 0:
                 db.commit()
                 if progress:
@@ -346,13 +348,16 @@ def scan_series(incremental: bool = True, progress: Progress | None = None, medi
             recorder.report(IssueType.MISSING_FILE, "tv", issue.media_id, issue.path, issue.details, episode_id=ep.id,
                             discriminator=f"S{ep.season_number:02d}E{ep.episode_number:02d}")
         searches = plan_missing_file_searches(db, recorder.finish().created)
+        unclassified = _unclassified(db, "tv", media_id)
     enqueue_searches(searches)  # after the scan's session has committed
+    _queue_classification(unclassified)
     if progress:
         progress(100, "TV scan complete")
     return stats
 
 
-def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder) -> None:
+def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, recorder) -> bool:
+    """False when a dated file found no episode yet (no metadata, or two on one day): the next scan retries it."""
     title, year, imdb = parse_folder_title(entry.name)
     # the folder year picks between same-titled shows: "Dark Matter (2024)" is not the Dark Matter (2015) series
     series = known or resolve_series(by_title, title, year)
@@ -370,6 +375,7 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, re
     seasons = {s.season_number: s for s in db.scalars(select(models.Season).where(models.Season.series_id == series.id))}
     episodes = {(e.season_number, e.episode_number): e for e in db.scalars(select(models.Episode).where(models.Episode.series_id == series.id))}
     seen: dict[tuple[int, int], str] = {}
+    complete = True
 
     sources = [(None, entry.path)] + [
         (0 if (m := SEASON_DIR.match(d.name)).group(2) else int(m.group(1)), d.path) for d in season_dirs
@@ -379,15 +385,22 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, re
             if not f.is_file() or not is_video(f.name) or is_sample(f.name):
                 continue
             parsed = parse_episode(f.name)
-            if not parsed or not parsed.episodes:
+            if not parsed:
                 continue
-            season_no = parsed.season if parsed.season is not None else folder_season
-            if season_no is None:
+            numbers, season_no = parsed.episodes, parsed.season if parsed.season is not None else folder_season
+            if not numbers and parsed.air_date:
+                # "Show (2019) - 2026-10-29 - Title.ts": daily shows and DVR recordings name the air date instead
+                aired = [e for e in episodes.values() if e.air_date == parsed.air_date and e.season_number > 0]
+                if len(aired) != 1:
+                    complete = False
+                    continue
+                numbers, season_no = [aired[0].episode_number], aired[0].season_number
+            if not numbers or season_no is None:
                 continue
             stats["files"] += 1
             quality = parse_quality(f.name)
             file_episodes = []
-            for number in parsed.episodes:
+            for number in numbers:
                 key = (season_no, number)
                 if key in seen and seen[key] != f.path:
                     stats["duplicates"] += 1
@@ -422,6 +435,24 @@ def _scan_series_folder(db, entry, season_dirs, root, known, by_title, stats, re
                 )
     real = [n for n in seasons if n > 0]
     series.total_seasons = max(real) if real else (series.total_seasons or 1)
+    return complete
+
+
+def _unclassified(db, media_type: str, media_id: int | None) -> list[int]:
+    settings = get_settings()
+    if not settings.inspection_enabled:
+        return []
+    from backend.services.inspection_service import ffprobe_path
+
+    return MediaFileRepository(db).unclassified(media_type, media_id) if ffprobe_path() else []
+
+
+def _queue_classification(media_file_ids: list[int]) -> None:
+    """Probe files whose name gave no quality, so inspection can label them by measured resolution (HDTV-1080p ...)."""
+    from backend.workers.queue import job_queue
+
+    for media_file_id in media_file_ids:
+        job_queue.enqueue("inspect_file", {"media_file_id": media_file_id}, trigger="event", dedupe_key=f"file:{media_file_id}")
 
 
 # --------------------------------------------------------------------------- entry points
