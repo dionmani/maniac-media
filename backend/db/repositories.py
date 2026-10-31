@@ -643,6 +643,17 @@ class MediaFileRepository(Repository[models.MediaFile]):
         h = hashlib.sha256(normalise_path_key(str(path)).encode()).hexdigest()
         return self.db.scalar(select(models.MediaFile).where(models.MediaFile.path_hash == h))
 
+    def unclassified(self, media_type: str, owner_id: int | None = None) -> list[int]:
+        """Files whose name gave no quality and that haven't been probed yet (DVR recordings, bare names)."""
+        mf = models.MediaFile
+        stmt = select(mf.id).where(
+            mf.media_type == media_type, or_(mf.quality.is_(None), mf.quality == "Unknown"), mf.quality_locked.is_not(True),
+            mf.inspected_at.is_(None), mf.inspection_error.is_(None),
+        )
+        if owner_id is not None:
+            stmt = stmt.where((mf.movie_id if media_type == "movie" else mf.series_id) == owner_id)
+        return list(self.db.scalars(stmt.order_by(mf.id)))
+
     def for_movie(self, movie_id: int) -> Sequence[models.MediaFile]:
         return self.db.scalars(
             select(models.MediaFile)

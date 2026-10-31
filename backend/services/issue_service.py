@@ -338,7 +338,7 @@ def _match(db, issue, params, actor) -> str:
 
 
 def _relabel(db, issue, params, actor) -> str:
-    from backend.domain.quality import QUALITIES, Resolution, parse_quality
+    from backend.domain.quality import Resolution
 
     if not issue.path:
         raise IssueActionError("Issue has no file to relabel")
@@ -353,22 +353,7 @@ def _relabel(db, issue, params, actor) -> str:
     except ValueError:
         raise IssueActionError(f"Unrecognised resolution: {actual_str}")
 
-    current_q = parse_quality(mf.quality or "").quality
-    matched = next((q for q in QUALITIES if q.resolution == target_res and q.source == current_q.source), None)
-    if matched is None:
-        matched = next((q for q in QUALITIES if q.resolution == target_res and q.weight > 0), None)
-    new_label = matched.name if matched else actual_str
-    mf.quality = new_label
-    mf.quality_locked = True  # a rescan re-parses the filename; don't let it undo the relabel
-    owner = mf.movie if mf.media_type == "movie" else mf.series
-    media_file_service.refresh_formats(db, mf, profile_id=owner.quality_profile_id if owner else None,
-                                       episode_count=max(1, len(mf.episodes)))
-    if mf.media_type == "movie" and mf.movie:
-        media_file_service.sync_legacy(db, mf.movie)
-    elif mf.media_type == "tv":
-        for ef in db.scalars(select(models.EpisodeFile).where(models.EpisodeFile.media_file_id == mf.id)):
-            if ef.episode:
-                media_file_service.sync_legacy(db, ef.episode)
+    new_label = media_file_service.relabel(db, mf, target_res)
     _close(issue, RESOLVED, "relabel")
     return f"Relabelled quality to {new_label}"
 

@@ -267,6 +267,10 @@ transactional with the data it touches, and portable across all supported databa
   or a library/recycle bin nested underneath.
 * Scanner uses `os.scandir`, pre-loaded lookups and batched commits; incremental scans skip
   folders with unchanged mtimes (authoritative `os.stat`, since `DirEntry` caches can lag on Windows).
+* Date-named episode files (daily shows, Plex DVR: `Show (2019) - 2026-10-29 - Title.ts`) match the one
+  episode that aired that day; with none or several yet, the folder stays unmarked so the next scan retries.
+* A file whose name carries no quality (`Unknown`) is queued for ffprobe inspection after the scan, which
+  labels it from the measured resolution (lowest source at that resolution, e.g. `HDTV-1080p`) and locks it.
 
 ## 12. Observability
 

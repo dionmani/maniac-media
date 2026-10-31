@@ -20,7 +20,7 @@ from backend.db.base import utcnow
 from backend.db.repositories import LibraryIssueRepository
 from backend.domain.issues import FILE_SCOPED_ISSUE_TYPES, Status, fingerprint
 from backend.domain.parser import normalise_path_key, release_group
-from backend.domain.quality import ParsedQuality, get_quality, parse_quality
+from backend.domain.quality import QUALITIES, ParsedQuality, Resolution, get_quality, parse_quality
 
 log = logging.getLogger("maniac.media_files")
 
@@ -75,6 +75,31 @@ def refresh_formats(db: Session, media_file: models.MediaFile, *, profile_id: in
     quality = locked_quality(parse_quality(title), media_file)
     media_file.custom_formats, media_file.custom_format_score = _compute_file_formats(
         db, title, media_file.size_bytes or 0, episode_count, quality, profile_id)
+
+
+def relabel(db: Session, media_file: models.MediaFile, resolution: Resolution) -> str:
+    """Set a file's quality from its measured ``resolution`` and lock it, returning the new label.
+
+    The source the name claims is kept; with none (a DVR recording, a bare "Show - S01E01.ts") the
+    lowest one at that resolution is taken, HDTV or SDTV, which is what a broadcast capture is.
+    """
+    current = parse_quality(media_file.quality or "").quality
+    matched = next((q for q in QUALITIES if q.resolution == resolution and q.source == current.source), None)
+    if matched is None:
+        matched = next((q for q in QUALITIES if q.resolution == resolution and q.weight > 0), None)
+    label = matched.name if matched else resolution.value
+    media_file.quality = label
+    media_file.quality_locked = True  # a rescan re-parses the filename; don't let it undo the relabel
+    owner = media_file.movie if media_file.media_type == "movie" else media_file.series
+    refresh_formats(db, media_file, profile_id=owner.quality_profile_id if owner else None,
+                    episode_count=max(1, len(media_file.episodes)))
+    if media_file.media_type == "movie" and media_file.movie:
+        sync_legacy(db, media_file.movie)
+    elif media_file.media_type == "tv":
+        for ef in db.scalars(select(models.EpisodeFile).where(models.EpisodeFile.media_file_id == media_file.id)):
+            if ef.episode:
+                sync_legacy(db, ef.episode)
+    return label
 
 
 def _compute_file_formats(
