@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <!--
-  Unraid Docker template for Maniac Media.
-  Install: copy this file to /boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml
-  on the Unraid flash drive, then Docker tab → Add Container → Template: maniac-media.
+  Unraid Docker template for Maniac Media. Full guide: docs/UNRAID.md
+  Install: copy to /boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml,
+  then Docker -> Add Container -> User templates -> maniac-media.
 -->
 <Container version="2">
   <Name>maniac-media</Name>
@@ -14,17 +14,17 @@
   <Overview>Maniac Media – unified movie and TV automation (Sonarr + Radarr in one). Metadata, indexers, download clients, automatic import, renaming, quality profiles, users and an encrypted, migratable database.</Overview>
   <Category>Downloaders: MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/radarr.png</Icon>
+  <Icon>https://raw.githubusercontent.com/dionmani/maniac-media/main/frontend/public/logo.png</Icon>
   <ExtraParams>--security-opt no-new-privileges:true</ExtraParams>
-  <Config Name="WebUI Port" Target="8000" Default="8000" Mode="tcp" Description="Web interface and API" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
-  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/maniac-media" Mode="rw" Description="Database, encrypted secrets, logs, backups and plugins" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/maniac-media</Config>
-  <Config Name="Data" Target="/data" Default="/mnt/user/data" Mode="rw" Description="Share containing media/ and downloads/. Keep both on ONE share so imports can hardlink. Map your download client to /data the same way." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data</Config>
-  <Config Name="Master key" Target="MANIAC_MASTER_KEY" Default="" Mode="" Description="Encrypts stored credentials. Generate once with: openssl rand -base64 32 – and keep a copy somewhere safe." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="WebUI Port" Target="8000" Default="8193" Mode="tcp" Description="Host port for the web interface and API (container port stays 8000). Change only if 8193 is in use." Type="Port" Display="always" Required="true" Mask="false">8193</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/maniac-media" Mode="rw" Description="Appdata: database, encrypted secrets, logs, backups and plugins. Keep this path across updates." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/maniac-media</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/data" Mode="rw" Description="Share containing media/ and downloads/. Use ONE share for both so paths match and hardlinks are possible. Map your download client to /data the same way. Change the host path to match your shares." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data</Config>
+  <Config Name="Master key" Target="MANIAC_MASTER_KEY" Default="" Mode="" Description="Encrypts stored credentials. Generate ONCE with: openssl rand -base64 32 – and keep a copy somewhere safe. Changing it makes stored credentials unreadable." Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id the app runs as (99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id the app runs as (100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="File creation mask" Type="Variable" Display="advanced" Required="false" Mask="false">002</Config>
-  <Config Name="Movies folder (first run)" Target="MANIAC_MOVIES_DIR" Default="/data/media/movies" Mode="" Description="Initial movie root folder – change later in Settings" Type="Variable" Display="advanced" Required="false" Mask="false">/data/media/movies</Config>
-  <Config Name="TV folder (first run)" Target="MANIAC_TV_DIR" Default="/data/media/tv" Mode="" Description="Initial TV root folder – change later in Settings" Type="Variable" Display="advanced" Required="false" Mask="false">/data/media/tv</Config>
-  <Config Name="Downloads folder (first run)" Target="MANIAC_DOWNLOADS_DIR" Default="/data/downloads/complete" Mode="" Description="Initial download watch folder – change later in Settings" Type="Variable" Display="advanced" Required="false" Mask="false">/data/downloads/complete</Config>
+  <Config Name="Movies folder (first run)" Target="MANIAC_MOVIES_DIR" Default="/data/media/movies" Mode="" Description="Seeds the movie root folder on first run only; change later in Settings → Media management" Type="Variable" Display="advanced" Required="false" Mask="false">/data/media/movies</Config>
+  <Config Name="TV folder (first run)" Target="MANIAC_TV_DIR" Default="/data/media/tv" Mode="" Description="Seeds the TV root folder on first run only; change later in Settings → Media management" Type="Variable" Display="advanced" Required="false" Mask="false">/data/media/tv</Config>
+  <Config Name="Downloads folder (first run)" Target="MANIAC_DOWNLOADS_DIR" Default="/data/downloads/complete" Mode="" Description="Seeds the completed-downloads watch folder on first run only (must exist); change later in Settings → Media management" Type="Variable" Display="advanced" Required="false" Mask="false">/data/downloads/complete</Config>
   <Config Name="Log format" Target="MANIAC_LOG_FORMAT" Default="console" Mode="" Description="console or json" Type="Variable" Display="advanced" Required="false" Mask="false">console</Config>
 </Container>

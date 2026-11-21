@@ -43,12 +43,15 @@ and troubleshooting.
 
 ## Docker / Unraid
 
-Pushing to `main` (or a `v*.*.*` tag) runs `.github/workflows/publish.yml`, which tests the code and
-publishes a multi-arch image to `ghcr.io/dionmani/maniac-media` (`:latest`, `:<version>`, `:sha-…`).
+Pushing to `main` (or a `v*.*.*` tag) runs `.github/workflows/ci.yml`, which tests the code and
+publishes a `linux/amd64` image to `ghcr.io/dionmani/maniac-media` (`:latest`, `:<version>`, `:sha-…`).
 
-**Unraid (Docker tab):** copy `unraid/maniac-media.xml` to
-`/boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml`, then *Add Container → maniac-media*. Defaults: `/mnt/user/appdata/maniac-media → /config`,
-`/mnt/user/data → /data`, `PUID=99`, `PGID=100`.
+**Unraid:** see the step-by-step guide **[docs/UNRAID.md](docs/UNRAID.md)**. In short: copy
+`unraid/maniac-media.xml` to `/boot/config/plugins/dockerMan/templates-user/my-maniac-media.xml`, then
+*Docker → Add Container → User templates → maniac-media*. Defaults: image
+`ghcr.io/dionmani/maniac-media:latest`, WebUI `http://<server-ip>:8193`,
+`/mnt/user/appdata/maniac-media → /config`, `/mnt/user/data → /data`, `PUID=99`, `PGID=100`.
+A **Master key** (`openssl rand -base64 32`) is required.
 
 **Compose:**
 

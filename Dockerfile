@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
-# Maniac Media – multi-arch image (linux/amd64, linux/arm64).
+# Maniac Media – image (published for linux/amd64).
 #   docker build -t maniac-media .
-#   docker run -p 8000:8000 -v /mnt/user/appdata/maniac-media:/config -v /mnt/user/data:/data maniac-media
+#   docker run -p 8193:8000 -v /mnt/user/appdata/maniac-media:/config -v /mnt/user/data:/data maniac-media
 
 # ---------- stage 1: build the SPA (runs natively on the build host, output is arch-independent) ----------
 FROM --platform=$BUILDPLATFORM node:22-slim AS frontend
@@ -38,7 +38,7 @@ LABEL org.opencontainers.image.title="Maniac Media" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT" \
       net.unraid.docker.webui="http://[IP]:[PORT:8000]/" \
-      net.unraid.docker.icon="https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/radarr.png"
+      net.unraid.docker.icon="https://raw.githubusercontent.com/dionmani/maniac-media/main/frontend/public/logo.png"
 
 # unixodbc: MSSQL driver runtime · tini: signal handling · util-linux: setpriv (drop privileges)
 RUN apt-get update \

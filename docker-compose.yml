@@ -1,7 +1,7 @@
 # Maniac Media – Docker Compose (works with Unraid's "Docker Compose Manager" plugin too).
 #
 #   1. Create a .env next to this file with MANIAC_MASTER_KEY (see .env.example).
-#   2. docker compose up -d   →   http://<server-ip>:8000   (use `build: .` instead of image to build locally)
+#   2. docker compose up -d   →   http://<server-ip>:8193   (use `build: .` instead of image to build locally)
 #
 # Folder layout (TRaSH-guides style – ONE share for downloads and media so imports can hardlink):
 #   /mnt/user/data/
