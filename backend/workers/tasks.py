@@ -21,6 +21,7 @@ from backend.services import (
     issue_service,
     media_file_service,
     metadata_service,
+    queue_reconciliation_service,
     renamer_service,
     scanner_service,
     search_service,
@@ -36,7 +37,11 @@ async def rss_sync(ctx: JobContext):
 
 @job_queue.register("download_monitor", "Download Monitoring", priority=1, max_attempts=1)
 async def download_monitor(ctx: JobContext):
+    # local history evidence first: it must work even when a download client is unreachable
+    reconciled = await asyncio.to_thread(queue_reconciliation_service.reconcile_stale)
     stats = await download_service.sync_clients()
+    stats["reconciled"] = reconciled
+    stats["recovered"] = await asyncio.to_thread(download_service.recover_stranded_imports)
     if stats.get("active"):
         # adaptive polling: follow active downloads closely, idle back to the scheduled interval
         await asyncio.to_thread(job_queue.enqueue, "download_monitor", trigger="event", dedupe_key="follow-up",

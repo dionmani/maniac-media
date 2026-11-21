@@ -40,7 +40,7 @@ from backend.domain.parser import (
 )
 from backend.domain.quality import ParsedQuality, parse_quality
 from backend.domain.series_match import ReleaseEvidence, SeriesFacts, best_series, match_series
-from backend.services import fileops, import_diagnosis, inspection_service, media_file_service
+from backend.services import fileops, import_diagnosis, inspection_service, media_file_service, queue_reconciliation_service
 from backend.services.audit import SYSTEM, Actor, audit, history
 from backend.services.quality_service import spec_for
 
@@ -399,6 +399,8 @@ def _import_one(
                 details=f"{used} → {dest}",
                 data={
                     "source": str(src),
+                    "destination": str(dest),
+                    "media_file_id": mf.id,
                     "previous_quality": current_q.quality.name if current_q else None,
                     "formats": [m.name for m in scored_cf],
                     "format_score": candidate_fs,
@@ -473,6 +475,10 @@ def _import_one(
     history(db, "tv", series.id, label, event, quality=quality.quality.name, download_id=queue_id, details=f"{used} → {dest}",
             data={
                 "source": str(src),
+                "destination": str(dest),
+                "media_file_id": mf.id,
+                "season": season,
+                "episodes": list(episode_numbers),
                 "formats": [m.name for m in scored_cf],
                 "format_score": candidate_fs,
                 **({"forced": True} if force else {}),
@@ -556,7 +562,7 @@ _CANDIDATE_STATE_REASONS: dict[str, ImportFailureReason] = {
 
 def import_queue_item(queue_id: int, force: bool = False) -> ImportResult:
     result = ImportResult()
-    allowed_statuses = ["completed", "import_failed"] + (["importing"] if force else [])
+    allowed_statuses = ["completed", "import_failed"]  # force overrides quality decisions, never an active claim
     with session_scope() as db:
         q = db.get(models.DownloadQueueItem, queue_id)
         if q is None:
@@ -600,7 +606,7 @@ def _release_claim(queue_id: int, error: str) -> None:
             if q is None or q.status != "importing":
                 return
             if _import_recorded(db, q):
-                q.status = "imported"
+                queue_reconciliation_service.mark_imported(db, q.id, ("importing",))
             else:
                 q.status, q.error_message = "import_failed", error
                 q.failure_reason = q.failure_signature = ImportFailureReason.UNKNOWN.value
@@ -623,7 +629,7 @@ def recover_interrupted_imports() -> int:
         stuck = list(db.scalars(select(models.DownloadQueueItem).where(models.DownloadQueueItem.status == "importing")))
         for q in stuck:
             if _import_recorded(db, q):
-                q.status = "imported"
+                queue_reconciliation_service.mark_imported(db, q.id, ("importing",))
             else:
                 q.status = "completed"
                 retry.append(q.id)
@@ -701,6 +707,12 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
             label = _run_import(video, quality, media_type, media_id, file_season, list(file_eps or []), mode, release_title, queue_id, force, pre)
             result.imported.append(label)
     except ImportError_ as exc:
+        # the source may be gone because it was already imported (another importer, an earlier run
+        # that was cut short): history is the evidence, never the missing path alone
+        if exc.reason in (ImportFailureReason.PATH_NOT_FOUND, ImportFailureReason.NO_VIDEO_FILES) and \
+                queue_reconciliation_service.settle(queue_id, ("importing",)):
+            result.skipped.append("Already imported")
+            return result
         failure = str(exc)
         fail_reason, fail_evidence = exc.reason, exc.evidence
     except Exception as exc:
@@ -730,11 +742,8 @@ def _import_claimed(queue_id: int, force: bool, download_path, media_type, media
                 history(db, q.media_type, q.media_id, q.release_title, "import_failed", quality=q.quality, download_id=q.id, details=failure,
                         data={"analysis": analysis.to_dict()} if analysis else None)
             else:
-                q.status = "imported"
-                q.error_message = "; ".join(result.failed) or None
-                q.failure_reason = None
-                q.failure_signature = None
-                q.failure_analysis = None
+                if queue_reconciliation_service.mark_imported(db, queue_id, ("importing",)) and result.failed:
+                    q.error_message = "; ".join(result.failed)  # files that didn't import stay noted on the row
     if result.imported and _mode_for(protocol) == "move":
         src = Path(download_path)
         _remove_emptied_folder(src if src.is_dir() else src.parent)
@@ -823,6 +832,53 @@ def _import_quality(src: Path, label: str | None):
 def manual_import(items: list[dict], mode: str | None, actor: Actor, force: bool = False) -> ImportResult:
     result = ImportResult()
     mode = mode or get_settings().import_mode
+    claims: dict[int, str] = {}  # queue id -> status before we claimed it
+    try:
+        _manual_import_items(items, mode, force, result, claims)
+    finally:
+        # settle every queue entry we claimed: imported on evidence, otherwise back to how it was
+        for qid, prior in claims.items():
+            try:
+                if not queue_reconciliation_service.settle(qid, ("importing",)):
+                    with session_scope() as db:
+                        db.execute(update(models.DownloadQueueItem).where(
+                            models.DownloadQueueItem.id == qid, models.DownloadQueueItem.status == "importing"
+                        ).values(status=prior))
+            except Exception:
+                log.exception("Could not settle queue item %s after a manual import", qid)
+        if claims:
+            bus.publish(EventType.QUEUE_CHANGED)
+    with session_scope() as db:
+        audit(db, "import", "manual_import", actor=actor, details={"imported": len(result.imported), "failed": result.failed[:20]},
+              success=not result.failed)
+    if result.imported:
+        bus.publish(EventType.IMPORT_COMPLETED, title=f"Manual import ({len(result.imported)} files)", items=result.imported)
+    return result
+
+
+def _claim_owner(item: dict, claims: dict[int, str]) -> tuple[int | None, bool]:
+    """(queue id the import should be attributed to, busy). Claims the owning entry on first use."""
+    with session_scope() as db:
+        q = queue_reconciliation_service.find_owner(
+            db, item["path"], item["media_type"], int(item["media_id"]), item.get("season"), list(item.get("episodes") or []))
+        if q is None:
+            return None, False
+        if q.id in claims:
+            return q.id, False
+        prior = q.status
+        if prior == "importing":
+            return None, True
+        if prior not in queue_reconciliation_service.STALE_STATUSES:
+            return None, False  # still downloading etc.: not ours to settle
+        claimed = db.execute(update(models.DownloadQueueItem).where(
+            models.DownloadQueueItem.id == q.id, models.DownloadQueueItem.status == prior).values(status="importing"))
+        if claimed.rowcount == 0:
+            return None, True
+        claims[q.id] = prior
+        return q.id, False
+
+
+def _manual_import_items(items: list[dict], mode: str, force: bool, result: ImportResult, claims: dict[int, str]) -> None:
     for item in items:
         src = Path(item["path"])
         check = fileops.check_video_file(src, 0)
@@ -836,9 +892,14 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor, force: bool
             result.failed_paths[item["path"]] = rejection
             result.failed_codes[item["path"]] = str(ImportFailureReason.CORRUPT_FILE)
             continue
+        owner_id, busy = _claim_owner(item, claims)
+        if busy:
+            result.failed.append(f"{src.name}: this download is already being imported")
+            result.failed_paths[item["path"]] = "This download is already being imported"
+            continue
         try:
             label = _run_import(src, _import_quality(src, item.get("quality")), item["media_type"], int(item["media_id"]),
-                                item.get("season"), list(item.get("episodes") or []), mode, src.name, None, force, pre=pre)
+                                item.get("season"), list(item.get("episodes") or []), mode, src.name, owner_id, force, pre=pre)
             result.imported.append(label)
             IMPORTS_TOTAL.labels(item["media_type"], "imported").inc()
             if mode == "move":
@@ -849,12 +910,6 @@ def manual_import(items: list[dict], mode: str | None, actor: Actor, force: bool
             if isinstance(exc, ImportError_):
                 result.failed_codes[item["path"]] = str(exc.reason)
             IMPORTS_TOTAL.labels(item.get("media_type") or "unknown", "failed").inc()
-    with session_scope() as db:
-        audit(db, "import", "manual_import", actor=actor, details={"imported": len(result.imported), "failed": result.failed[:20]},
-              success=not result.failed)
-    if result.imported:
-        bus.publish(EventType.IMPORT_COMPLETED, title=f"Manual import ({len(result.imported)} files)", items=result.imported)
-    return result
 
 
 def annotate_match(path: str, media_type: str, media_id: int, season: int | None, episodes: list[int]) -> dict:
@@ -938,17 +993,18 @@ def scan_download_folder() -> dict:
     report = {"completed": 0, "partial": 0, "corrupt": 0, "imported": 0, "untracked": []}
     if not root.exists():
         return report
-    with session_scope() as db:
-        tracked = {
-            str(Path(p)).lower()
-            for p in db.scalars(select(models.DownloadQueueItem.download_path).where(models.DownloadQueueItem.download_path.is_not(None)))
-        }
+    def owned(path: Path) -> bool:  # a queue entry points at this file, or at the release folder holding it
+        with session_scope() as db:
+            return queue_reconciliation_service.is_owned_by_queue(db, path)
+
     try:
         entries = list(root.iterdir())
     except OSError:
         return report
     for entry in entries:
-        if str(entry).lower() in tracked:
+        if not entry.is_dir() and owned(entry):
+            continue
+        if entry.is_dir() and entry.name.lower() not in _CATEGORY_DIRS and owned(entry):
             continue
         upper = entry.name.upper()
         if upper.startswith(_CLIENT_WORK_PREFIXES):
@@ -962,6 +1018,8 @@ def scan_download_folder() -> dict:
             report["partial"] += 1
             continue
         for video in videos:
+            if owned(video):  # tracked (even when nested under a category/release folder): the queue imports it
+                continue
             if not fileops.is_stable(video, 0.5):
                 report["partial"] += 1
                 continue

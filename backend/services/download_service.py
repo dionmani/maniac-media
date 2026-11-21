@@ -242,6 +242,7 @@ async def sync_clients() -> dict:
             except Exception as exc:
                 log.warning("Could not look up %d item(s) on %s: %s", len(unseen), client.name, exc)
                 confirmed = False
+        await asyncio.to_thread(_refresh_finished, client, items)
         result = await asyncio.to_thread(_reconcile, client, items, confirmed)
         for key in ("updated", "completed", "failed"):
             stats[key] += len(result[key])
@@ -269,6 +270,40 @@ async def sync_clients() -> dict:
         for qid in completed_ids:
             await asyncio.to_thread(job_queue.enqueue, "import_download", {"queue_id": qid}, trigger="event", dedupe_key=str(qid))
     return stats
+
+
+def _refresh_finished(client: ClientRef, items: dict[str, ClientItem]) -> None:
+    """Pick up a newly reported output path for downloads that already finished. Only the path moves:
+    import status and failure diagnosis are left alone, and none of the active-download handling applies."""
+    with session_scope() as db:
+        for q in db.scalars(select(models.DownloadQueueItem).where(
+                models.DownloadQueueItem.download_client_id == client.id,
+                models.DownloadQueueItem.status.in_(("completed", "import_failed")))):
+            item = items.get((q.client_item_id or "").lower())
+            if item is not None and item.output_path and item.output_path != q.download_path:
+                q.download_path = item.output_path
+
+
+def recover_stranded_imports(min_age_seconds: int = 120) -> int:
+    """Re-queue the import for ``completed`` entries that have no queued or running import job
+    (e.g. the job was lost). Honours ``auto_import``; failed imports are never retried automatically."""
+    if not get_settings().auto_import:
+        return 0
+    from datetime import timedelta
+
+    from backend.workers.queue import job_queue
+
+    cutoff = utcnow() - timedelta(seconds=min_age_seconds)
+    with session_scope() as db:
+        pending = {
+            (j.payload or {}).get("queue_id")
+            for j in db.scalars(select(models.Job).where(models.Job.name == "import_download", models.Job.status.in_(("queued", "running"))))
+        }
+        stranded = [qid for qid, updated in db.execute(select(models.DownloadQueueItem.id, models.DownloadQueueItem.updated_at).where(
+            models.DownloadQueueItem.status == "completed")) if qid not in pending and (updated is None or updated < cutoff)]
+    for qid in stranded:
+        job_queue.enqueue("import_download", {"queue_id": qid}, trigger="event", dedupe_key=str(qid))
+    return len(stranded)
 
 
 TRACKED_STATUSES = ("queued", "downloading", "paused", "warning")

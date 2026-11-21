@@ -5,7 +5,7 @@ import asyncio
 from datetime import date
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.api import schemas
 from backend.api.deps import DB, Paging, Requires, page_response
@@ -120,9 +120,12 @@ async def retry_import(queue_id: int, user: Requires(Permission.IMPORT), body: s
 
     def requeue() -> int | None:
         with session_scope() as db:
-            q = db.get(models.DownloadQueueItem, queue_id)
-            if q is not None:
-                q.status = "completed"
+            # conditional: a concurrent retry/import that already claimed the item must not be overwritten
+            res = db.execute(update(models.DownloadQueueItem).where(
+                models.DownloadQueueItem.id == queue_id,
+                models.DownloadQueueItem.status.in_(("completed", "import_failed"))).values(status="completed"))
+            if res.rowcount == 0:
+                raise HTTPException(409, "Item is no longer waiting to be imported")
         return job_queue.enqueue("import_download", {"queue_id": queue_id, "force": force}, dedupe_key=str(queue_id))
 
     return {"job_id": await asyncio.to_thread(requeue)}
